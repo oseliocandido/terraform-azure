@@ -16,7 +16,7 @@ provider "azurerm" {
   # provider reuses the token from your `az login` session automatically -
   # this is the entire mechanism behind "Terraform uses the Azure CLI for auth".
   subscription_id = var.subscription_id
-  use_cli        = true
+  use_cli         = true
 }
 
 variable "subscription_id" {
