@@ -1,0 +1,139 @@
+name: Terraform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "environments/**"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "environments/**"
+
+permissions:
+  id-token: write   # required for azure/login OIDC
+  contents: read
+
+env:
+  TF_VERSION: "1.5.0"
+
+jobs:
+  # --- Dev: plan on every PR, apply automatically once merged to main ---
+
+  plan-dev:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: environments/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init
+      - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-dev
+          path: environments/dev/tfplan
+
+  apply-dev:
+    needs: plan-dev
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: environments/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev
+          path: environments/dev
+      - run: terraform apply -lock-timeout=5m tfplan
+
+  # --- Prod: plan runs right after dev applies successfully; apply is
+  # gated behind the "production" GitHub Environment, which you configure
+  # with a required reviewer under Settings -> Environments. The job will
+  # sit waiting for a human approval click before `terraform apply` runs. ---
+
+  plan-prod:
+    needs: apply-dev
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: environments/prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init
+      - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+
+      # Human-readable plan in the job log, for the reviewer approving apply-prod below.
+      - run: terraform show tfplan
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: environments/prod/tfplan
+
+  apply-prod:
+    needs: plan-prod
+    runs-on: ubuntu-latest
+    environment: production   # <-- the approval gate: configure a required reviewer on this Environment
+    defaults:
+      run:
+        working-directory: environments/prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+          path: environments/prod
+      - run: terraform apply -lock-timeout=5m tfplan

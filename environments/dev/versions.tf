@@ -18,8 +18,3 @@ provider "azurerm" {
   subscription_id = var.subscription_id
   use_cli         = true
 }
-
-variable "subscription_id" {
-  type        = string
-  description = "Azure subscription ID. Get it with: az account show --query id -o tsv"
-}

@@ -1,7 +1,10 @@
-terraform init -backend-config=env/prod.backend.hcl
+cd environments/prod
+
+terraform init
 
 terraform plan \
-  -var-file=env/prod.tfvars \
+  -var-file=../common.tfvars \
+  -var-file=terraform.tfvars \
   -out=tfplan.prod \
   -lock-timeout=5m
 

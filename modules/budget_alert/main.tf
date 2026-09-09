@@ -1,19 +1,8 @@
-variable "notify_email" {
-  type        = string
-  description = "Email address to receive budget threshold alerts."
-}
-
-variable "monthly_amount" {
-  type        = number
-  default     = 20
-  description = "Monthly budget cap in the subscription's billing currency."
-}
-
 resource "azurerm_consumption_budget_subscription" "learning_guard" {
   name            = "guard-learning-subscription"
   subscription_id = "/subscriptions/${var.subscription_id}"
 
-  amount     = var.monthly_amount
+  amount     = var.budget_amount
   time_grain = "Monthly"
 
   time_period {
@@ -25,7 +14,7 @@ resource "azurerm_consumption_budget_subscription" "learning_guard" {
 
   notification {
     enabled        = true
-    threshold      = 50
+    threshold      = 20
     operator       = "GreaterThan"
     threshold_type = "Actual"
     contact_emails = [var.notify_email]
@@ -33,7 +22,7 @@ resource "azurerm_consumption_budget_subscription" "learning_guard" {
 
   notification {
     enabled        = true
-    threshold      = 90
+    threshold      = 40
     operator       = "GreaterThan"
     threshold_type = "Actual"
     contact_emails = [var.notify_email]
@@ -44,8 +33,4 @@ resource "azurerm_consumption_budget_subscription" "learning_guard" {
     # the dates so this doesn't show a spurious diff on every subsequent plan.
     ignore_changes = [time_period]
   }
-}
-
-output "budget_id" {
-  value = azurerm_consumption_budget_subscription.learning_guard.id
 }
