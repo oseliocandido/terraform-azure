@@ -1,0 +1,21 @@
+# Provider binaries and module cache — large, platform-specific, regenerable
+.terraform/
+
+# State: contains every attribute of every resource, in plaintext,
+# including secrets. Belongs in a remote backend, never in git.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Saved plans: contain the same sensitive values as state.
+*.tfplan
+tfplan
+
+# Variable files that may hold real values or secrets.
+# Commit env/*.tfvars if they contain only non-secret config — decide deliberately.
+*.auto.tfvars
+secrets.tfvars
+
+# Crash logs contain full request/response bodies.
+crash.log
+crash.*.log
