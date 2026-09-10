@@ -41,8 +41,8 @@ flowchart TB
 
 | Environment | Purpose | Lifecycle | CI identity | RBAC scope |
 |---|---|---|---|---|
-| `dev` | Real, Unity-Catalog-facing dev data platform | Long-lived | `sp-terraform-dev` | Contributor on its own RG only |
-| `prod` | Real, Unity-Catalog-facing prod data platform | Long-lived | `sp-terraform-prod` | Contributor on its own RG only |
+| `dev` | Real, Unity-Catalog-facing dev data platform | Long-lived | `sp-terraform-dev` | Contributor on its own RG + Cost Management Contributor on the subscription (`azurerm_consumption_budget_subscription` is a subscription-scoped resource, RG-scoped RBAC can't reach it) |
+| `prod` | Real, Unity-Catalog-facing prod data platform | Long-lived | `sp-terraform-prod` | Same as `dev` |
 | `sandbox` | Disposable infra testing — never registered in Unity Catalog | Created/destroyed freely | `sp-terraform-sandbox` | Contributor on the **whole subscription** (see [ADR-0001](docs/adr/0001-sandbox-subscription-scope.md)) |
 
 **What a clean sandbox run proves, and what it doesn't:** sandbox is
