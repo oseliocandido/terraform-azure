@@ -73,6 +73,8 @@ resource "azurerm_storage_account" "analytics" {
   allow_nested_items_to_be_public = false
   shared_access_key_enabled       = false # AAD auth only -- no account key to leak
 
+  tags = local.common_tags
+
   # Soft delete: a deleted blob/container is retained (not purged) for this
   # many days, recoverable via undelete. 7 days is a light default -- raise
   # it for prod if the real retention need is longer.
@@ -84,8 +86,6 @@ resource "azurerm_storage_account" "analytics" {
       days = 7
     }
   }
-
-  tags = local.common_tags
 
   # No lifecycle { prevent_destroy = true } here on purpose: this is a
   # dev/learning resource meant to be destroyed at the end of a session.
