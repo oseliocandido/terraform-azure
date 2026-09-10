@@ -63,9 +63,9 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
+      - run: terraform init -input=false
       - id: plan
-        run: terraform plan -no-color -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+        run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
       - name: Check for force-replace (destroy+create)
         id: force_replace
@@ -152,12 +152,12 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
+      - run: terraform init -input=false
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-dev
           path: environments/dev
-      - run: terraform apply -lock-timeout=5m tfplan
+      - run: terraform apply -input=false -lock-timeout=5m tfplan
 
   # --- Prod: plan runs right after dev applies successfully; apply is
   # gated behind the "production" GitHub Environment, which you configure
@@ -182,8 +182,8 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
-      - run: terraform plan -no-color -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+      - run: terraform init -input=false
+      - run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
       # Human-readable plan in the job log, for the reviewer approving apply-prod below.
       # (Not a PR comment here, unlike plan-dev -- plan-prod only ever runs
@@ -240,12 +240,12 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
+      - run: terraform init -input=false
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-prod
           path: environments/prod
-      - run: terraform apply -lock-timeout=5m tfplan
+      - run: terraform apply -input=false -lock-timeout=5m tfplan
 
   # --- Sandbox: manual-only, never runs on push/PR. Trigger by hand from the
   # Actions tab ("Run workflow") after a force-replace warning above tells you
@@ -271,10 +271,10 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
+      - run: terraform init -input=false
 
       - if: inputs.action == 'apply'
-        run: terraform apply -no-color -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
+        run: terraform apply -no-color -input=false -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
 
       - if: inputs.action == 'destroy'
-        run: terraform destroy -no-color -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
+        run: terraform destroy -no-color -input=false -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
