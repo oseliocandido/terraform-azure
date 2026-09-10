@@ -36,6 +36,18 @@ jobs:
     defaults:
       run:
         working-directory: environments/dev
+    # Terraform's own azurerm provider needs its own OIDC credentials --
+    # azure/login@v2 below only authenticates the `az` CLI itself, which is
+    # a SEPARATE auth path from what the azurerm PROVIDER uses. Without
+    # these, versions.tf's `use_cli = true` (the default) is the only
+    # method Terraform can see, and it fails: CLI auth is only supported
+    # as a User, not a Service Principal, and azure/login's CLI session IS
+    # a service principal session.
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -90,6 +102,11 @@ jobs:
     defaults:
       run:
         working-directory: environments/dev
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -121,6 +138,11 @@ jobs:
     defaults:
       run:
         working-directory: environments/prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -178,6 +200,11 @@ jobs:
     defaults:
       run:
         working-directory: environments/prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -210,6 +237,11 @@ jobs:
     defaults:
       run:
         working-directory: sandbox
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_SANDBOX }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
 
