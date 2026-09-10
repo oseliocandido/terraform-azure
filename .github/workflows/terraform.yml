@@ -61,6 +61,12 @@ jobs:
       - run: terraform init
       - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
+      # dev auto-applies right after merge with no separate approval gate --
+      # this PR review IS the only human checkpoint dev gets. A dedicated
+      # step gives reviewers a clean, easy-to-find place to read the plan
+      # instead of scrolling through the noisier `terraform plan` log.
+      - run: terraform show tfplan
+
       - name: Check for force-replace (destroy+create)
         run: |
           REPLACEMENTS=$(terraform show -json tfplan | jq -r '
