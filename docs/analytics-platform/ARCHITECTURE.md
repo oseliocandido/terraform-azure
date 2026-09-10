@@ -30,19 +30,98 @@ arguments below are taken from the current `hashicorp/azurerm` and
 
 ## Azure resource architecture
 
-**Context.** The existing foundation (`../ARCHITECTURE.md` §2) already
-gives each environment its own resource group
-(`rg-analytics-dev-neu-01`, `rg-analytics-prod-neu-01`), and a resource
-group already represents one business case per environment — this project
-adds one business case (Sales), not several, which is why the platform
-doesn't need per-department resource groups.
+**Context.** The existing foundation gives each environment its own
+resource group — `rg-analytics-dev-neu-01`, `rg-analytics-prod-neu-01` —
+inside a **single Azure subscription**. This project adds one business
+case (Sales) to each environment's resource group, not a second one.
 
 **Decision.** The Databricks workspace, its access connector, and the new
 storage containers all live inside each environment's *existing* resource
 group — no second resource group per environment.
 
-**Consequences.** RBAC scoping (`sp-terraform-dev`/`-prod` are Contributor
-on exactly one RG each) continues to work unmodified.
+**Consequences.** Isolation between `dev` and `prod` is enforced by
+**Azure RBAC role-assignment scope**: `sp-terraform-dev` and
+`sp-terraform-prod` are each granted the `Contributor` role scoped to
+exactly one resource group — `sp-terraform-dev` cannot touch
+`rg-analytics-prod-neu-01` at all, because its role assignment simply
+doesn't exist at that scope. This is a real, enforced boundary, but it is
+a **narrower** form of isolation than Azure's own official guidance
+recommends for production workloads — see below for why that's the
+deliberate tradeoff here, not an oversight.
+
+---
+
+## Environment isolation: resource group vs. subscription boundary
+
+**Context.** Microsoft's own Cloud Adoption Framework (CAF) — the
+official guidance for structuring Azure environments — recommends
+**separate subscriptions per environment class** (production,
+non-production, sandbox), not resource groups within one shared
+subscription. A subscription boundary is stronger than an RBAC role
+assignment: it carries its own billing, its own Azure Policy scope, and
+its own management-group placement, none of which a resource-group-level
+split provides. CAF explicitly frames resource groups as a tool for
+grouping resources that *share a lifecycle within one environment*
+(e.g. "this storage account and this workspace get deleted together"),
+not as the tool for separating environments from each other.
+
+This project runs on a single Azure subscription — a constraint of the
+account tier this project is built on (a Microsoft Customer Agreement
+account limited to one subscription; Azure's Free Trial tier has the
+same limitation and additionally rejects creating a second subscription
+outright until upgraded to Pay-As-You-Go). There is currently no second
+subscription to put `prod` in, so the CAF-recommended structure below
+isn't available as-is:
+
+```mermaid
+flowchart TB
+    subgraph current["What this project actually has — one subscription"]
+        direction TB
+        subgraph subA["Subscription (single, account-tier-limited)"]
+            rgdevA["rg-analytics-dev-neu-01"]
+            rgprodA["rg-analytics-prod-neu-01"]
+            rgsandboxA["rg-analytics-sandbox-neu-01"]
+        end
+        spdevA["sp-terraform-dev — Contributor"] -->|scoped to| rgdevA
+        spprodA["sp-terraform-prod — Contributor"] -->|scoped to| rgprodA
+    end
+
+    subgraph recommended["What Azure's Cloud Adoption Framework recommends"]
+        direction TB
+        subgraph subProd["Subscription: production"]
+            rgprodB["rg-analytics-prod-neu-01"]
+        end
+        subgraph subNonprod["Subscription: non-production"]
+            rgdevB["rg-analytics-dev-neu-01"]
+            rgsandboxB["rg-analytics-sandbox-neu-01"]
+        end
+        spprodB["sp-terraform-prod — Contributor"] -->|scoped to| subProd
+        spdevB["sp-terraform-dev — Contributor"] -->|scoped to| subNonprod
+    end
+```
+
+**Decision.** Accept resource-group-scoped RBAC as the isolation boundary
+for now, documented explicitly as a deviation from CAF rather than
+presented as equivalent to it. Each environment's Service Principal is
+scoped narrowly (one RG each, not the whole subscription — see
+[`../adr/0001-sandbox-subscription-scope.md`](../adr/0001-sandbox-subscription-scope.md)
+for the one exception, `sp-terraform-sandbox`, and why it currently can't
+follow the same narrow pattern) to keep the isolation as strong as a
+single subscription allows.
+
+**Consequences.** `dev` and `prod` share billing, Azure Policy scope, and
+management-group placement — a subscription-level outage, policy
+change, or quota exhaustion affects both. The failure mode this
+protects against (an identity or workflow bug reaching across
+environments) is still caught, since it depends on RBAC role-assignment
+scope, which is enforced the same way regardless of subscription
+structure — but the failure modes it does **not** protect against
+(cost/quota interference, a subscription-wide policy applied
+unintentionally) would require the CAF-recommended subscription split to
+close. Revisit this decision if/when the account moves off a
+single-subscription tier — at that point, splitting `prod` into its own
+subscription is a configuration change (a new backend key, a new
+provider block pointed at a new subscription ID), not a redesign.
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Retail Sales Analytics Platform
 
-**Document version:** 3.0
+**Document version:** 1.0
 **Status:** Proposed
 **Owner:** Data Engineering
 **Primary consumer:** Sales
@@ -16,16 +16,6 @@
 > CI/CD implementation detail, and **no** data-pipeline/transformation
 > logic (e.g. how change over time is captured in a dataset) — only what
 > the business needs the infrastructure to be capable of.
->
-> **Scope note (v3.0):** narrowed from a multi-department, multi-domain
-> platform to a single use case — Sales — since a resource group already
-> represents one business case per environment (see
-> [ARCHITECTURE.md](ARCHITECTURE.md)); there's no need to model multiple
-> departments to demonstrate that. Inventory, customer, supplier, and
-> product domains, and anything describing *how* historical change is
-> modeled inside a dataset, were removed as out of scope for an
-> infrastructure-focused project — that's data-pipeline design, not
-> infrastructure.
 
 ---
 
