@@ -12,37 +12,137 @@ on:
     paths:
       - "modules/**"
       - "environments/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to do in the sandbox environment"
+        required: true
+        type: choice
+        options: [apply, destroy]
+        default: apply
 
 permissions:
-  id-token: write   # required for azure/login OIDC
+  id-token: write       # required for Terraform's azurerm provider to fetch its own OIDC token
   contents: read
+  pull-requests: write  # required to post/update the plan comment on the PR
 
 env:
-  TF_VERSION: "1.5.0"
+  # Must match (or exceed) the version used locally to write state --
+  # state written by a newer Terraform can use state-schema features an
+  # older binary can't parse ("unsupported checkable object kind" is
+  # exactly this failure mode). Check `terraform version` locally before
+  # bumping this.
+  TF_VERSION: "1.15.8"
+  # Terraform's own recognized CI signal -- strips the "run terraform
+  # apply now" hint text that's meaningless (and confusing) outside an
+  # interactive terminal.
+  TF_IN_AUTOMATION: "true"
 
 jobs:
-  # --- Dev: plan on every PR, apply automatically once merged to main ---
+  # --- Format check: cheapest possible gate, no Azure creds, no init,
+  # checks the whole repo once instead of duplicating per environment. ---
 
-  plan-dev:
+  fmt-check:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: environments/dev
     steps:
       - uses: actions/checkout@v4
-
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
-      - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+      - run: terraform fmt -check -recursive -diff
+
+  # --- Dev: plan on every PR, apply automatically once merged to main ---
+
+  plan-dev:
+    needs: fmt-check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: environments/dev
+    # Terraform's own azurerm provider fetches its own OIDC token directly
+    # (via GitHub's auto-injected ACTIONS_ID_TOKEN_REQUEST_* env vars) using
+    # these ARM_* variables -- no azure/login step needed, since nothing
+    # here runs a raw `az` command.
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init -input=false
+      - run: terraform validate
+      - id: plan
+        run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+
+      - name: Check for force-replace (destroy+create)
+        id: force_replace
+        run: |
+          REPLACEMENTS=$(terraform show -json tfplan | jq -r '
+            .resource_changes[]
+            | select((.change.actions | index("delete")) and (.change.actions | index("create")))
+            | .address
+          ')
+          if [ -n "$REPLACEMENTS" ]; then
+            echo "::warning::This plan force-replaces (destroy+create) the following resources:"
+            echo "$REPLACEMENTS" | while read -r addr; do
+              echo "::warning::  - $addr"
+            done
+            {
+              echo "warning<<EOF"
+              echo ":warning: **This plan force-replaces (destroy+create) the following resources:**"
+              echo '```'
+              echo "$REPLACEMENTS"
+              echo '```'
+              echo "Consider verifying this change manually against \`sandbox\` before merging."
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "No force-replacements in this plan."
+          fi
+
+      - name: Comment plan on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN: ${{ steps.plan.outputs.stdout }}
+          WARNING: ${{ steps.force_replace.outputs.warning }}
+        with:
+          script: |
+            const marker = "<!-- terraform-plan-dev -->";
+            const plan = process.env.PLAN || "";
+            const warning = process.env.WARNING || "";
+            const body = `${marker}
+            #### Terraform Plan — \`dev\` 📖
+
+            ${warning}
+
+            <details><summary>Show plan</summary>
+
+            \`\`\`terraform
+            ${plan}
+            \`\`\`
+
+            </details>`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -56,25 +156,24 @@ jobs:
     defaults:
       run:
         working-directory: environments/dev
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
-
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
+      - run: terraform init -input=false
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-dev
           path: environments/dev
-      - run: terraform apply -lock-timeout=5m tfplan
+      - run: terraform apply -input=false -lock-timeout=5m tfplan
 
   # --- Prod: plan runs right after dev applies successfully; apply is
   # gated behind the "production" GitHub Environment, which you configure
@@ -87,24 +186,52 @@ jobs:
     defaults:
       run:
         working-directory: environments/prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
-
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
-      - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+      - run: terraform init -input=false
+      - run: terraform validate
+      - run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
       # Human-readable plan in the job log, for the reviewer approving apply-prod below.
+      # (Not a PR comment here, unlike plan-dev -- plan-prod only ever runs
+      # post-merge, via needs: apply-dev, so there's no PR left to comment on.)
       - run: terraform show tfplan
+
+      - name: Check for force-replace (destroy+create)
+        run: |
+          REPLACEMENTS=$(terraform show -json tfplan | jq -r '
+            .resource_changes[]
+            | select((.change.actions | index("delete")) and (.change.actions | index("create")))
+            | .address
+          ')
+          if [ -n "$REPLACEMENTS" ]; then
+            echo "::warning::This plan force-replaces (destroy+create) the following resources:"
+            echo "$REPLACEMENTS" | while read -r addr; do
+              echo "::warning::  - $addr"
+            done
+            {
+              echo "### :warning: Force-replace detected"
+              echo ""
+              echo "The following resources will be **destroyed and recreated**, not updated in place:"
+              echo '```'
+              echo "$REPLACEMENTS"
+              echo '```'
+              echo ""
+              echo "Consider verifying this change manually against \`sandbox\` before merging."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No force-replacements in this plan."
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -118,22 +245,55 @@ jobs:
     defaults:
       run:
         working-directory: environments/prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
-
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init
+      - run: terraform init -input=false
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-prod
           path: environments/prod
-      - run: terraform apply -lock-timeout=5m tfplan
+      - run: terraform apply -input=false -lock-timeout=5m tfplan
+
+  # --- Sandbox: manual-only, never runs on push/PR. Trigger by hand from the
+  # Actions tab ("Run workflow") after a force-replace warning above tells you
+  # to verify a change against real Azure before merging. Applies or destroys
+  # depending on the `action` input -- always destroy when you're done, this
+  # is throwaway infra, not a third data environment. ---
+
+  sandbox:
+    needs: fmt-check
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sandbox
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_SANDBOX }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init -input=false
+      - run: terraform validate
+
+      - if: inputs.action == 'apply'
+        run: terraform apply -no-color -input=false -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
+
+      - if: inputs.action == 'destroy'
+        run: terraform destroy -no-color -input=false -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
