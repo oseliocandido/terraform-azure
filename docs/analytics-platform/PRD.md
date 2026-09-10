@@ -186,7 +186,19 @@ becomes necessary to provision the initial platform.
 
 ## Sales
 
-Requires the analytical platform to support:
+Two distinct access needs exist within Sales, not one uniform level —
+this distinction is what later drives separate access tiers at the
+architecture level, not just a security-mechanism detail:
+
+* **Report consumers** — need curated, business-ready revenue and
+  performance figures (store-level, channel-level, trend-over-time).
+  Read-only; never need to see intermediate or raw data to do their job.
+* **Analysts** — need everything report consumers need, plus the ability
+  to drill a reported number back toward its more granular inputs when
+  investigating an anomaly or answering an ad hoc question. Still
+  read-only; never modify data.
+
+Both require:
 
 * Revenue analysis.
 * Sales-performance analysis.
@@ -223,10 +235,18 @@ either source system's schema.
 
 The platform should support a logical separation between different stages
 of sales data as it moves from raw source extracts toward business-ready,
-reportable datasets.
+reportable datasets. This progression — raw, refined, and business-ready
+stages — is commonly known in the industry as **medallion architecture**
+(bronze/silver/gold), and this document uses that vocabulary elsewhere
+(e.g. [§6](#6-users-and-stakeholders)'s report-consumer/analyst
+distinction maps onto which of these stages each role can see) so a
+reader moving between this document and
+[ARCHITECTURE.md](ARCHITECTURE.md) isn't working from two different
+vocabularies for the same concept.
 
-The exact storage/organizational implementation of these stages is an
-architecture decision — see
+The exact storage/organizational implementation of these stages —
+including how many stages, and their concrete names — is an architecture
+decision, not fixed by this requirement — see
 [ARCHITECTURE.md](ARCHITECTURE.md#analytical-data-layering).
 
 The infrastructure must provide the storage and analytical capabilities
@@ -325,7 +345,16 @@ The platform should provide durable analytical storage and infrastructure
 that can be recreated from source-controlled definitions.
 
 The underlying infrastructure should not depend on manually configured
-resources that cannot be reproduced.
+resources that cannot be reproduced. This does not prohibit a small
+number of one-time, account- or tenant-level objects that Infrastructure
+as Code fundamentally cannot create for itself (an identity a pipeline
+authenticates as cannot be created by that same pipeline's own run) —
+provided each is created through a documented, repeatable procedure
+rather than undocumented manual configuration. This platform already
+follows that pattern for its App Registrations, and extends the same
+exception to any account-level Databricks object a future architecture
+phase introduces (see [ARCHITECTURE.md](ARCHITECTURE.md) for which
+objects, if any, require this).
 
 ---
 
