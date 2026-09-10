@@ -12,6 +12,7 @@ on:
     paths:
       - "modules/**"
       - "environments/**"
+      - ".github/workflows/terraform.yml"
   workflow_dispatch:
     inputs:
       action:
