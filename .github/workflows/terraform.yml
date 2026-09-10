@@ -40,9 +40,24 @@ env:
   TF_IN_AUTOMATION: "true"
 
 jobs:
+  # --- Format check: cheapest possible gate, no Azure creds, no init,
+  # checks the whole repo once instead of duplicating per environment. ---
+
+  fmt-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform fmt -check -recursive -diff
+
   # --- Dev: plan on every PR, apply automatically once merged to main ---
 
   plan-dev:
+    needs: fmt-check
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -64,6 +79,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - run: terraform init -input=false
+      - run: terraform validate
       - id: plan
         run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
@@ -183,6 +199,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - run: terraform init -input=false
+      - run: terraform validate
       - run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
       # Human-readable plan in the job log, for the reviewer approving apply-prod below.
@@ -254,6 +271,7 @@ jobs:
   # is throwaway infra, not a third data environment. ---
 
   sandbox:
+    needs: fmt-check
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
@@ -272,6 +290,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - run: terraform init -input=false
+      - run: terraform validate
 
       - if: inputs.action == 'apply'
         run: terraform apply -no-color -input=false -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
