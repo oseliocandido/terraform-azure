@@ -1,6 +1,6 @@
-resource "azurerm_consumption_budget_subscription" "learning_guard" {
-  name            = "guard-learning-subscription"
-  subscription_id = "/subscriptions/${var.subscription_id}"
+resource "azurerm_consumption_budget_resource_group" "learning_guard" {
+  name              = "guard-learning-${var.environment}"
+  resource_group_id = var.resource_group_id
 
   amount     = var.budget_amount
   time_grain = "Monthly"

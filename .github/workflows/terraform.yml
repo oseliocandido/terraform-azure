@@ -83,30 +83,37 @@ jobs:
       - id: plan
         run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
-      - name: Check for force-replace (destroy+create)
+      - name: Check for destructive changes (any delete, same-resource replace or not)
         id: force_replace
         run: |
-          REPLACEMENTS=$(terraform show -json tfplan | jq -r '
+          # Catches BOTH: a same-resource force-replace (one resource_changes
+          # entry with delete+create together) AND a resource-type swap (an
+          # OLD address destroyed + a DIFFERENT NEW address created -- two
+          # separate entries, each with just one action). The first version
+          # of this check only matched the delete+create-together case and
+          # missed a real destroy when modules/budget_alert switched resource
+          # types -- any "delete" at all is worth a human's attention.
+          DELETIONS=$(terraform show -json tfplan | jq -r '
             .resource_changes[]
-            | select((.change.actions | index("delete")) and (.change.actions | index("create")))
+            | select(.change.actions | index("delete"))
             | .address
           ')
-          if [ -n "$REPLACEMENTS" ]; then
-            echo "::warning::This plan force-replaces (destroy+create) the following resources:"
-            echo "$REPLACEMENTS" | while read -r addr; do
+          if [ -n "$DELETIONS" ]; then
+            echo "::warning::This plan destroys the following resources:"
+            echo "$DELETIONS" | while read -r addr; do
               echo "::warning::  - $addr"
             done
             {
               echo "warning<<EOF"
-              echo ":warning: **This plan force-replaces (destroy+create) the following resources:**"
+              echo ":warning: **This plan destroys the following resources** (in place, replaced, or a resource-type change):"
               echo '```'
-              echo "$REPLACEMENTS"
+              echo "$DELETIONS"
               echo '```'
               echo "Consider verifying this change manually against \`sandbox\` before merging."
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
-            echo "No force-replacements in this plan."
+            echo "No destructive changes in this plan."
           fi
 
       - name: Comment plan on PR
@@ -207,30 +214,32 @@ jobs:
       # post-merge, via needs: apply-dev, so there's no PR left to comment on.)
       - run: terraform show tfplan
 
-      - name: Check for force-replace (destroy+create)
+      - name: Check for destructive changes (any delete, same-resource replace or not)
         run: |
-          REPLACEMENTS=$(terraform show -json tfplan | jq -r '
+          # See plan-dev's identical step for why this matches any "delete",
+          # not just a same-resource delete+create pair.
+          DELETIONS=$(terraform show -json tfplan | jq -r '
             .resource_changes[]
-            | select((.change.actions | index("delete")) and (.change.actions | index("create")))
+            | select(.change.actions | index("delete"))
             | .address
           ')
-          if [ -n "$REPLACEMENTS" ]; then
-            echo "::warning::This plan force-replaces (destroy+create) the following resources:"
-            echo "$REPLACEMENTS" | while read -r addr; do
+          if [ -n "$DELETIONS" ]; then
+            echo "::warning::This plan destroys the following resources:"
+            echo "$DELETIONS" | while read -r addr; do
               echo "::warning::  - $addr"
             done
             {
-              echo "### :warning: Force-replace detected"
+              echo "### :warning: Destructive change detected"
               echo ""
-              echo "The following resources will be **destroyed and recreated**, not updated in place:"
+              echo "The following resources will be **destroyed** (in place, replaced, or a resource-type change):"
               echo '```'
-              echo "$REPLACEMENTS"
+              echo "$DELETIONS"
               echo '```'
               echo ""
               echo "Consider verifying this change manually against \`sandbox\` before merging."
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No force-replacements in this plan."
+            echo "No destructive changes in this plan."
           fi
 
       - uses: actions/upload-artifact@v4

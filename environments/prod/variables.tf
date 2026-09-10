@@ -20,7 +20,7 @@ variable "location" {
 
 variable "instance" {
   type        = number
-  description = "Instance number, for when more than one copy of this workload exists side by side. No default -- always set explicitly in common.tfvars."
+  description = "Instance number, for when more than one copy of this workload exists side by side. No default -- always set explicitly in terraform.tfvars."
 }
 
 variable "notify_email" {
@@ -31,4 +31,10 @@ variable "notify_email" {
 variable "budget_amount" {
   type        = number
   description = "Monthly budget cap in the subscription's billing currency."
+}
+
+variable "storage_account_suffix" {
+  type        = string
+  default     = ""
+  description = "Escape hatch for a global Azure storage-account-name collision. Empty by default -- only set this if the generated name is already taken by an unrelated Azure customer."
 }
