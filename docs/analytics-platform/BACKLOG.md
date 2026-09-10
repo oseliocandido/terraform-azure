@@ -23,6 +23,12 @@ needs `CAN_ATTACH_TO` on *some* compute resource in the `prod` workspace
 to run a query at all, and nothing in this repo currently provisions or
 scopes that resource.
 
+**Also blocking this:** no capacity/throughput sizing study exists yet —
+PRD.md §3 deliberately no longer states a store-count or
+transactions-per-day target, since no analysis backs those numbers. Any
+future cluster-sizing decision needs that study done first, not a
+retrofit against a figure nobody validated.
+
 **What needs deciding, before this becomes an ARCHITECTURE.md section:**
 
 - Serverless SQL warehouses (simplest — fully managed, always
