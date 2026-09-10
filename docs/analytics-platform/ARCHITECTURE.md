@@ -401,40 +401,88 @@ PRD §11's "Production access should be more restricted than Development
 access" an enforceable, differentiated grant instead of a sentence nobody
 checks —
 
+**Grant scope is not uniform across these four principals, and that's
+deliberate, not an inconsistency.** Unity Catalog privileges inherit
+*downward* — a privilege granted at the catalog level applies to every
+schema beneath it, present and future. That's exactly right for
+`grp-sales-data-engineers-<env>` and `sp-terraform-<env>`, who legitimately
+need every layer. It's exactly *wrong* for `grp-sales-stakeholders-<env>`
+and `grp-sales-analysts-<env>`, whose entire purpose is to see a **subset**
+of layers — a catalog-level grant for them would silently hand out
+`bronze`/`silver` access the table above says they shouldn't have. So the
+two broad principals get catalog-scoped grants; the two narrow ones get
+grants scoped to exactly the schemas they're allowed to see, plus a
+catalog-level `USE_CATALOG` (which only lets a principal *address* the
+catalog by name — it exposes nothing on its own):
+
 ```hcl
 resource "databricks_grants" "dev_catalog" {
   catalog = databricks_catalog.sales.name # "dev"
 
+  # USE_CATALOG only — lets these two principals reference dev.<schema>.<table>
+  # at all; grants no visibility into any schema by itself
+  grant {
+    principal  = "grp-sales-stakeholders-dev"
+    privileges = ["USE_CATALOG"]
+  }
+  grant {
+    principal  = "grp-sales-analysts-dev"
+    privileges = ["USE_CATALOG"]
+  }
+
+  # Catalog-scoped on purpose — these two need every layer, so inheriting
+  # to all current and future schemas is exactly the intended behavior
   grant {
     principal  = "grp-sales-data-engineers-dev"
     privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE", "DELETE"]
   }
-  # grp-sales-analysts-dev, grp-sales-stakeholders-dev, sp-terraform-dev follow the table above
+  grant {
+    principal  = "sp-terraform-dev"
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE"]
+  }
 }
 
-resource "databricks_grants" "prod_catalog" {
-  catalog = databricks_catalog.sales.name # "prod"
+# Layer access for the two narrow-scope groups is granted per schema,
+# not inherited from the catalog block above
+resource "databricks_grants" "dev_gold_schema" {
+  schema = databricks_schema.gold.id
 
   grant {
-    principal  = "grp-sales-data-engineers-prod"
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE"] # no DELETE in prod
+    principal  = "grp-sales-stakeholders-dev"
+    privileges = ["USE_SCHEMA", "SELECT"]
   }
-  # grp-sales-analysts-prod, grp-sales-stakeholders-prod, sp-terraform-prod follow the table above
+  grant {
+    principal  = "grp-sales-analysts-dev"
+    privileges = ["USE_SCHEMA", "SELECT"]
+  }
 }
+
+resource "databricks_grants" "dev_silver_schema" {
+  schema = databricks_schema.silver.id
+
+  grant {
+    principal  = "grp-sales-analysts-dev" # stakeholders excluded — gold only
+    privileges = ["USE_SCHEMA", "SELECT"]
+  }
+}
+# prod_catalog / prod_gold_schema / prod_silver_schema follow the same
+# shape, with grp-sales-data-engineers-prod's grant omitting DELETE
 ```
 
-**Consequences.** Because Unity Catalog privileges inherit downward
-(catalog → schema → table, present *and future* — `../ARCHITECTURE.md`'s
-"future-phase" framing applies directly here), granting once at catalog
-level covers every table the pipeline creates later; nobody has to remember
-to re-grant per table. A person moving from Development to a
-Sales-analyst role in Production is an Entra ID group-membership change,
-not a Terraform change — but a person's *capabilities* differ by
-environment because the groups themselves, not just membership, differ.
-This is the Unity Catalog-level analogue to the Azure RBAC role
-assignments `../adr/0002-*` already documents for Terraform's own Azure
-access — two independent least-privilege layers, neither a substitute for
-the other.
+**Consequences.** Downward inheritance is used *selectively*: it's what
+makes granting `grp-sales-data-engineers-<env>` and `sp-terraform-<env>`
+once at catalog level enough to cover every table a future pipeline
+creates, but it's exactly the mechanism that would break the
+stakeholder/analyst layer split if applied the same way to them — so
+their access is built from schema-level grants instead, and `bronze`
+simply never appears in either principal's grant list. A person moving
+from Development to a Sales-analyst role in Production is an Entra ID
+group-membership change, not a Terraform change — but a person's
+*capabilities* differ by environment because the groups themselves, not
+just membership, differ. This is the Unity Catalog-level analogue to the
+Azure RBAC role assignments `../adr/0002-*` already documents for
+Terraform's own Azure access — two independent least-privilege layers,
+neither a substitute for the other.
 
 ---
 

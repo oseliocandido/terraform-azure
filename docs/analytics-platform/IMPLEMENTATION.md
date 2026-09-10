@@ -141,8 +141,13 @@ Outputs: `workspace_id`, `workspace_url`, `storage_credential_name`.
 
 Inputs: `environment`, `metastore_id`, `bronze_storage_root`,
 `silver_storage_root`, `gold_storage_root` (the `abfss://` URLs from
-`modules/analytics_group`'s containers), `depends_on` the workspace's
-metastore assignment.
+`modules/analytics_group`'s containers), `ci_service_principal_name`
+(`sp-terraform-dev` / `sp-terraform-prod`), `depends_on` the workspace's
+metastore assignment. The four `grp-sales-*-<env>` group names aren't
+separate inputs — they're derived from `var.environment` inside the
+module, following the same naming convention as everything else here;
+group *existence* and membership are provisioned outside Terraform (see
+[BACKLOG.md](BACKLOG.md#pipeline-phase-bootstrap-databricks-asset-bundles)).
 
 ```hcl
 resource "databricks_catalog" "sales" {
@@ -172,14 +177,56 @@ resource "databricks_schema" "gold" {
 resource "databricks_grants" "sales_catalog" {
   catalog = databricks_catalog.sales.name
 
+  # USE_CATALOG only — lets these two address the catalog; grants no
+  # schema visibility by itself. Layer access for them comes from the
+  # schema-scoped grants below, not from this catalog-level block.
   grant {
-    principal  = "sales-analysts"
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT"]
+    principal  = "grp-sales-stakeholders-${var.environment}"
+    privileges = ["USE_CATALOG"]
+  }
+  grant {
+    principal  = "grp-sales-analysts-${var.environment}"
+    privileges = ["USE_CATALOG"]
   }
 
+  # Catalog-scoped on purpose: these two need every layer, so inheriting
+  # to all current and future schemas is the intended behavior
+  grant {
+    principal = "grp-sales-data-engineers-${var.environment}"
+    privileges = concat(
+      ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE"],
+      var.environment == "dev" ? ["DELETE"] : [] # prod: no DELETE
+    )
+  }
   grant {
     principal  = var.ci_service_principal_name # sp-terraform-dev / sp-terraform-prod
     privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE"]
+  }
+}
+
+# Layer access for the two narrow-scope groups is granted per schema, not
+# inherited from the catalog-level block above — a catalog-level SELECT
+# would silently hand stakeholders/analysts bronze access too, since
+# Unity Catalog privileges inherit downward to every schema in a catalog.
+resource "databricks_grants" "gold_schema" {
+  schema = databricks_schema.gold.id
+
+  grant {
+    principal  = "grp-sales-stakeholders-${var.environment}"
+    privileges = ["USE_SCHEMA", "SELECT"]
+  }
+  grant {
+    principal  = "grp-sales-analysts-${var.environment}"
+    privileges = ["USE_SCHEMA", "SELECT"]
+  }
+}
+
+resource "databricks_grants" "silver_schema" {
+  schema = databricks_schema.silver.id
+
+  grant {
+    principal  = "grp-sales-analysts-${var.environment}" # stakeholders excluded — gold only
+    privileges = ["USE_SCHEMA", "SELECT"]
   }
 }
 ```
@@ -263,13 +310,21 @@ Follows the existing pattern
 `stanalytics<env><region><instance>`):
 
 ```text
-dbw-analytics-dev-neu-01      # Databricks workspace, dev
-dbac-analytics-dev-neu-01     # Databricks access connector, dev
-cred-analytics-dev            # Storage credential, dev
-loc-analytics-dev-bronze      # External location, dev bronze
-dev                           # Unity Catalog catalog name
-bronze / silver / gold        # Unity Catalog schema names (per catalog)
+dbw-analytics-dev-neu-01           # Databricks workspace, dev
+dbac-analytics-dev-neu-01          # Databricks access connector, dev
+cred-analytics-dev                 # Storage credential, dev
+loc-analytics-dev-bronze           # External location, dev bronze
+dev                                # Unity Catalog catalog name
+bronze / silver / gold             # Unity Catalog schema names (per catalog)
+grp-sales-stakeholders-dev         # Group: Sales report consumers, dev
+grp-sales-analysts-dev             # Group: Sales analysts, dev
+grp-sales-data-engineers-dev       # Group: Data Engineering, dev
 ```
+
+(`-prod` variants follow the same shape. Group naming/grants are defined
+in [ARCHITECTURE.md's "Identity model"](ARCHITECTURE.md#identity-model-groups-not-custom-roles);
+the groups themselves are provisioned in Entra ID, outside Terraform —
+see [Bootstrap](#bootstrap) below.)
 
 ## Bootstrap
 
@@ -285,6 +340,13 @@ pipeline. Its resulting `metastore_id` is passed into each environment as
 a plain (non-sensitive) `terraform.tfvars` value. Per-workspace metastore
 *assignment* (linking a workspace to that already-existing metastore) is
 what `modules/databricks_workspace` manages in Terraform.
+
+The six `grp-sales-*-<env>` groups the grants above reference need the
+same treatment: created in Entra ID and synced to the Databricks account
+via SCIM before the first `apply` that references them, since
+`databricks_grants` referencing a principal that doesn't exist yet fails
+the apply. Not yet actioned — tracked in
+[BACKLOG.md](BACKLOG.md#pipeline-phase-bootstrap-databricks-asset-bundles).
 
 ## Open questions to resolve before implementation starts
 
