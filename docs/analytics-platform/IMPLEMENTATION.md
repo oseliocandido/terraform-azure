@@ -348,20 +348,77 @@ via SCIM before the first `apply` that references them, since
 the apply. Not yet actioned — tracked in
 [BACKLOG.md](BACKLOG.md#pipeline-phase-bootstrap-databricks-asset-bundles).
 
-## Open questions to resolve before implementation starts
+## Resolved: provider authentication and bootstrap order
 
-- Exact `databricks` provider authentication block for Azure-native/OIDC
-  auth against a freshly-created workspace within the same `apply` —
-  needs a spike against the provider's current docs/examples; may require
-  a two-stage apply (workspace first, then Unity Catalog resources) if the
-  provider can't resolve `workspace_url` and authenticate in one pass.
-- Whether `sp-terraform-dev`/`sp-terraform-prod`'s existing Azure
-  Contributor role (RG-scoped) is sufficient to create
-  `azurerm_databricks_workspace` and `azurerm_databricks_access_connector`,
-  or whether an additional narrow role grant is needed — verify via a
-  `sandbox` dry run before touching `dev`, consistent with how
-  force-replace changes are already handled in this repo.
-- Confirm the Unity Catalog metastore's region against the Databricks
-  account's current state before writing the bootstrap step into
-  `docs/azure-setup-commands.sh` (a metastore's region is fixed at
-  creation and constrains which workspaces can be assigned to it).
+**A two-stage apply is required, not just possible — this is a hard
+Terraform constraint, not a Databricks/OIDC-specific one.** Terraform's
+own documentation states that a `provider` block can only reference input
+variables or resource *arguments* written directly in configuration —
+never a computed resource *attribute* — because provider configuration
+must be fully resolved before Terraform can build a plan, while resource
+attributes are only known after apply. `module.databricks_workspace.workspace_url`
+is a computed output, so referencing it in
+`provider "databricks" { host = ... }` in the same `apply` that first
+creates that workspace is invalid by construction, regardless of
+authentication method.
+
+**Concrete implication for this spec:** on a brand-new environment's
+*first-ever* apply, the `databricks` provider block cannot be configured
+yet, which means none of the `databricks`-provider resources inside
+`modules/databricks_workspace` (`databricks_storage_credential`,
+`databricks_external_location`, `databricks_metastore_assignment`) or
+`modules/unity_catalog` can be created in that same apply. Bootstrap
+order for a fresh environment:
+
+1. First apply, scoped to the `azurerm`-provider resources only —
+   `azurerm_databricks_workspace` and `azurerm_databricks_access_connector`
+   (`terraform apply -target=module.databricks_workspace.azurerm_databricks_workspace.sales`,
+   or equivalent). `workspace_url` is now a known value in state.
+2. Second apply, normal (no `-target`) — the `databricks` provider block
+   now resolves `host = module.databricks_workspace.workspace_url` from
+   state rather than needing it computed fresh, and every
+   `databricks`-provider resource applies normally.
+
+Every *subsequent* apply against an already-bootstrapped environment is a
+single normal apply — this two-stage sequence is a one-time cost per
+environment (`dev` once, `prod` once), not a standing operational
+requirement, and mirrors the same bootstrap-circularity shape this repo
+already documents for App Registrations and the Unity Catalog metastore
+itself.
+
+**Provider authentication block, once past bootstrap** (per current
+`databricks/databricks` provider docs — no `auth_type` needed when
+running under GitHub Actions with the same federated-credential pattern
+already used for the `azurerm` provider):
+
+```hcl
+provider "databricks" {
+  host            = module.databricks_workspace.workspace_url
+  azure_client_id = var.arm_client_id # same ARM_CLIENT_ID already used by azurerm
+  azure_tenant_id = var.arm_tenant_id
+}
+```
+
+**Resolved: RG-scoped Contributor is sufficient.** Microsoft's own docs
+confirm Contributor-or-Owner at resource-group scope is what's required
+to create an Access Connector; the same holds for the workspace itself.
+One dependency, not a blocker: the `Microsoft.Databricks` resource
+provider must be registered on the subscription before either resource
+can be created — a one-time, subscription-level action, but the
+`*/register/action` permission it needs is already included in
+Contributor's wildcard, so `sp-terraform-dev`/`-prod` can self-register it
+on first use if it isn't registered yet. No additional role grant needed.
+Still worth a `sandbox` dry run before touching `dev` — confirms this in
+practice, not just on paper — but the open question itself is resolved.
+
+## Still open — requires this project's real Databricks account state
+
+- **Unity Catalog metastore region.** Confirmed: a metastore can only be
+  assigned to workspaces in its *exact same region* — a workspace in a
+  different region simply cannot attach to it. This repo's workspaces are
+  planned for North Europe (`-neu-01`), so the metastore must be created
+  in North Europe specifically. Whether one already exists (and in which
+  region) can only be checked against the real account —
+  `databricks account metastores list` via the account-level CLI, or the
+  account console — not resolved by documentation research. Confirm this
+  before writing the bootstrap step into `docs/azure-setup-commands.sh`.
