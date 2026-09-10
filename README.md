@@ -143,7 +143,8 @@ code-test/
   move this into a separate, human-applied `bootstrap/` Terraform root using
   the `azuread` provider.
 - The subscription-wide `Cost Management Contributor` grant on
-  `sp-terraform-dev`/`sp-terraform-prod` predates the resource-group-scoped
+  `sp-terraform-dev`/`sp-terraform-prod` predated the resource-group-scoped
   budget refactor (see
   [ADR-0002](docs/adr/0002-pipeline-and-identity-architecture.md#budget-scope))
-  and is no longer required — not yet revoked.
+  and has since been revoked — each SP's existing RG-scoped Contributor
+  role already covers everything it was granted for.
