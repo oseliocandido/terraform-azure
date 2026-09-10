@@ -274,36 +274,149 @@ data.
 
 ---
 
-## RBAC / least privilege: `databricks_grants`
+## Identity model: groups, not custom roles
 
-**Context.** PRD §11 requires least-privilege access and stricter
-Production restrictions than Development.
+**Context.** PRD §6 names two distinct stakeholder groups (Sales — read
+access for reporting; Data Engineering — builds and operates the platform)
+and PRD §11 requires least-privilege, environment-differentiated access.
+Unity Catalog has **no first-class "role" object** distinct from a group
+(unlike, e.g., Snowflake's `ROLE`) — grants attach directly to a principal,
+and a principal is a user, a service principal, or a group. A "custom
+role" in Unity Catalog is therefore not a separate resource to create; it
+*is* a named group plus the fixed set of grants applied to that group.
 
-**Decision.** Access to each catalog is granted explicitly via
-`databricks_grants`, not inherited implicitly:
+**Decision.** Three account-level groups per environment (six total,
+`dev`/`prod` never share a group — see "Groups are environment-scoped,"
+below), sourced from Entra ID and synced to the Databricks account via
+SCIM (group *membership* — who's actually in `grp-sales-analysts-prod` —
+is an Entra ID/HR concern, not something Terraform manages; Terraform only
+references the group name as a grant principal, the same externally-
+bootstrapped-identity pattern already used for `sp-terraform-*`):
+
+| Group | Represents (PRD §6) | Layers | Privileges |
+|---|---|---|---|
+| `grp-sales-stakeholders-<env>` | Sales — report consumers | `gold` only | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
+| `grp-sales-analysts-<env>` | Sales — ad hoc/drill-down analysis | `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
+| `grp-sales-data-engineers-<env>` | Data Engineering — builds/operates pipelines | `bronze`, `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `INSERT`, `UPDATE` (+ `DELETE` in `dev` only — see below) |
+| `sp-terraform-<env>` (existing) | CI/CD automation, not a human role | all | `USE_CATALOG`, `USE_SCHEMA`, `CREATE_SCHEMA`, `CREATE_TABLE` |
+
+`grp-sales-data-engineers-*` uses the fine-grained DML privileges
+(`INSERT`/`UPDATE`/`DELETE`, least-privilege children of the composite
+`MODIFY` privilege, GA on current Databricks Runtime) instead of blanket
+`MODIFY` — a pipeline identity that only ever appends new bronze data
+doesn't need delete rights just because it needs write rights.
+
+Stakeholders don't get `bronze`/`silver` access at all — they're raw and
+intermediate layers, not meant for direct business consumption; PRD §7's
+"analytical datasets should be designed around business questions, not
+either source system's schema" is exactly what `gold` exists to provide.
+Analysts sit one step wider than stakeholders (add `silver`, for
+investigating a number back toward its inputs) but still never touch
+`bronze` directly, and never get write access — only
+`grp-sales-data-engineers-*` and `sp-terraform-*` write anything.
+
+**Groups are environment-scoped — no group spans `dev` and `prod`.**
+`grp-sales-data-engineers-dev` and `grp-sales-data-engineers-prod` are two
+separate groups, not one group granted on two catalogs: this is what makes
+PRD §11's "Production access should be more restricted than Development
+access" an enforceable, differentiated grant instead of a sentence nobody
+checks —
 
 ```hcl
+resource "databricks_grants" "dev_catalog" {
+  catalog = databricks_catalog.sales.name # "dev"
+
+  grant {
+    principal  = "grp-sales-data-engineers-dev"
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE", "DELETE"]
+  }
+  # grp-sales-analysts-dev, grp-sales-stakeholders-dev, sp-terraform-dev follow the table above
+}
+
 resource "databricks_grants" "prod_catalog" {
-  catalog = databricks_catalog.sales.name
+  catalog = databricks_catalog.sales.name # "prod"
 
   grant {
-    principal  = "sales-analysts"   # an existing Entra ID group
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT"]
+    principal  = "grp-sales-data-engineers-prod"
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE"] # no DELETE in prod
   }
-
-  grant {
-    principal  = "sp-terraform-prod"
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE"]
-  }
+  # grp-sales-analysts-prod, grp-sales-stakeholders-prod, sp-terraform-prod follow the table above
 }
 ```
 
-**Consequences.** `sales-analysts` gets read-only access, scoped to one
-environment's catalog; the CI/CD identity gets what it needs to manage
-schema-level objects but nothing broader. This is the Unity Catalog-level
-analogue to the Azure RBAC role assignments `../adr/0002-*` already
-documents for Terraform's own Azure access — two independent least-
-privilege layers, neither a substitute for the other.
+**Consequences.** Because Unity Catalog privileges inherit downward
+(catalog → schema → table, present *and future* — `../ARCHITECTURE.md`'s
+"future-phase" framing applies directly here), granting once at catalog
+level covers every table the pipeline creates later; nobody has to remember
+to re-grant per table. A person moving from Development to a
+Sales-analyst role in Production is an Entra ID group-membership change,
+not a Terraform change — but a person's *capabilities* differ by
+environment because the groups themselves, not just membership, differ.
+This is the Unity Catalog-level analogue to the Azure RBAC role
+assignments `../adr/0002-*` already documents for Terraform's own Azure
+access — two independent least-privilege layers, neither a substitute for
+the other.
+
+---
+
+## Terraform / Databricks Asset Bundles ownership boundary
+
+**Context.** Databricks Asset Bundles (DABs) are the standard tool for
+deploying *workspace* artifacts — jobs, pipelines, notebooks — once a
+future phase actually builds the sales pipeline this platform's
+infrastructure supports. DABs and Terraform can both technically express
+Unity Catalog grants and workspace-object permissions, and `databricks_grants`
+is **authoritative**: every Terraform apply overwrites the *entire* grant
+set on a securable, silently reverting anything changed out-of-band —
+including a grant a DAB `databricks.yml` declared. Separately, `bundle
+validate` itself warns when a bundle's own `permissions:` block (which
+controls `CAN_MANAGE` on the *job/pipeline object*, not on data — a
+different Unity Catalog concept, more workspace-ACL-like) doesn't
+explicitly include the deploying identity, since DAB has no visibility
+into Terraform-side RBAC and can't reconcile against it. A third
+overlap point: DABs also has its own first-class `volumes` resource type
+(`resources: volumes:` in `databricks.yml`) — the bronze external volume
+this platform needs for Auto Loader/file-arrival ingestion (see "Unity
+Catalog: external locations" above) could, in principle, be declared by
+either tool.
+
+**Decision.** Three independent surfaces, one owner each, never
+overlapping:
+
+- **Unity Catalog data grants** (`databricks_grants` on catalogs, schemas,
+  tables) — **Terraform-owned only.** A future pipeline's `databricks.yml`
+  must never declare a `grant`/permissions block targeting a catalog or
+  schema this repo already provisions.
+- **Shared Unity Catalog objects that wrap infrastructure this repo
+  provisions** — catalogs, schemas, external locations, and the bronze
+  ingestion **volume** — **Terraform-owned only**, the same rule as
+  grants, for the same reason: these sit directly on top of the storage
+  account/containers Terraform already creates, and any future pipeline
+  needs to reference *the same* volume by name rather than each defining
+  its own competing copy. A future `databricks.yml` references
+  `sales_bronze_landing` (or whatever this repo names it) as an
+  already-existing volume, never declares its own `resources: volumes:`
+  entry for it.
+- **Workspace object permissions** (who can view/run/manage a specific
+  job or pipeline — DAB's own `permissions:` block, or the Terraform
+  `databricks_permissions` resource) — **DAB-owned**, since that's scoped
+  to artifacts DABs itself deploys; Terraform never creates jobs/pipelines
+  in this design, so there's nothing for it to compete over here.
+
+**Consequences.** The dividing line in every case is the same test: an
+object is Terraform's if it's shared, foundational, and would need to
+outlive or be referenced by more than one future pipeline; it's DAB's if
+it's specific to one pipeline's own implementation (its jobs, its
+notebooks, a scratch/working volume only that pipeline uses for its own
+checkpoints or temp state — as opposed to the shared landing volume). When
+the pipeline phase starts, its `databricks.yml` should reference this
+platform's catalogs/schemas/volumes by **name only** (as objects that
+already exist, created by this repo) and must not attempt to declare,
+grant, or revoke anything on them — and its own `permissions:` block
+should explicitly list the deploying identity (its own CI/CD service
+principal, likely a *different* SP than `sp-terraform-*`, scoped to the
+workspace rather than to Azure resources) to avoid exactly the `bundle
+validate` warning this decision was prompted by.
 
 ---
 
