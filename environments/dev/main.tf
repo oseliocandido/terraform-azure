@@ -11,8 +11,8 @@ module "analytics_group" {
 module "budget_alert" {
   source = "../../modules/budget_alert"
 
-  subscription_id = var.subscription_id
-  environment     = var.environment
-  notify_email    = var.notify_email
-  budget_amount   = var.budget_amount
+  resource_group_id = module.analytics_group.resource_group_id
+  environment       = var.environment
+  notify_email      = var.notify_email
+  budget_amount     = var.budget_amount
 }
