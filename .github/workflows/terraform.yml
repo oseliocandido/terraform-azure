@@ -23,8 +23,9 @@ on:
         default: apply
 
 permissions:
-  id-token: write   # required for Terraform's azurerm provider to fetch its own OIDC token
+  id-token: write       # required for Terraform's azurerm provider to fetch its own OIDC token
   contents: read
+  pull-requests: write  # required to post/update the plan comment on the PR
 
 env:
   # Must match (or exceed) the version used locally to write state --
@@ -33,6 +34,10 @@ env:
   # exactly this failure mode). Check `terraform version` locally before
   # bumping this.
   TF_VERSION: "1.15.8"
+  # Terraform's own recognized CI signal -- strips the "run terraform
+  # apply now" hint text that's meaningless (and confusing) outside an
+  # interactive terminal.
+  TF_IN_AUTOMATION: "true"
 
 jobs:
   # --- Dev: plan on every PR, apply automatically once merged to main ---
@@ -59,15 +64,11 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - run: terraform init
-      - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
-
-      # dev auto-applies right after merge with no separate approval gate --
-      # this PR review IS the only human checkpoint dev gets. A dedicated
-      # step gives reviewers a clean, easy-to-find place to read the plan
-      # instead of scrolling through the noisier `terraform plan` log.
-      - run: terraform show tfplan
+      - id: plan
+        run: terraform plan -no-color -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
       - name: Check for force-replace (destroy+create)
+        id: force_replace
         run: |
           REPLACEMENTS=$(terraform show -json tfplan | jq -r '
             .resource_changes[]
@@ -80,18 +81,52 @@ jobs:
               echo "::warning::  - $addr"
             done
             {
-              echo "### :warning: Force-replace detected"
-              echo ""
-              echo "The following resources will be **destroyed and recreated**, not updated in place:"
+              echo "warning<<EOF"
+              echo ":warning: **This plan force-replaces (destroy+create) the following resources:**"
               echo '```'
               echo "$REPLACEMENTS"
               echo '```'
-              echo ""
               echo "Consider verifying this change manually against \`sandbox\` before merging."
-            } >> "$GITHUB_STEP_SUMMARY"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "No force-replacements in this plan."
           fi
+
+      - name: Comment plan on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN: ${{ steps.plan.outputs.stdout }}
+          WARNING: ${{ steps.force_replace.outputs.warning }}
+        with:
+          script: |
+            const marker = "<!-- terraform-plan-dev -->";
+            const plan = process.env.PLAN || "";
+            const warning = process.env.WARNING || "";
+            const body = `${marker}
+            #### Terraform Plan — \`dev\` 📖
+
+            ${warning}
+
+            <details><summary>Show plan</summary>
+
+            \`\`\`terraform
+            ${plan}
+            \`\`\`
+
+            </details>`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -148,9 +183,11 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - run: terraform init
-      - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+      - run: terraform plan -no-color -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
 
       # Human-readable plan in the job log, for the reviewer approving apply-prod below.
+      # (Not a PR comment here, unlike plan-dev -- plan-prod only ever runs
+      # post-merge, via needs: apply-dev, so there's no PR left to comment on.)
       - run: terraform show tfplan
 
       - name: Check for force-replace (destroy+create)
@@ -237,7 +274,7 @@ jobs:
       - run: terraform init
 
       - if: inputs.action == 'apply'
-        run: terraform apply -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
+        run: terraform apply -no-color -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
 
       - if: inputs.action == 'destroy'
-        run: terraform destroy -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
+        run: terraform destroy -no-color -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
