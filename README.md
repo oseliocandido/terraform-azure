@@ -7,20 +7,25 @@ decisions below exist specifically to avoid colliding with catalog-tier names
 (`dev`/`test`/`prod`) that Unity Catalog also uses for a different concept
 (data catalogs, not infrastructure).
 
+For full diagrams (module composition, Azure resource topology, the git →
+CI/CD → Azure flow, OIDC identity exchange) see
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. For the reasoning behind
+specific decisions, see the ADRs in `docs/adr/`.
+
 ## What this deploys
 
 Two modules, reused across every environment:
 
 - **`modules/analytics_group`** — a resource group + an ADLS Gen2 storage
   account (naming derived from `workload`/`environment`/`location`/`instance`)
-- **`modules/budget_alert`** — a subscription consumption budget with
-  threshold notifications
+- **`modules/budget_alert`** — a resource-group-scoped consumption budget
+  with 20%/40% threshold notifications
 
 ```mermaid
 flowchart TB
     subgraph modules["modules/ (shared, reusable, no state of its own)"]
         AG["analytics_group\nRG + ADLS Gen2 storage account"]
-        BA["budget_alert\nconsumption budget"]
+        BA["budget_alert\nconsumption budget, scoped to that RG"]
     end
 
     subgraph dev["environments/dev"]
@@ -41,8 +46,8 @@ flowchart TB
 
 | Environment | Purpose | Lifecycle | CI identity | RBAC scope |
 |---|---|---|---|---|
-| `dev` | Real, Unity-Catalog-facing dev data platform | Long-lived | `sp-terraform-dev` | Contributor on its own RG + Cost Management Contributor on the subscription (`azurerm_consumption_budget_subscription` is a subscription-scoped resource, RG-scoped RBAC can't reach it) |
-| `prod` | Real, Unity-Catalog-facing prod data platform | Long-lived | `sp-terraform-prod` | Same as `dev` |
+| `dev` | Real, Unity-Catalog-facing dev data platform | Long-lived | `sp-terraform-dev` | Contributor on its own resource group only |
+| `prod` | Real, Unity-Catalog-facing prod data platform | Long-lived | `sp-terraform-prod` | Contributor on its own resource group only |
 | `sandbox` | Disposable infra testing — never registered in Unity Catalog | Created/destroyed freely | `sp-terraform-sandbox` | Contributor on the **whole subscription** (see [ADR-0001](docs/adr/0001-sandbox-subscription-scope.md)) |
 
 **What a clean sandbox run proves, and what it doesn't:** sandbox is
@@ -80,45 +85,47 @@ a real data environment" without needing to read further. See
 
 ## CI/CD
 
-```mermaid
-flowchart LR
-    PR["PR opened"] --> PD["plan-dev"]
-    PD --> FR1{"force-replace\ndetected?"}
-    FR1 -->|yes| WARN1["::warning:: annotation\n+ job summary"]
-    FR1 -->|no| REV["human review"]
-    WARN1 --> REV
-    REV --> MERGE["merge to main"]
-    MERGE --> AD["apply-dev\n(automatic)"]
-    AD --> PP["plan-prod"]
-    PP --> FR2{"force-replace\ndetected?"}
-    FR2 -->|yes| WARN2["::warning:: annotation"]
-    FR2 -->|no| GATE
-    WARN2 --> GATE["production Environment\nrequired-reviewer gate"]
-    GATE -->|approved| AP["apply-prod"]
+- Every PR runs `fmt-check` → `plan-dev` (init, validate, plan, a
+  destructive-change check, and the plan posted as a PR comment).
+- Merging to `main` triggers `apply-dev` automatically — it applies the
+  *exact* plan artifact `plan-dev` already produced, never a fresh plan —
+  then `plan-prod` runs the same init/validate/plan/check sequence against
+  `prod`.
+- `apply-prod` sits behind the `production` GitHub Environment's
+  required-reviewer gate; once approved, it applies the exact `plan-prod`
+  artifact.
+- `sandbox` never runs on push/PR — only on manual `workflow_dispatch`,
+  from any branch, to verify a risky change against real Azure first.
 
-    DISPATCH["workflow_dispatch\n(manual, anytime)"] -.-> SB["sandbox job\napply or destroy"]
-```
+Identity is OIDC-based throughout — Terraform's `azurerm` provider fetches
+its own short-lived Azure AD token directly (via GitHub's auto-injected
+OIDC token endpoint, exchanged through an Entra federated identity
+credential per environment); no client secrets are stored anywhere. Each
+environment has its own App Registration / Service Principal, so a
+compromised or misconfigured `dev` pipeline cannot authenticate as `prod`.
 
-Identity is OIDC-based throughout (`azure/login@v2` + Entra federated
-credentials) — no client secrets stored anywhere. Each environment has its
-own App Registration / Service Principal, so a compromised or misconfigured
-dev pipeline cannot authenticate as prod.
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full flow
+diagram and **[ADR-0002](docs/adr/0002-pipeline-and-identity-architecture.md)**
+for why each of these pieces is built the way it is.
 
 ## Repo layout
 
 ```text
 code-test/
 ├── modules/
-│   ├── analytics_group/
-│   └── budget_alert/
-├── environments/            # real, long-lived, Unity-Catalog-facing
-│   ├── common.tfvars
-│   ├── dev/
-│   └── prod/
-├── sandbox/                 # disposable infra testing -- NOT under environments/
+│   ├── analytics_group/          # RG + ADLS Gen2 storage account
+│   └── budget_alert/             # RG-scoped consumption budget
+├── environments/                 # real, long-lived, Unity-Catalog-facing
+│   ├── common.tfvars             # shared, environment-independent values
+│   ├── dev/                      # root module -- own state, own tfvars
+│   └── prod/                     # root module -- own state, own tfvars
+├── sandbox/                      # disposable infra testing -- NOT under environments/
 ├── docs/
+│   ├── ARCHITECTURE.md           # diagrams: modules, Azure topology, CI/CD flow, OIDC
 │   ├── azure-setup-commands.sh   # record of the one-time Azure bootstrap
 │   └── adr/                      # architecture decision records
+│       ├── 0001-sandbox-subscription-scope.md
+│       └── 0002-pipeline-and-identity-architecture.md
 ├── .github/workflows/terraform.yml
 └── deploy.sh                     # manual prod plan/apply helper
 ```
@@ -135,3 +142,8 @@ code-test/
   as can't be created by that same pipeline's own run). A future step could
   move this into a separate, human-applied `bootstrap/` Terraform root using
   the `azuread` provider.
+- The subscription-wide `Cost Management Contributor` grant on
+  `sp-terraform-dev`/`sp-terraform-prod` predates the resource-group-scoped
+  budget refactor (see
+  [ADR-0002](docs/adr/0002-pipeline-and-identity-architecture.md#budget-scope))
+  and is no longer required — not yet revoked.
