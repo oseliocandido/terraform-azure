@@ -1,5 +1,5 @@
 resource "azurerm_consumption_budget_subscription" "learning_guard" {
-  name            = "guard-learning-subscription"
+  name            = "guard-learning-${var.environment}"
   subscription_id = "/subscriptions/${var.subscription_id}"
 
   amount     = var.budget_amount

@@ -24,10 +24,13 @@ locals {
 
   # Storage accounts: 3-24 chars, lowercase alphanumeric only, no hyphens.
   # substr() guarantees the 24-char cap even if workload/environment grow.
-  sa_name = substr(
+  # storage_account_suffix is appended AFTER truncation -- it's an escape
+  # hatch for a global name collision, not part of the normal naming
+  # scheme, so it must never get silently cut off by substr().
+  sa_name = "${substr(
     lower(replace("st${local.suffix}", "-", "")),
-    0, 24
-  )
+    0, 24 - length(var.storage_account_suffix)
+  )}${var.storage_account_suffix}"
 
   common_tags = {
     workload    = var.workload
