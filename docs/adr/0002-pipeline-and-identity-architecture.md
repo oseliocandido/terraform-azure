@@ -176,10 +176,11 @@ anything automatically.
 - Adding a fourth environment means: a new root directory, a new App
   Registration + federated credential + RBAC role assignment, and two new
   workflow jobs (`plan-<env>`, `apply-<env>`) — no changes to `modules/`.
-- The `Cost Management Contributor` grant on `sp-terraform-dev`/`-prod` is
-  now redundant post-RG-scoped-budget migration; safe to revoke, not yet
-  done.
-- `README.md`'s environment RBAC table should read "Contributor on its own
-  RG" only for `dev`/`prod` going forward — the RG-scoped budget migration
-  removed the subscription-level Cost Management requirement this ADR
-  documents above.
+- The `Cost Management Contributor` grant on `sp-terraform-dev`/`-prod`,
+  redundant since the RG-scoped-budget migration above, has been revoked
+  at subscription scope (Azure RBAC roles, including this one, are
+  assignable at management group, subscription, or resource group scope —
+  each SP's existing RG-scoped Contributor role already covers everything
+  this grant provided, so it wasn't re-added at RG scope either).
+- `README.md`'s environment RBAC table reads "Contributor on its own RG"
+  only for `dev`/`prod`, consistent with the revocation above.
