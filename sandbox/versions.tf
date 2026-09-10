@@ -12,6 +12,9 @@ terraform {
 provider "azurerm" {
   features {}
 
+  # No client_id / client_secret anywhere. use_cli defaults to true, so the
+  # provider reuses the token from your `az login` session automatically -
+  # this is the entire mechanism behind "Terraform uses the Azure CLI for auth".
   subscription_id = var.subscription_id
   use_cli         = true
 }

@@ -5,14 +5,12 @@ variable "subscription_id" {
 
 variable "workload" {
   type        = string
-  default     = "analytics"
-  description = "Short workload name used to derive every resource name."
+  description = "Short workload name used to derive every resource name. No default -- always set explicitly in common.tfvars."
 }
 
 variable "environment" {
   type        = string
-  default     = "prod"
-  description = "Deployment environment for this root module. Fixed per environments/* directory."
+  description = "Deployment environment for this root module. Fixed per environments/* directory -- no default, always set explicitly in terraform.tfvars."
 }
 
 variable "location" {
@@ -22,8 +20,7 @@ variable "location" {
 
 variable "instance" {
   type        = number
-  default     = 1
-  description = "Instance number, for when more than one copy of this workload exists side by side."
+  description = "Instance number, for when more than one copy of this workload exists side by side. No default -- always set explicitly in common.tfvars."
 }
 
 variable "notify_email" {

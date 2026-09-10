@@ -14,8 +14,8 @@ variable "environment" {
   description = "Deployment environment. Drives tagging and sizing decisions. No default -- every caller must decide this explicitly."
 
   validation {
-    condition     = contains(["dev", "prod"], var.environment)
-    error_message = "environment must be one of: dev, prod."
+    condition     = contains(["dev", "prod", "sandbox"], var.environment)
+    error_message = "environment must be one of: dev, prod, sandbox."
   }
 }
 

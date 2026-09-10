@@ -12,6 +12,14 @@ on:
     paths:
       - "modules/**"
       - "environments/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to do in the sandbox environment"
+        required: true
+        type: choice
+        options: [apply, destroy]
+        default: apply
 
 permissions:
   id-token: write   # required for azure/login OIDC
@@ -33,7 +41,7 @@ jobs:
 
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID_DEV }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
@@ -43,6 +51,32 @@ jobs:
 
       - run: terraform init
       - run: terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -out=tfplan -lock-timeout=5m
+
+      - name: Check for force-replace (destroy+create)
+        run: |
+          REPLACEMENTS=$(terraform show -json tfplan | jq -r '
+            .resource_changes[]
+            | select((.change.actions | index("delete")) and (.change.actions | index("create")))
+            | .address
+          ')
+          if [ -n "$REPLACEMENTS" ]; then
+            echo "::warning::This plan force-replaces (destroy+create) the following resources:"
+            echo "$REPLACEMENTS" | while read -r addr; do
+              echo "::warning::  - $addr"
+            done
+            {
+              echo "### :warning: Force-replace detected"
+              echo ""
+              echo "The following resources will be **destroyed and recreated**, not updated in place:"
+              echo '```'
+              echo "$REPLACEMENTS"
+              echo '```'
+              echo ""
+              echo "Consider verifying this change manually against \`sandbox\` before merging."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No force-replacements in this plan."
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -61,7 +95,7 @@ jobs:
 
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID_DEV }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
@@ -92,7 +126,7 @@ jobs:
 
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID_PROD }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
@@ -105,6 +139,32 @@ jobs:
 
       # Human-readable plan in the job log, for the reviewer approving apply-prod below.
       - run: terraform show tfplan
+
+      - name: Check for force-replace (destroy+create)
+        run: |
+          REPLACEMENTS=$(terraform show -json tfplan | jq -r '
+            .resource_changes[]
+            | select((.change.actions | index("delete")) and (.change.actions | index("create")))
+            | .address
+          ')
+          if [ -n "$REPLACEMENTS" ]; then
+            echo "::warning::This plan force-replaces (destroy+create) the following resources:"
+            echo "$REPLACEMENTS" | while read -r addr; do
+              echo "::warning::  - $addr"
+            done
+            {
+              echo "### :warning: Force-replace detected"
+              echo ""
+              echo "The following resources will be **destroyed and recreated**, not updated in place:"
+              echo '```'
+              echo "$REPLACEMENTS"
+              echo '```'
+              echo ""
+              echo "Consider verifying this change manually against \`sandbox\` before merging."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No force-replacements in this plan."
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -123,7 +183,7 @@ jobs:
 
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID_PROD }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
@@ -137,3 +197,36 @@ jobs:
           name: tfplan-prod
           path: environments/prod
       - run: terraform apply -lock-timeout=5m tfplan
+
+  # --- Sandbox: manual-only, never runs on push/PR. Trigger by hand from the
+  # Actions tab ("Run workflow") after a force-replace warning above tells you
+  # to verify a change against real Azure before merging. Applies or destroys
+  # depending on the `action` input -- always destroy when you're done, this
+  # is throwaway infra, not a third data environment. ---
+
+  sandbox:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sandbox
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_SANDBOX }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init
+
+      - if: inputs.action == 'apply'
+        run: terraform apply -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
+
+      - if: inputs.action == 'destroy'
+        run: terraform destroy -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
