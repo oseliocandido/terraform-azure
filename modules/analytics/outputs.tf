@@ -17,3 +17,23 @@ output "storage_account_name" {
   description = "Storage account name -- globally unique, generated from local.sa_name."
   value       = azurerm_storage_account.analytics.name
 }
+
+output "storage_account_id" {
+  description = "Storage account resource ID -- for RBAC role assignments scoped to it (e.g. a future Databricks access connector)."
+  value       = azurerm_storage_account.analytics.id
+}
+
+output "bronze_container_name" {
+  description = "Name of the bronze (raw) medallion-layer container."
+  value       = azurerm_storage_container.bronze.name
+}
+
+output "silver_container_name" {
+  description = "Name of the silver (refined) medallion-layer container."
+  value       = azurerm_storage_container.silver.name
+}
+
+output "gold_container_name" {
+  description = "Name of the gold (business-ready) medallion-layer container."
+  value       = azurerm_storage_container.gold.name
+}

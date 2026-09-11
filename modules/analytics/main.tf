@@ -94,3 +94,51 @@ resource "azurerm_storage_account" "analytics" {
   # dev/learning resource meant to be destroyed at the end of a session.
   # That guard belongs on production data-bearing resources.
 }
+
+# Medallion layers -- bronze (raw), silver (refined), gold (business-ready).
+# Storage/catalog structure only; see docs/analytics-platform/ARCHITECTURE.md
+# for the "Analytical data layering" decision this implements.
+resource "azurerm_storage_container" "bronze" {
+  name                  = "bronze"
+  storage_account_id    = azurerm_storage_account.analytics.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "silver" {
+  name                  = "silver"
+  storage_account_id    = azurerm_storage_account.analytics.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "gold" {
+  name                  = "gold"
+  storage_account_id    = azurerm_storage_account.analytics.id
+  container_access_type = "private"
+}
+
+# Enforces the 5-year retention requirement (docs/analytics-platform/PRD.md
+# §9) at the infrastructure level, scoped to bronze only -- silver/gold are
+# derived and rebuildable from bronze, so they don't need the same
+# multi-year retention (see ARCHITECTURE.md's "Data retention and
+# lifecycle policy" decision).
+resource "azurerm_storage_management_policy" "sales_retention" {
+  storage_account_id = azurerm_storage_account.analytics.id
+
+  rule {
+    name    = "bronze-retention"
+    enabled = true
+
+    filters {
+      prefix_match = ["bronze/"]
+      blob_types   = ["blockBlob"]
+    }
+
+    actions {
+      base_blob {
+        tier_to_cool_after_days_since_modification_greater_than    = 90
+        tier_to_archive_after_days_since_modification_greater_than = 365
+        delete_after_days_since_modification_greater_than          = 1825
+      }
+    }
+  }
+}
