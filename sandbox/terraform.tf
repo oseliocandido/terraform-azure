@@ -1,8 +1,4 @@
 terraform {
-  # >= 1.15.0: the floor a real incident forced (CI's pinned 1.5.0 couldn't
-  # read state written by a newer local 1.15.8 -- "unsupported checkable
-  # object kind \"var\""). < 2.0.0: belt-and-suspenders against a future
-  # major that changes the config language.
   required_version = ">= 1.15.0, < 2.0.0"
 
   required_providers {
@@ -24,9 +20,5 @@ terraform {
 provider "azurerm" {
   features {}
 
-  # use_cli / use_oidc aren't set here on purpose -- both default from env
-  # vars (ARM_USE_CLI / ARM_USE_OIDC). Local: `az login`, no ARM_* env vars
-  # set -> use_cli defaults true. CI: the workflow sets ARM_USE_OIDC=true
-  # and ARM_USE_CLI=false explicitly.
   subscription_id = var.subscription_id
 }
