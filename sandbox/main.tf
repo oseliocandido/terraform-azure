@@ -1,5 +1,5 @@
 module "analytics_group" {
-  source = "../modules/analytics_group"
+  source = "../modules/analytics"
 
   workload               = var.workload
   environment            = var.environment

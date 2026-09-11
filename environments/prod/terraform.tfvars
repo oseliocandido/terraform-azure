@@ -9,5 +9,3 @@ instance      = 1
 # this narrow escape hatch only touches the storage account name.
 # Confirmed available via `az storage account check-name`.
 storage_account_suffix = "b"
-
-location = "northeurope"

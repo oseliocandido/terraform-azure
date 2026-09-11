@@ -11,12 +11,12 @@ names and arguments are sourced from the current `hashicorp/azurerm` and
 ## New Terraform modules
 
 Two new modules under `modules/`, following the existing pattern (stateless,
-composed once per root — see `modules/analytics_group`, `modules/budget_alert`
+composed once per root — see `modules/analytics`, `modules/budget_alert`
 for the established shape):
 
 ```text
 modules/
-├── analytics_group/       # existing — RG + ADLS Gen2 storage account
+├── analytics/              # existing — RG + ADLS Gen2 storage account
 │                           #   extended: + bronze/silver/gold containers,
 │                           #             + retention lifecycle policy
 ├── budget_alert/          # existing — RG-scoped consumption budget
@@ -25,7 +25,7 @@ modules/
 └── unity_catalog/         # new — one catalog + bronze/silver/gold schemas + grants
 ```
 
-### `modules/analytics_group` — extended (existing module, new resources)
+### `modules/analytics` — extended (existing module, new resources)
 
 ```hcl
 resource "azurerm_storage_container" "bronze" {
@@ -141,7 +141,7 @@ Outputs: `workspace_id`, `workspace_url`, `storage_credential_name`.
 
 Inputs: `environment`, `metastore_id`, `bronze_storage_root`,
 `silver_storage_root`, `gold_storage_root` (the `abfss://` URLs from
-`modules/analytics_group`'s containers), `ci_service_principal_name`
+`modules/analytics`'s containers), `ci_service_principal_name`
 (`sp-terraform-dev` / `sp-terraform-prod`), `depends_on` the workspace's
 metastore assignment. The four `grp-sales-*-<env>` group names aren't
 separate inputs — they're derived from `var.environment` inside the
@@ -271,7 +271,7 @@ architecture decision.
 
 ## New provider requirements
 
-`environments/dev/versions.tf` and `environments/prod/versions.tf` gain a
+`environments/dev/terraform.tf` and `environments/prod/terraform.tf` gain a
 `databricks` provider block, alongside the existing `azurerm`:
 
 ```hcl

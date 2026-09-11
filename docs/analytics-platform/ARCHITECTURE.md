@@ -128,7 +128,7 @@ provider block pointed at a new subscription ID), not a redesign.
 ## Storage architecture: `azurerm_storage_account` containers
 
 **Context.** Each environment's existing ADLS Gen2 storage account
-(`modules/analytics_group`) needs somewhere to land sales data at
+(`modules/analytics`) needs somewhere to land sales data at
 different processing stages.
 
 **Decision.** Three `azurerm_storage_container` resources per environment
@@ -145,7 +145,7 @@ resource "azurerm_storage_container" "bronze" {
 ```
 
 **Consequences.** No new storage account is created — this reuses the
-account `modules/analytics_group` already provisions, consistent with
+account `modules/analytics` already provisions, consistent with
 PRD §13's "no unnecessary coupling" and the existing account's global name
 already being a scarce, hard-won resource (see `../ARCHITECTURE.md` §2 on
 the `stanalyticsprodneu01b` naming collision).

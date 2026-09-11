@@ -145,7 +145,7 @@ az role assignment create --assignee 40000a06-c00f-44c4-b77d-c1e4eb1d451d --role
 
 # ---------------------------------------------------------------------------
 # 6. Terraform: point both environments at the new remote backend
-#    (environments/dev/backend.tf and environments/prod/backend.tf edited
+#    (environments/dev/terraform.tf and environments/prod/terraform.tf edited
 #    to a real `backend "azurerm" {}` block first -- not shown here, see
 #    those files directly).
 # ---------------------------------------------------------------------------

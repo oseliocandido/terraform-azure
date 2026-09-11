@@ -16,7 +16,7 @@ produced.
 ## Module structure
 
 Terraform has no built-in "environment" concept. Reusability comes from
-`module` blocks (`modules/analytics_group`, `modules/budget_alert`), and
+`module` blocks (`modules/analytics`, `modules/budget_alert`), and
 environment separation comes purely from **directory structure + backend
 state key** — `environments/dev`, `environments/prod`, and the top-level
 `sandbox/` are each independent root modules with their own state file,
@@ -128,7 +128,7 @@ required subscription-wide `Cost Management Contributor` RBAC on both
 resource can't be reached by resource-group-scoped RBAC.
 
 The actual fix: migrate to `azurerm_consumption_budget_resource_group`,
-scoped by `resource_group_id` (an output from `modules/analytics_group`)
+scoped by `resource_group_id` (an output from `modules/analytics`)
 instead of `subscription_id`. This eliminates the collision structurally —
 each environment's budget now lives inside that environment's own resource
 group, so there is no shared resource for two environments to contend

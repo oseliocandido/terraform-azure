@@ -16,7 +16,7 @@ specific decisions, see the ADRs in `docs/adr/`.
 
 Two modules, reused across every environment:
 
-- **`modules/analytics_group`** — a resource group + an ADLS Gen2 storage
+- **`modules/analytics`** — a resource group + an ADLS Gen2 storage
   account (naming derived from `workload`/`environment`/`location`/`instance`)
 - **`modules/budget_alert`** — a resource-group-scoped consumption budget
   with 20%/40% threshold notifications
@@ -113,7 +113,7 @@ for why each of these pieces is built the way it is.
 ```text
 code-test/
 ├── modules/
-│   ├── analytics_group/          # RG + ADLS Gen2 storage account
+│   ├── analytics/                # RG + ADLS Gen2 storage account
 │   └── budget_alert/             # RG-scoped consumption budget
 ├── environments/                 # real, long-lived, Unity-Catalog-facing
 │   ├── common.tfvars             # shared, environment-independent values
