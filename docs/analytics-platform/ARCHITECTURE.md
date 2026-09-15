@@ -541,8 +541,20 @@ group-owned:
 | Object | Owner |
 |---|---|
 | `databricks_metastore.primary` | `grp-databricks-account-admins` — account-level, one group, not per-environment (one metastore, shared) |
-| `databricks_storage_credential.sales` (per environment) | `grp-sales-data-governance-<env>` |
-| `databricks_catalog.sales` and its three schemas | `grp-sales-data-governance-<env>` |
+| `databricks_storage_credential.analytics`, the bronze/landing external locations (per environment, `modules/databricks/platform_storage`) | `grp-databricks-platform-<env>` |
+| `databricks_catalog.sales` and its three schemas (per domain, `modules/databricks/unity_catalog`) | `grp-sales-data-governance-<env>` |
+
+The storage credential and bronze/landing external locations moved to a
+**different** owner than the catalog/schemas -- `grp-databricks-platform-
+<env>`, not `grp-sales-data-governance-<env>` -- once a second business
+domain became concrete rather than hypothetical. That credential/those
+external locations aren't sales-specific (the access connector's managed
+identity already has storage access across the whole account, not scoped
+to any one domain's containers); giving a domain's own governance group
+ownership of environment-wide infrastructure every other domain also
+depends on would put that domain in unaccountable control of a shared
+resource. `grp-databricks-platform-<env>` is the environment-wide
+counterpart to each domain's own `grp-<domain>-data-governance-<env>`.
 
 `grp-sales-data-governance-<env>` is deliberately separate from
 `grp-sales-data-engineers-<env>` — see "Identity model: groups, not
@@ -577,6 +589,7 @@ bootstrapped-identity pattern already used for `sp-terraform-*`):
 | `grp-sales-data-governance-<env>` | Administrative/governance role, not an operational one — decides who else gets access | n/a (no data-layer grants) | **Owner** of the `sales` catalog and its three schemas in both environments |
 | `sp-terraform-<env>` (existing) | CI/CD automation, not a human role | all | `USE_CATALOG`, `USE_SCHEMA`, `CREATE_SCHEMA`, `CREATE_TABLE` |
 | `grp-databricks-ci-<env>` | CI/CD automation's *own* access, not data access — `sp-terraform-<env>` as a member | n/a (no data-layer grants) | Workspace membership + metastore `CREATE_CATALOG`/`CREATE_EXTERNAL_LOCATION`/`CREATE_STORAGE_CREDENTIAL` (`environments/<env>/main.tf`, not this module) |
+| `grp-databricks-platform-<env>` | Environment-wide infrastructure governance, not a domain's own — administers what every domain's catalog depends on | n/a (no data-layer grants) | **Owner** of the storage credential and bronze/landing external locations (`modules/databricks/platform_storage`) |
 
 `grp-databricks-ci-<env>` is a different kind of group from the four
 above it -- it's not PRD-derived data governance, it's the identity
@@ -589,6 +602,14 @@ block -- not an edit to every existing grant. See
 `environments/dev/main.tf`'s `ci_group` resources for where this is
 actually declared (root-module-level, not this module -- it's about
 workspace/metastore access, upstream of anything catalog-specific here).
+
+`grp-databricks-platform-<env>` exists for the same underlying reason as
+`grp-sales-data-governance-<env>` (separation of duties) but at the
+environment layer instead of the domain layer: the storage credential and
+bronze/landing external locations back *every* domain's catalog on this
+environment's metastore assignment, not just `sales`'s -- see "Ownership
+note" above for the full reasoning on why that moved out of
+`grp-sales-data-governance-<env>`.
 
 `grp-sales-data-governance-<env>` isn't one of PRD §6's named stakeholder
 groups -- it's introduced here for separation of duties. Catalog/schema

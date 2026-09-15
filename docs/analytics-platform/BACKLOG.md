@@ -61,15 +61,28 @@ outside Terraform's scope. Status as of this session:
 | Group | Status | Needed for |
 |---|---|---|
 | `grp-databricks-account-admins` (account-level, one, not per-env) | Provisioned, member confirmed | `owner` on `databricks_metastore.primary` |
-| `grp-sales-data-governance-dev` | Provisioned | `owner` on `sales_dev`'s catalog/schemas/storage credential |
-| `grp-sales-data-governance-prod` | **Not yet provisioned** | `owner` on `sales_prod`'s catalog/schemas/storage credential — blocks `terraform apply` on `prod` once its `unity_catalog` module actually runs |
+| `grp-sales-data-governance-dev` | Provisioned, member confirmed | `owner` on `sales_dev`'s catalog/schemas (no longer the storage credential -- see below) |
+| `grp-sales-data-governance-prod` | **Not yet provisioned** | `owner` on `sales_prod`'s catalog/schemas — blocks `terraform apply` on `prod` once its `unity_catalog` module actually runs |
 | `grp-sales-stakeholders-<env>`, `grp-sales-analysts-<env>`, `grp-sales-data-engineers-<env>` (dev + prod, 6 total) | Provisioned | `databricks_grants` once `enable_grants = true` |
 | `grp-databricks-ci-dev` / `grp-databricks-ci-prod` (Entra ID groups, `sp-terraform-dev`/`-prod` added as members) | **Not yet registered at the Databricks account level** | Workspace membership (`databricks_permission_assignment`) and metastore `CREATE_*` privileges (`databricks_grants.metastore_admins`) for the CI service principals — see `environments/dev/main.tf`/`environments/prod/main.tf`'s `ci_group` resources |
+| `grp-databricks-platform-dev` / `grp-databricks-platform-prod` (Entra ID groups; `oseliocandido` added to `-dev` for bootstrap) | **Not yet registered at the Databricks account level** | `owner` on `databricks_storage_credential.analytics` and the bronze/landing external locations (`modules/databricks/platform_storage`) — moved off `grp-sales-data-governance-<env>` once a second business domain (marketing) became concrete: that infrastructure isn't sales-specific |
 
 **Remaining action needed, outside Terraform:** register
-`grp-sales-data-governance-prod`, `grp-databricks-ci-dev`, and
-`grp-databricks-ci-prod` at the Databricks account level, then flip
+`grp-sales-data-governance-prod`, `grp-databricks-ci-dev`,
+`grp-databricks-ci-prod`, `grp-databricks-platform-dev`, and
+`grp-databricks-platform-prod` at the Databricks account level, then flip
 `enable_grants = true` when ready for the data-layer grants too.
+
+**Also outstanding:** `grp-databricks-ci-<env>` will eventually need its
+own explicit grant on the storage credential too (not just
+`grp-databricks-platform-<env>` membership) — CI's own identity has to
+keep reading `databricks_storage_credential.analytics` on every future
+`terraform plan`, and metastore-level `CREATE_STORAGE_CREDENTIAL` doesn't
+cascade to privileges on an already-existing credential it doesn't own.
+Confirmed directly: CI failed with `User does not have any privileges on
+Credential 'cred-analytics-dev'` even with the metastore grant already in
+place. Not yet fixed -- deferred pending confirmation of the exact
+minimal grant needed.
 
 ---
 

@@ -110,22 +110,39 @@ resource "databricks_grants" "metastore_admins" {
   depends_on = [databricks_permission_assignment.ci_group, databricks_entitlements.ci_group]
 }
 
-module "unity_catalog" {
-  source = "../../modules/databricks/unity_catalog"
+# See environments/dev/main.tf's identical block for the full reasoning
+# (environment-scoped, called once, not once per domain -- storage
+# credential and bronze/source-system-landing external locations aren't
+# domain-specific).
+module "platform_storage" {
+  source = "../../modules/databricks/platform_storage"
 
   environment                    = var.environment
-  domain                         = "sales"
   metastore_id                   = var.metastore_id
-  workspace_id                   = module.databricks_workspace.workspace_id
   access_connector_id            = module.databricks_workspace.access_connector_id
-  ci_service_principal_name      = var.ci_service_principal_name
-  enable_grants                  = var.enable_grants
+  resource_group_name            = module.analytics_group.resource_group_name
+  subscription_id                = var.subscription_id
   bronze_storage_root            = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
-  catalog_storage_root           = "abfss://${module.analytics_group.managed_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
   pos_landing_storage_root       = "abfss://${module.analytics_group.landing_pos_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
   ecommerce_landing_storage_root = "abfss://${module.analytics_group.landing_ecommerce_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
 
   depends_on = [databricks_grants.metastore_admins]
+}
+
+module "unity_catalog" {
+  source = "../../modules/databricks/unity_catalog"
+
+  environment                  = var.environment
+  domain                       = "sales"
+  metastore_id                 = var.metastore_id
+  workspace_id                 = module.databricks_workspace.workspace_id
+  ci_service_principal_name    = var.ci_service_principal_name
+  enable_grants                = var.enable_grants
+  storage_credential_name      = module.platform_storage.storage_credential_name
+  bronze_external_location_url = module.platform_storage.bronze_external_location_url
+  catalog_storage_root         = "abfss://${module.analytics_group.managed_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+
+  depends_on = [databricks_grants.metastore_admins, module.platform_storage]
 }
 
 # See environments/dev/main.tf's identical blocks for the full reasoning
@@ -136,7 +153,7 @@ resource "databricks_volume" "pos_landing" {
   catalog_name     = module.unity_catalog.catalog_name
   schema_name      = "bronze"
   volume_type      = "EXTERNAL"
-  storage_location = module.unity_catalog.pos_landing_external_location_url
+  storage_location = module.platform_storage.pos_landing_external_location_url
   comment          = "Ingestion landing zone for point-of-sale source files -- see docs/analytics-platform/BACKLOG.md#bronze-ingestion-file-driven-triggering-auto-loader--file-events for the future consumer."
 
   depends_on = [module.unity_catalog]
@@ -147,7 +164,7 @@ resource "databricks_volume" "ecommerce_landing" {
   catalog_name     = module.unity_catalog.catalog_name
   schema_name      = "bronze"
   volume_type      = "EXTERNAL"
-  storage_location = module.unity_catalog.ecommerce_landing_external_location_url
+  storage_location = module.platform_storage.ecommerce_landing_external_location_url
   comment          = "Ingestion landing zone for e-commerce source files -- see docs/analytics-platform/BACKLOG.md#bronze-ingestion-file-driven-triggering-auto-loader--file-events for the future consumer."
 
   depends_on = [module.unity_catalog]

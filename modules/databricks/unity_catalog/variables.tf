@@ -23,29 +23,19 @@ variable "workspace_id" {
   description = "This environment's own workspace ID -- used for the workspace-catalog binding (ARCHITECTURE.md's \"Catalog isolation\" decision), so this catalog is only visible from its own environment's workspace."
 }
 
-variable "bronze_storage_root" {
+variable "storage_credential_name" {
   type        = string
-  description = "abfss:// URL for the bronze external location/schema -- from modules/analytics's bronze container."
+  description = "The environment-scoped storage credential's own name/id -- output of modules/databricks/platform_storage, called once per environment (not per domain, since the credential isn't domain-specific). Backs this domain's own \"managed\" external location."
 }
 
-variable "pos_landing_storage_root" {
+variable "bronze_external_location_url" {
   type        = string
-  description = "abfss:// URL for the point-of-sale source system's dedicated landing container -- from modules/analytics's landing_pos container. Its own external location, separate from bronze's, so file events can be safely enabled on it (no internal UC churn to contaminate them)."
-}
-
-variable "ecommerce_landing_storage_root" {
-  type        = string
-  description = "abfss:// URL for the e-commerce source system's dedicated landing container -- from modules/analytics's landing_ecommerce container. Same reasoning as pos_landing_storage_root."
+  description = "The environment-scoped bronze external location's own url attribute -- output of modules/databricks/platform_storage. This domain's bronze schema points its storage_root here."
 }
 
 variable "catalog_storage_root" {
   type        = string
-  description = "abfss:// URL for the catalog's own managed-storage root -- from modules/analytics's managed container. Backs silver/gold (and any other managed schema/table) instead of falling back to the metastore's shared storage_root."
-}
-
-variable "access_connector_id" {
-  type        = string
-  description = "ARM resource ID of this environment's Databricks access connector (modules/databricks/databricks_workspace's own output) -- the storage credential below wraps a reference to it."
+  description = "abfss:// URL for this domain's own managed-storage root -- from modules/analytics's managed container. Backs silver/gold (and any other managed schema/table) instead of falling back to the metastore's shared storage_root."
 }
 
 variable "ci_service_principal_name" {

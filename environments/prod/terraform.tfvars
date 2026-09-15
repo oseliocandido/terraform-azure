@@ -1,5 +1,5 @@
 environment   = "prod"
-budget_amount = 500
+budget_amount = 100
 instance      = 1
 
 # sp-terraform-prod's Application (client) ID, not its display name --

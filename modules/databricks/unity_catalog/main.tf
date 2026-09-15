@@ -26,8 +26,11 @@ resource "databricks_catalog" "sales" {
   # silver/gold (and any other managed table under this catalog) live
   # under this root instead of commingling with every other catalog on
   # the metastore. See modules/analytics/main.tf's "managed" container
-  # comment for the full reasoning.
-  storage_root = var.catalog_storage_root
+  # comment for the full reasoning. References the external location's
+  # own url attribute, not the raw variable -- real data dependency, so
+  # Terraform creates that registration first (Unity Catalog rejects a
+  # storage_root with no registered external location covering it).
+  storage_root = databricks_external_location.managed.url
 
   # Required for databricks_workspace_binding below to have any effect --
   # OPEN (the default) is visible from every workspace on this metastore.
@@ -63,74 +66,38 @@ resource "databricks_workspace_binding" "sales" {
   workspace_id   = var.workspace_id
 }
 
-# Moved here from environments/<env>/main.tf -- this module has no azurerm
-# resources, so (unlike modules/databricks/databricks_workspace) there's no risk of a
-# module-level depends_on on the metastore-level grant cycling through the
-# databricks provider's own host argument. Consolidates every Unity-Catalog-
-# specific resource in one place instead of splitting across root + module.
-resource "databricks_storage_credential" "sales" {
-  name = "cred-analytics-${var.environment}"
-  azure_managed_identity {
-    access_connector_id = var.access_connector_id
-  }
-
-  # A group, not sp-terraform-<env> -- same correction as the metastore's
-  # own owner (see environments/shared/main.tf's comment): the CI SP is
-  # the right identity to *apply* Terraform changes, but owner is the
-  # administrative/accountability role, kept separate on purpose.
-  # grp-sales-data-governance-<env> already holds this role for the
-  # catalog and its schemas (see ARCHITECTURE.md's Identity model
-  # section) -- the storage credential is the same kind of
-  # infrastructure-governance object, so it gets the same owner.
-  owner = data.databricks_group.data_governance.display_name
-}
-
-resource "databricks_external_location" "bronze" {
-  name            = "loc-analytics-${var.environment}-bronze"
-  url             = var.bronze_storage_root
-  credential_name = databricks_storage_credential.sales.id
-
-  # Off, and staying off -- this location covers the WHOLE bronze
-  # container, including the schema's own internal __unitystorage/...
-  # managed-table writes. Enabling file events here would track change
-  # notifications for that internal churn too, not just genuine external
-  # file drops -- there's no way to scope it narrower than the whole
-  # container. Genuine source-system landing now has its own dedicated
-  # containers/external locations below (pos_landing/ecommerce_landing),
-  # which DO have file events on, precisely because they don't have this
-  # contamination problem.
-  enable_file_events = false
-}
-
-# One external location per source system, not a shared one -- see
-# modules/analytics/main.tf's landing_pos/landing_ecommerce container
-# comment for the full reasoning (folders can't be their own external
-# location or get independent file-event scoping; dedicated containers
-# can). Unlike bronze's external location above, these cover nothing but
-# genuine external file drops -- no internal UC churn -- so file events
-# are safe to enable per Databricks' own ingestion-landing-zone guidance.
-resource "databricks_external_location" "pos_landing" {
-  name               = "loc-analytics-${var.environment}-landing-pos"
-  url                = var.pos_landing_storage_root
-  credential_name    = databricks_storage_credential.sales.id
-  enable_file_events = true
-}
-
-resource "databricks_external_location" "ecommerce_landing" {
-  name               = "loc-analytics-${var.environment}-landing-ecommerce"
-  url                = var.ecommerce_landing_storage_root
-  credential_name    = databricks_storage_credential.sales.id
-  enable_file_events = true
+# Registers the catalog's own managed-storage root as an external
+# location -- discovered as a real, hard requirement in practice, not
+# optional: Unity Catalog rejected catalog creation with "External
+# Location '...' does not exist" until this existed, even though nothing
+# downstream (silver/gold) is itself an external table. Any storage_root
+# a catalog points to, managed or not, has to sit inside a registered
+# external location -- "managed" only changes what happens *below* the
+# catalog (schemas/tables with no storage_root of their own default to
+# Unity-Catalog-owned layout inside this root), not whether the root
+# itself needs registering. credential_name references the environment-
+# scoped credential (modules/databricks/platform_storage's output), not a
+# resource in this module -- that credential moved out of here entirely
+# (see that module's main.tf for why: it isn't domain-specific, so
+# declaring it per-domain would collide on name the moment a second
+# domain called this module).
+resource "databricks_external_location" "managed" {
+  name            = "loc-analytics-${var.environment}-${var.domain}-managed"
+  url             = var.catalog_storage_root
+  credential_name = var.storage_credential_name
 }
 
 resource "databricks_schema" "bronze" {
   catalog_name = databricks_catalog.sales.name
   name         = "bronze"
-  # References the external location's own url attribute, not the raw
-  # variable -- gives Terraform a real data dependency (schema waits for
-  # the external location to exist) instead of needing an explicit
-  # depends_on for that specific ordering.
-  storage_root = databricks_external_location.bronze.url
+  # References the environment-scoped bronze external location's url
+  # (modules/databricks/platform_storage's output), not a resource in this
+  # module -- bronze itself moved out for the same domain-collision reason
+  # as the storage credential above. Passed in as a plain string, not a
+  # resource attribute, so add platform_storage to this call's own
+  # depends_on at the call site to keep the real ordering (schema waits
+  # for that external location to exist).
+  storage_root = var.bronze_external_location_url
 
   # Same group-ownership reasoning as databricks_catalog.sales above --
   # applied per schema too, since schema ownership doesn't inherit from
