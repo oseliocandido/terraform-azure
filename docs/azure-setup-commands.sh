@@ -95,6 +95,22 @@ az role assignment create --assignee 5e93b219-9bc5-4a7b-8956-40d6c3648c1d --role
 az role assignment create --assignee 5e93b219-9bc5-4a7b-8956-40d6c3648c1d --role "Storage Blob Data Contributor" \
   --scope "/subscriptions/$SUB/resourceGroups/rg-terraform-backend/providers/Microsoft.Storage/storageAccounts/$SA_NAME"
 
+# databricks-rg-rg-analytics-dev-neu-01 -- NOT one of this repo's own
+# Terraform-managed resource groups; Databricks creates it itself as a side
+# effect of the workspace (NAT gateway, DBFS storage, etc. -- see
+# IMPLEMENTATION.md). It didn't exist yet when the Contributor grant above
+# was first written, and RBAC on rg-analytics-dev-neu-01 doesn't cascade
+# into a sibling RG -- so sp-terraform-dev had no access to it at all until
+# this was added, which broke module.budget_alert_databricks_managed's own
+# plan/apply the first time it ran under the CI service principal instead
+# of a broader-permission local session (`reading Scoped Budget ...
+# unexpected status 401`). Run this once the workspace's first apply has
+# completed and the managed RG actually exists -- its name is deterministic
+# (`databricks-rg-<main-rg-name>`) but the RG itself isn't, so this can't
+# run any earlier.
+az role assignment create --assignee 5e93b219-9bc5-4a7b-8956-40d6c3648c1d --role Contributor \
+  --scope "/subscriptions/$SUB/resourceGroups/databricks-rg-rg-analytics-dev-neu-01"
+
 # ---------------------------------------------------------------------------
 # 4. sp-terraform-prod: same pattern, scoped to its own RG.
 #    3 federated credentials: main-branch push and PR (for plan-prod, which
@@ -131,6 +147,13 @@ az role assignment create --assignee f922b7ef-fa80-4230-b1aa-1c9798fe8ebf --role
   --scope "/subscriptions/$SUB/resourceGroups/rg-analytics-prod-neu-01"
 az role assignment create --assignee f922b7ef-fa80-4230-b1aa-1c9798fe8ebf --role "Storage Blob Data Contributor" \
   --scope "/subscriptions/$SUB/resourceGroups/rg-terraform-backend/providers/Microsoft.Storage/storageAccounts/$SA_NAME"
+
+# TODO once prod's databricks_workspace module has actually been applied
+# and databricks-rg-rg-analytics-prod-neu-01 exists -- same gap as dev's
+# identical grant above, same reason. Can't run this yet; the RG doesn't
+# exist until that first apply completes.
+# az role assignment create --assignee f922b7ef-fa80-4230-b1aa-1c9798fe8ebf --role Contributor \
+#   --scope "/subscriptions/$SUB/resourceGroups/databricks-rg-rg-analytics-prod-neu-01"
 
 # ---------------------------------------------------------------------------
 # 5. Grant my own account data-plane access too (container create via
