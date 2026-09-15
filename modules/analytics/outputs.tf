@@ -24,16 +24,21 @@ output "storage_account_id" {
 }
 
 output "bronze_container_name" {
-  description = "Name of the bronze (raw) medallion-layer container."
+  description = "Name of the bronze (raw) medallion-layer container -- registered as a Unity Catalog external location. silver/gold have no equivalent container -- see managed_container_name."
   value       = azurerm_storage_container.bronze.name
 }
 
-output "silver_container_name" {
-  description = "Name of the silver (refined) medallion-layer container."
-  value       = azurerm_storage_container.silver.name
+output "landing_pos_container_name" {
+  description = "Name of the point-of-sale source system's dedicated landing container -- registered as its own Unity Catalog external location, file events enabled."
+  value       = azurerm_storage_container.landing_pos.name
 }
 
-output "gold_container_name" {
-  description = "Name of the gold (business-ready) medallion-layer container."
-  value       = azurerm_storage_container.gold.name
+output "landing_ecommerce_container_name" {
+  description = "Name of the e-commerce source system's dedicated landing container -- registered as its own Unity Catalog external location, file events enabled."
+  value       = azurerm_storage_container.landing_ecommerce.name
+}
+
+output "managed_container_name" {
+  description = "Name of the Unity Catalog managed-storage container -- set as the catalog's own storage_root, so silver/gold schemas (and any other managed tables) live under this boundary instead of falling back to the shared metastore-wide storage_root."
+  value       = azurerm_storage_container.managed.name
 }

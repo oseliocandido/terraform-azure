@@ -278,10 +278,6 @@ Development and Production must be independently managed.
 A change or failure in Development must not unintentionally affect
 Production.
 
-A temporary sandbox environment may be used for infrastructure
-experimentation and validation. The sandbox is not a permanent business
-environment.
-
 ---
 
 # 11. Security Requirements

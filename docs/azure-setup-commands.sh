@@ -164,3 +164,69 @@ terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars -lock-timeo
 # 7. Git remote (nothing pushed)
 # ---------------------------------------------------------------------------
 git remote add origin https://github.com/oseliocandido/terraform-azure.git
+
+# ---------------------------------------------------------------------------
+# 8. sp-databricks-account-admin: dedicated identity for Databricks
+#    account-level Terraform (metastore, metastore assignment) -- see
+#    docs/analytics-platform/ARCHITECTURE.md "Metastore's own Azure
+#    resources" and IMPLEMENTATION.md's Bootstrap section. Same
+#    OIDC-federated-credential pattern as sp-terraform-dev/prod above -- no
+#    client secret, ever. No Azure RBAC role assignment: this SP never
+#    touches Azure resources directly, only the Databricks account API, so
+#    there's nothing here for `az role assignment create` to scope.
+#
+#    The one step this script can't do: Databricks Account Admin can only
+#    be granted by an existing admin, via Account Console (or the account
+#    API authenticated as one) -- not an Azure Resource Manager operation,
+#    so no `az` command exists for it. Done by hand, once, same bootstrap-
+#    circularity category as everything else in this file.
+# ---------------------------------------------------------------------------
+az ad app create --display-name sp-databricks-account-admin --query "{appId:appId,id:id}" -o json
+# -> appId: 378931a7-7f3f-4a8a-8110-624550571653
+#    object id (app): 431a8eb2-58a6-486a-8fa5-f1ac2ed9bb44
+
+az ad sp create --id 378931a7-7f3f-4a8a-8110-624550571653
+# -> service principal object id: 262accf3-36d7-49f7-8aeb-49f8cd7df754
+
+az ad app federated-credential create --id 378931a7-7f3f-4a8a-8110-624550571653 --parameters '{
+  "name": "github-databricks-admin-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:oseliocandido/terraform-azure:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+az ad app federated-credential create --id 378931a7-7f3f-4a8a-8110-624550571653 --parameters '{
+  "name": "github-databricks-admin-pr",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:oseliocandido/terraform-azure:pull_request",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+
+# Manual, in Databricks Account Console (accounts.azuredatabricks.net):
+#   User management -> Service principals -> Add service principal ->
+#   Microsoft Entra ID managed -> paste Application (client) ID
+#   378931a7-7f3f-4a8a-8110-624550571653 -> toggle "Account admin" on.
+# Confirmed done: 2026-09-11.
+
+# ---------------------------------------------------------------------------
+# 9. Cleanup: sp-terraform-sandbox -- deleted after removing the sandbox/
+#    environment (see docs/analytics-platform/BACKLOG.md and the CI
+#    workflow). This SP's own creation was never recorded in this file in
+#    the first place (a pre-existing gap, not introduced by the sandbox
+#    removal) -- discovered still present in Entra ID and cleaned up here.
+#    Held subscription-wide Contributor (the exact broad grant
+#    ADR-0001 -- since deleted -- flagged as narrower-than-ideal) plus
+#    Storage Blob Data Contributor on the backend state storage account,
+#    and one GitHub Actions federated credential
+#    ("github-sandbox-dispatch"). Role assignments removed explicitly
+#    first for a clean audit trail, then the App Registration itself
+#    deleted (which removes its Service Principal and federated
+#    credentials as child objects).
+# ---------------------------------------------------------------------------
+az role assignment delete --assignee f89cb098-cc7c-47b1-8f5c-510203b90cde --role Contributor \
+  --scope "/subscriptions/$SUB"
+az role assignment delete --assignee f89cb098-cc7c-47b1-8f5c-510203b90cde --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/$SUB/resourceGroups/rg-terraform-backend/providers/Microsoft.Storage/storageAccounts/$SA_NAME"
+
+az ad app delete --id f89cb098-cc7c-47b1-8f5c-510203b90cde
+# -> sp-terraform-sandbox, appId f89cb098-cc7c-47b1-8f5c-510203b90cde,
+#    SP object id 0959180d-5b37-4723-958f-25cce461a0e8 -- deleted.

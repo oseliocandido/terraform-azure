@@ -12,6 +12,75 @@ tracks scope not yet decided at all.
 
 ---
 
+## Accepted risk: single-root-module `terraform destroy` ordering
+
+**Context.** `environments/dev`'s `provider "databricks"` block is
+configured from `module.databricks_workspace.workspace_url` — a computed
+attribute of a resource (`azurerm_databricks_workspace`) created in the
+*same* apply, not a `data` source. This is a known-risky pattern:
+Terraform's own documented recommendation (and standard practice for any
+provider configured from a resource you also create — the same issue
+applies to Kubernetes, PostgreSQL, Vault providers) is to split into two
+root modules, one creating the platform resource, a second reading it via
+a `data` source so the provider can always be configured, including
+during destroy.
+
+**The concrete failure mode, if ever hit**: `terraform destroy` walks the
+resource graph in reverse, but Terraform doesn't model provider
+configuration as a graph node the way it would need to guarantee correct
+ordering here. In practice, the workspace can be destroyed while
+`databricks_*` objects (catalog, schemas, external locations, storage
+credential) are still in state — at which point the provider can no
+longer resolve `workspace_url` at all, so those objects can't be deleted
+through Terraform. They're left as orphaned state entries, recoverable
+only via manual `terraform state rm` for each one, followed by a second
+`destroy` for the now-unblocked Azure resources.
+
+**Decision: accepted for now, not fixed.** A full `terraform destroy` of
+`dev` isn't currently planned, and splitting into two root modules (a
+platform root creating the workspace, a databricks-contents root reading
+it via `data "azurerm_databricks_workspace"`) is a real, non-trivial
+restructure — comparable in scope to the `modules/unity_catalog`
+consolidation already done this session. Revisit when either becomes
+true: `prod` is being built (worth getting the pattern right before
+duplicating the current structure a second time), or a real destroy of
+`dev` becomes a routine/likely operation rather than a hypothetical one.
+
+---
+
+## Identity: `grp-sales-*` groups not yet provisioned (blocks grants + ownership)
+
+**Blocks two things right now, not just a future phase.** Every
+`grp-sales-*-<env>` principal referenced in
+[ARCHITECTURE.md's "Identity model"](ARCHITECTURE.md#identity-model-groups-not-custom-roles)
+is an Entra ID group, sourced there and synced to the Databricks account
+via SCIM — group creation/membership is an Entra ID/IT-admin action
+outside Terraform's scope, and none of them have been created yet.
+Confirmed directly: `terraform apply` on `dev` fails with
+`Could not find principal with name grp-sales-data-governance-dev` when
+setting `databricks_catalog`/`databricks_schema` `owner` — this isn't
+hypothetical, it's the current blocking error on `environments/dev`.
+
+Four groups per environment (eight total, `dev`/`prod` never share a
+group), plus one account-level group shared by both:
+
+| Group | Needed for |
+|---|---|
+| `grp-sales-stakeholders-<env>` | `databricks_grants` once `enable_grants = true` |
+| `grp-sales-analysts-<env>` | `databricks_grants` once `enable_grants = true` |
+| `grp-sales-data-engineers-<env>` | `databricks_grants` once `enable_grants = true` |
+| `grp-sales-data-governance-<env>` | `owner` on `databricks_catalog.sales`, its three schemas, and `databricks_storage_credential.sales` — **blocks `terraform apply` on `dev` today**, independent of `enable_grants` |
+| `grp-databricks-account-admins` (account-level, one group total, not per-env) | `owner` on `databricks_metastore.primary` — **blocks `terraform apply` on `environments/shared` today** (see ARCHITECTURE.md's "Ownership note") |
+
+**Action needed, outside Terraform:** create all nine groups in Entra
+ID, confirm SCIM sync has brought them into the Databricks account
+(Account Console → User management → Groups), then `terraform apply`
+`environments/shared` and `environments/dev` (owner changes) and flip
+`enable_grants = true` when ready for the data-layer grants too. `prod`'s
+four env-scoped groups follow once `prod` itself is built.
+
+---
+
 ## Compute / cluster architecture — not yet specified
 
 **Gap.** Neither [ARCHITECTURE.md](ARCHITECTURE.md) nor
@@ -21,7 +90,11 @@ Unity Catalog grants and workspace compute permissions are two
 independent systems — a user with full `SELECT` on `prod.gold` still
 needs `CAN_ATTACH_TO` on *some* compute resource in the `prod` workspace
 to run a query at all, and nothing in this repo currently provisions or
-scopes that resource.
+scopes that resource. The provider resource for this, once the decisions
+below are made, is `databricks_permissions` (`cluster_id`/`sql_endpoint_id`
++ `access_control` blocks per group) — same `grp-sales-*-<env>` groups
+already defined in ARCHITECTURE.md's "Identity model," just granting
+compute-attach instead of data grants.
 
 **Also blocking this:** no capacity/throughput sizing study exists yet —
 PRD.md §3 deliberately no longer states a store-count or
@@ -84,6 +157,86 @@ Revisit when that phase starts; add as a new ARCHITECTURE.md
 Context/Decision/Consequences section at that point, likely appended to
 "Unity Catalog: external locations."
 
+**Scoping note for whenever this is picked up.** `modules/unity_catalog`'s
+`databricks_external_location.bronze` covers the *entire* bronze
+container — not just the landing zone. That location also backs the
+`bronze` schema's own `storage_root`, so it covers the schema's internal
+`__unitystorage/schemas/<id>/tables/<id>/` managed-table writes too.
+Enabling `enable_file_events` there as-is would track change
+notifications for that internal Delta churn as well as genuine external
+file drops — not useful, since nothing downstream should be reacting to
+Delta's own writes. The precise design: a **second, narrower external
+location** scoped just to `bronze/landing/` (the same subpath
+`databricks_volume.sales_bronze_landing` already sits on), with
+`enable_file_events` on *that* one only, leaving the broad bronze
+location's file events off. Currently `enable_file_events = false` on
+both (see `modules/unity_catalog/main.tf`'s comment) — correct for now,
+since neither has a consumer yet either way.
+
+---
+
+## Bronze landing: per-source-system external volumes
+
+**Context.** PRD §2/§13 names exactly two source systems feeding this
+platform — the point-of-sale system (physical stores) and the
+e-commerce platform — "each system has a different schema and update
+frequency" (PRD §2). Today, `bronze` is one undifferentiated container
+with a single external location
+(`databricks_external_location.bronze`, covering the whole container
+root) and a single landing volume
+(`databricks_volume.sales_bronze_landing` — see "Ingestion landing:
+`databricks_volume`" above). Nothing in the current design
+distinguishes POS files from e-commerce files once they're in `bronze`,
+and nothing scopes access separately per source system.
+
+**Gap, per Databricks' Unity Catalog best practices.** The doc is
+explicit on two points this project doesn't yet implement:
+"use external volumes for landing areas, staging locations, and
+unstructured data access" (plural — one per landing area, not one
+shared catch-all), and "avoid granting general `READ FILES` or
+`WRITE FILES` permissions to end users" — broad file-level access at
+the external-location grain is exactly the shape to avoid; access
+belongs at the volume grain, scoped to the identity that needs it.
+
+**The shape this implies, once a real pipeline exists:**
+
+- Two external volumes instead of one — `bronze.pos_landing` and
+  `bronze.ecommerce_landing` — each backed by its own subfolder
+  (`bronze/pos/landing/`, `bronze/ecommerce/landing/`), not the single
+  shared `bronze/landing/` path `sales_bronze_landing` currently uses.
+  Same narrowing principle as the external-location scoping note above,
+  just carried one level further: per source system, not just
+  per-landing-zone-vs-whole-container.
+  A concrete failure this prevents: an e-commerce ingestion bug that
+  lists/reads its own landing folder recursively can't accidentally
+  enumerate or read POS files sitting in a sibling folder it was never
+  granted `READ VOLUME` on — with one shared volume today, both source
+  systems' files sit under the same grantable object, so nothing
+  Unity-Catalog-enforced stops that.
+- Grants scoped per volume: `READ VOLUME`/`WRITE VOLUME` on
+  `bronze.pos_landing` to whatever identity owns POS ingestion,
+  `READ VOLUME`/`WRITE VOLUME` on `bronze.ecommerce_landing` to whatever
+  identity owns e-commerce ingestion — not a blanket grant on the whole
+  bronze external location, and not human/`grp-sales-data-engineers-*`
+  access to either (per the pipeline-writes-not-humans reasoning already
+  documented for the catalog-level `INSERT`/`UPDATE` grant in
+  ARCHITECTURE.md's Identity model section).
+- `databricks_volume.sales_bronze_landing` (today's single volume) would
+  need to be replaced by these two, not kept alongside them — one
+  shared landing volume and two source-scoped ones would just
+  reintroduce the same overlap problem at a smaller scale.
+
+**Why deferred, not built now.** The ingestion identities that would
+hold these per-volume grants don't exist yet — same dependency as
+"Pipeline-phase bootstrap" below (a pipeline-phase service principal,
+likely one per source system rather than one shared SP, given the
+whole point is that a POS ingestion bug shouldn't be able to touch
+e-commerce files). Revisit together with that item and the file-events
+scoping note above — all three are the same underlying "narrow bronze
+past the container root" work, just at different grains, and are
+cheapest to design once as a single ARCHITECTURE.md section rather than
+three separate retrofits.
+
 ---
 
 ## Silver/gold retention and VACUUM
@@ -107,14 +260,12 @@ transaction log still references.
 
 ---
 
-## Ingestion landing: `databricks_volume` (external, bronze)
+## Ingestion landing: `databricks_volume` (external, bronze) — done
 
-**Context.** ARCHITECTURE.md's Terraform/DABs boundary section already
-decided *who* owns this (Terraform, since it wraps shared infrastructure)
-and named it (`sales_bronze_landing`), but the actual
-`databricks_volume` (`volume_type = "EXTERNAL"`) resource itself hasn't
-been added to `modules/databricks_workspace` in IMPLEMENTATION.md yet —
-only the `databricks_external_location` it would sit on top of.
+**Done, `dev`.** `databricks_volume.sales_bronze_landing` — see
+[IMPLEMENTATION.md](IMPLEMENTATION.md#databricks_volume--bronze-ingestion-landing-backlogmd)
+for the resource and the storage-path constraint found while building it.
+Not yet built for `prod`, since `prod` itself doesn't exist yet.
 
 ---
 
@@ -130,12 +281,11 @@ anywhere. Deferred until the pipeline phase actually starts; will likely
 follow the same one-time-`az`-CLI bootstrap pattern already used for
 `sp-terraform-*` (`docs/azure-setup-commands.sh`).
 
-**Also deferred to that point:** actually provisioning
-`grp-sales-stakeholders-*`/`grp-sales-analysts-*`/`grp-sales-data-engineers-*`
-in Entra ID and wiring SCIM sync to the Databricks account — ARCHITECTURE.md's
-"Identity model" section designs the *grants* these groups receive, but
-group creation/membership itself is an Entra ID/IT-admin action outside
-Terraform's scope, not yet actioned.
+**Also deferred to that point:** a fifth, pipeline-specific SP alongside
+whatever `grp-sales-*` groups exist by then — see "Identity: `grp-sales-*`
+groups not yet provisioned" above for the four groups already blocking
+`dev` today; that item isn't pipeline-phase-specific and shouldn't wait
+for this one.
 
 ---
 

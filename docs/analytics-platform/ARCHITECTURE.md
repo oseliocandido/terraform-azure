@@ -5,7 +5,6 @@ Target Azure/Databricks/Terraform architecture that satisfies
 design — it builds on top of, and must not duplicate or contradict, the
 infrastructure already implemented and documented in
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and
-[`../adr/0001-sandbox-subscription-scope.md`](../adr/0001-sandbox-subscription-scope.md) /
 [`../adr/0002-pipeline-and-identity-architecture.md`](../adr/0002-pipeline-and-identity-architecture.md)
 (the currently-real `analytics_group` + `budget_alert` modules, per-environment
 OIDC identity, and the plan/apply CI/CD pipeline).
@@ -80,7 +79,6 @@ flowchart TB
         subgraph subA["Subscription (single, account-tier-limited)"]
             rgdevA["rg-analytics-dev-neu-01"]
             rgprodA["rg-analytics-prod-neu-01"]
-            rgsandboxA["rg-analytics-sandbox-neu-01"]
         end
         spdevA["sp-terraform-dev — Contributor"] -->|scoped to| rgdevA
         spprodA["sp-terraform-prod — Contributor"] -->|scoped to| rgprodA
@@ -93,7 +91,6 @@ flowchart TB
         end
         subgraph subNonprod["Subscription: non-production"]
             rgdevB["rg-analytics-dev-neu-01"]
-            rgsandboxB["rg-analytics-sandbox-neu-01"]
         end
         spprodB["sp-terraform-prod — Contributor"] -->|scoped to| subProd
         spdevB["sp-terraform-dev — Contributor"] -->|scoped to| subNonprod
@@ -103,11 +100,8 @@ flowchart TB
 **Decision.** Accept resource-group-scoped RBAC as the isolation boundary
 for now, documented explicitly as a deviation from CAF rather than
 presented as equivalent to it. Each environment's Service Principal is
-scoped narrowly (one RG each, not the whole subscription — see
-[`../adr/0001-sandbox-subscription-scope.md`](../adr/0001-sandbox-subscription-scope.md)
-for the one exception, `sp-terraform-sandbox`, and why it currently can't
-follow the same narrow pattern) to keep the isolation as strong as a
-single subscription allows.
+scoped narrowly — one RG each, not the whole subscription — to keep the
+isolation as strong as a single subscription allows.
 
 **Consequences.** `dev` and `prod` share billing, Azure Policy scope, and
 management-group placement — a subscription-level outage, policy
@@ -131,9 +125,12 @@ provider block pointed at a new subscription ID), not a redesign.
 (`modules/analytics`) needs somewhere to land sales data at
 different processing stages.
 
-**Decision.** Three `azurerm_storage_container` resources per environment
-on the existing account (hierarchical namespace is already enabled, so
-these behave as ADLS Gen2 directories, not flat blob containers):
+**Decision.** One `azurerm_storage_container` per environment on the
+existing account (hierarchical namespace is already enabled, so this
+behaves as an ADLS Gen2 directory, not a flat blob container) — `bronze`
+only. `silver`/`gold` have no container: they're Unity Catalog managed
+schemas instead, not external locations (see "Unity Catalog: metastore,
+catalog, and schema strategy" below for why).
 
 ```hcl
 resource "azurerm_storage_container" "bronze" {
@@ -141,7 +138,6 @@ resource "azurerm_storage_container" "bronze" {
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
 }
-# "silver" and "gold" follow the same shape
 ```
 
 **Consequences.** No new storage account is created — this reuses the
@@ -160,9 +156,10 @@ mechanism, and explicitly excludes how transformations or historical
 change are implemented (that's pipeline logic).
 
 **Decision.** Medallion layering as a **storage and catalog structure
-only** — `bronze`/`silver`/`gold` containers (above) map one-to-one to
-`bronze`/`silver`/`gold` Unity Catalog schemas (below). What actually
-writes data into each layer, and how, is out of scope here.
+only** — `bronze`/`silver`/`gold` Unity Catalog schemas (below), backed by
+a container only for `bronze` (above); `silver`/`gold` are UC-managed, no
+container of their own. What actually writes data into each layer, and
+how, is out of scope here.
 
 **Consequences.** This is purely a storage/metadata-organization decision.
 No transformation logic, schema-on-write validation, or data-quality
@@ -184,7 +181,7 @@ storage account, with a lifecycle rule scoped to the `bronze/` prefix
 rebuilt from `bronze`, so they don't need the same multi-year retention):
 
 ```hcl
-resource "azurerm_storage_management_policy" "sales_retention" {
+resource "azurerm_storage_management_policy" "default_retention_policy" {
   storage_account_id = azurerm_storage_account.analytics.id
 
   rule {
@@ -210,9 +207,12 @@ resource "azurerm_storage_management_policy" "sales_retention" {
 **Consequences.** The five-year business requirement is now an enforced
 Azure policy, not a convention someone has to remember — data older than
 1825 days is deleted automatically regardless of whether any pipeline
-process ever runs. `silver`/`gold` are left unmanaged by this policy for
-now; if they accumulate meaningfully, they get their own rule when a
-pipeline actually populates them.
+process ever runs. `silver`/`gold` have no equivalent rule, and don't need
+one: they're Unity Catalog managed schemas with no container of their own
+(see "Unity Catalog: metastore, catalog, and schema strategy" below), so
+there's no blob-level lifecycle to configure at all — retention/cleanup
+for derived data is a UC/pipeline-level concern (e.g. `VACUUM`), not an
+Azure storage policy.
 
 ---
 
@@ -283,15 +283,58 @@ applied to Unity Catalog's own storage access instead of Terraform's.
 
 ---
 
+## Secrets: identity-based by default, Key-Vault-backed as the fallback
+
+**Context.** PRD §11: "Secrets that cannot be eliminated through
+identity-based authentication should be securely managed." Every
+credential in this design so far — CI/CD (`../adr/0002-*`'s OIDC
+federated credential), Unity Catalog's storage access (decision above),
+and interactive login (Entra ID directly) — is identity-based with no
+standing secret to manage. That makes this requirement currently
+satisfied vacuously, which is worth stating explicitly rather than
+leaving silent, since "no decision made" and "confirmed not needed yet"
+read identically from the architecture alone.
+
+**Decision.** If a genuine secret ever becomes unavoidable (a future
+pipeline needing a third-party API key with no managed-identity-based
+auth option, for example), it goes in a `databricks_secret_scope` backed
+by Azure Key Vault (`keyvault_metadata` block, referencing a Key Vault
+already provisioned by `azurerm_key_vault`), not a Databricks-native
+secret scope:
+
+```hcl
+resource "databricks_secret_scope" "sales" {
+  name = "sales-${var.environment}"
+
+  keyvault_metadata {
+    resource_id = azurerm_key_vault.sales.id
+    dns_name    = azurerm_key_vault.sales.vault_uri
+  }
+}
+```
+
+**Consequences.** One secret store (Key Vault) instead of two — the
+Databricks-native secret scope backend would mean Azure RBAC/Key Vault
+access policies and Databricks' own `databricks_secret_acl` become two
+independent permission systems to keep in sync for the same secret. Not
+built now — no concrete secret exists yet to justify it — but the
+mechanism is decided in advance so the first real need doesn't also
+become an architecture debate.
+
+---
+
 ## Unity Catalog: external locations
 
 **Context.** Unity Catalog requires each storage path it manages to be
 explicitly registered, rather than trusting any path the credential above
 could technically reach.
 
-**Decision.** One `databricks_external_location` per container, each
-pointing at exactly one of the three containers and using the credential
-above:
+**Decision.** One `databricks_external_location`, for `bronze` only —
+not one per medallion layer. `silver`/`gold` are Unity Catalog managed
+schemas (see "metastore, catalog, and schema strategy" below), so they
+have no external storage path to register at all; only `bronze` needs
+direct blob-level access (file-event ingestion triggers, the retention
+policy above), which is exactly what an external location is for.
 
 ```hcl
 resource "databricks_external_location" "bronze" {
@@ -299,13 +342,15 @@ resource "databricks_external_location" "bronze" {
   url             = "abfss://bronze@${azurerm_storage_account.analytics.name}.dfs.core.windows.net/"
   credential_name = databricks_storage_credential.sales.id
 }
-# "silver" and "gold" follow the same shape
 ```
 
 **Consequences.** Even though the storage credential *could* reach any
 container on the account, Unity Catalog only allows managed access through
 registered external locations — an extra layer of least-privilege beyond
-the Azure RBAC role assignment.
+the Azure RBAC role assignment. `silver`/`gold` get a stronger version of
+this same property for free: with no external location at all, the *only*
+way to reach their data is through Unity Catalog itself — there's no
+parallel Azure-RBAC-on-a-container path to keep in sync with UC grants.
 
 ---
 
@@ -323,17 +368,28 @@ by a per-environment CI/CD pipeline run.
 - **Metastore** — one, created once by hand (see
   [IMPLEMENTATION.md §Bootstrap](IMPLEMENTATION.md#bootstrap)), assigned to
   each workspace via `databricks_metastore_assignment`.
-- **Catalog** — one per *environment*, not one per medallion layer:
-  `dev` and `prod`. This keeps environment isolation at the catalog level
-  (PRD §10: "a change or failure in Development must not unintentionally
-  affect Production") — a `dev`-scoped identity has no catalog-level path
-  to `prod` data even if it somehow reached the `prod` workspace.
-- **Schema** — one per medallion layer, inside each environment's catalog:
-  `bronze`, `silver`, `gold`.
+- **Catalog** — one per *domain, per environment*, not one per medallion
+  layer: `sales_dev` and `sales_prod` today. Environment isolation still
+  lives at the catalog level (PRD §10: "a change or failure in Development
+  must not unintentionally affect Production") — a `dev`-scoped identity
+  has no catalog-level path to `prod` data even if it somehow reached the
+  `prod` workspace. The domain prefix is there so a second business domain
+  (marketing, orders, ...) gets its own catalog (`marketing_dev`,
+  `orders_prod`, ...) without renaming this one out from under existing
+  data — sales is the only domain on this metastore today, but naming it
+  `dev`/`prod` alone would have made every future domain either collide on
+  the name or force a rename under load. This is the catalog-per-business-
+  domain shape from Databricks' own functional-workspace-organization
+  guidance, not something invented here.
+- **Schema** — one per medallion layer, inside each domain's catalog:
+  `bronze`, `silver`, `gold`. Only `bronze` is external (`storage_root`
+  pointing at its own container); `silver`/`gold` are Unity Catalog
+  managed schemas with no `storage_root` at all — see "Unity Catalog:
+  external locations" above for why.
 
 ```hcl
 resource "databricks_catalog" "sales" {
-  name         = var.environment # "dev" or "prod"
+  name         = "sales_${var.environment}" # "sales_dev" or "sales_prod"
   metastore_id = var.metastore_id
   comment      = "Sales analytics — ${var.environment}"
 }
@@ -343,13 +399,154 @@ resource "databricks_schema" "bronze" {
   name         = "bronze"
   storage_root = "abfss://bronze@${azurerm_storage_account.analytics.name}.dfs.core.windows.net/"
 }
-# "silver" and "gold" follow the same shape, pointing at their own container
+
+resource "databricks_schema" "silver" {
+  catalog_name = databricks_catalog.sales.name
+  name         = "silver"
+  # No storage_root -- managed by Unity Catalog under the catalog's own
+  # managed storage location.
+}
+# "gold" follows the same managed shape as "silver"
 ```
 
-**Consequences.** Querying is always `dev.bronze.*` / `prod.gold.*` —
-environment and layer are both explicit in every fully-qualified table
-name, with no risk of a `dev` query accidentally resolving against `prod`
-data.
+**Consequences.** Querying is always `sales_dev.bronze.*` /
+`sales_prod.gold.*` — domain, environment, and layer are all explicit in
+every fully-qualified table name, with no risk of a `dev` query
+accidentally resolving against `prod` data, and no naming collision if a
+second domain is added later.
+
+---
+
+## Catalog isolation: workspace-catalog bindings
+
+**Context.** A Unity Catalog catalog's default `isolation_mode` is
+`OPEN` — visible and queryable from *every* workspace attached to its
+metastore, not just the one it's conceptually "for." Since `dev` and
+`prod` share one metastore per region by design (decision above), an
+`OPEN` `dev` catalog is, by default, also reachable from the `prod`
+workspace, and vice versa. The environment isolation claimed above ("a
+`dev`-scoped identity has no catalog-level path to `prod` data") is only
+actually true once this is configured — left at the default, it would
+rest entirely on every Unity Catalog grant being correct forever, the
+same purely-logical, no-independent-backstop boundary already rejected as
+insufficient on its own for the resource-group-level Azure RBAC decision
+above.
+
+**Decision.** Each catalog is created with `isolation_mode = "ISOLATED"`,
+paired with exactly one `databricks_workspace_binding` tying it to its
+own environment's workspace only:
+
+```hcl
+resource "databricks_catalog" "sales" {
+  name           = "sales_${var.environment}"
+  metastore_id   = var.metastore_id
+  isolation_mode = "ISOLATED"
+}
+
+resource "databricks_workspace_binding" "sales" {
+  securable_name = databricks_catalog.sales.name
+  workspace_id   = var.workspace_id # this environment's own workspace
+}
+```
+
+**Consequences.** A `dev`-scoped identity now has no catalog-level path
+to `prod` data even if every Unity Catalog grant were somehow
+misconfigured to allow it — the `prod` workspace structurally cannot
+resolve the `dev` catalog (and vice versa), independent of grants. This
+is the same defense-in-depth reasoning as the Azure RBAC resource-group
+boundary above, applied one layer up the stack: two independent controls
+(RBAC at the infrastructure layer, workspace binding at the catalog
+layer) rather than one shared point of failure.
+
+---
+
+## Metastore's own Azure resources: dedicated resource group
+
+**Context.** The metastore needs its own root storage — an ADLS Gen2
+storage account, plus an Access Connector/storage credential pair so
+Unity Catalog can authenticate to it — distinct from either environment's
+own medallion storage (`stanalytics<env><region><instance>`). Because the
+metastore itself is account-level and shared across `dev` and `prod` (see
+above), the resources backing *it* can't live inside either environment's
+resource group without making the shared metastore's storage silently
+depend on one specific environment's lifecycle.
+
+This mirrors a placement question the existing foundation already solved:
+`rg-terraform-backend` (Terraform state storage) is kept outside both
+`environments/dev` and `environments/prod`'s resource groups for the same
+reason — it's infrastructure both environments depend on, not
+infrastructure either one of them owns.
+
+A related pitfall worth naming explicitly, found by direct trial rather
+than documentation: an Azure Databricks workspace's own *managed*
+resource group (`databricks-rg-...`, auto-created by the
+`Microsoft.Databricks` resource provider alongside every workspace) also
+contains an Access Connector Databricks provisions automatically
+(`unity-catalog-access-connector`), pre-staged for its own automatic
+Unity Catalog enablement flow. It's tempting to reuse it for the
+metastore's storage credential since it's already there — don't. It
+inherits the lifecycle of whichever single workspace's managed resource
+group it happens to live in; destroying and recreating that one workspace
+would take the shared metastore's storage credential down with it, even
+though the metastore is meant to outlive any single workspace.
+
+**Decision.** A dedicated resource group, `rg-databricks-metastore-<region>-<instance>`
+(e.g. `rg-databricks-metastore-neu-01`) — a sibling to
+`rg-analytics-dev-neu-01`/`rg-analytics-prod-neu-01`, owned by neither —
+holding exactly two resources, bootstrapped once per region alongside the
+metastore itself (see [IMPLEMENTATION.md §Bootstrap](IMPLEMENTATION.md#bootstrap)):
+
+- `stucmetastore<region><instance>` — the metastore's ADLS Gen2 root
+  storage account.
+- `dbac-uc-metastore-<region>-<instance>` — the Access Connector granted
+  `Storage Blob Data Contributor` on that storage account, wired to the
+  metastore's root storage via a `databricks_storage_credential`.
+
+**Consequences.** The metastore's storage credential now has a lifecycle
+independent of any single workspace — deleting and recreating
+`dbw-analytics-dev-neu-01` (or a future `dbw-analytics-prod-neu-01`)
+cannot take the metastore's own storage access down with it. The
+auto-created `unity-catalog-access-connector` inside each workspace's
+managed resource group is left unused, confirmed to hold zero role
+assignments, and **cannot be deleted at all** — Azure Databricks places a
+system Deny Assignment on the entire managed resource group, which
+overrides any Allow role assignment, even Owner (`az databricks
+access-connector delete` confirmed this directly: `DenyAssignmentAuthorizationFailed`,
+citing a `System deny assignment created by Azure Databricks` at the
+managed RG's scope). Not a permissions gap to work around — this is
+intentional: nobody can modify a Databricks-managed resource group
+through Azure directly, only Databricks' own control plane can, for as
+long as the workspace exists. Harmless and permanent, not a cleanup
+task.
+
+**Ownership note — groups throughout, SPs kept for authentication only.**
+Databricks' own Unity Catalog best-practices guidance says to assign
+ownership to groups rather than individuals. An earlier version of this
+design used service principals as owner instead
+(`sp-databricks-account-admin` on the metastore,
+`sp-terraform-<env>` on the per-environment storage credential),
+reasoning that an SP avoids the same succession risk a named person
+would carry. That conflated two different roles: an SP is the right
+identity to *authenticate* Terraform's applies (an automation identity,
+not a person — see IMPLEMENTATION.md's Bootstrap section and
+`docs/azure-setup-commands.sh`), but `owner` is a separate,
+administrative/accountability role — who can grant/revoke, reassign, or
+drop the object outside Terraform, and who audit trails point to. A
+group protects against the same succession risk (no single person to
+lose) without collapsing those two roles into one identity.
+
+Every Unity-Catalog-level ownable object in this project is therefore
+group-owned:
+
+| Object | Owner |
+|---|---|
+| `databricks_metastore.primary` | `grp-databricks-account-admins` — account-level, one group, not per-environment (one metastore, shared) |
+| `databricks_storage_credential.sales` (per environment) | `grp-sales-data-governance-<env>` |
+| `databricks_catalog.sales` and its three schemas | `grp-sales-data-governance-<env>` |
+
+`grp-sales-data-governance-<env>` is deliberately separate from
+`grp-sales-data-engineers-<env>` — see "Identity model: groups, not
+custom roles" below for why those two are kept apart.
 
 ---
 
@@ -364,7 +561,7 @@ and a principal is a user, a service principal, or a group. A "custom
 role" in Unity Catalog is therefore not a separate resource to create; it
 *is* a named group plus the fixed set of grants applied to that group.
 
-**Decision.** Three account-level groups per environment (six total,
+**Decision.** Four account-level groups per environment (eight total,
 `dev`/`prod` never share a group — see "Groups are environment-scoped,"
 below), sourced from Entra ID and synced to the Databricks account via
 SCIM (group *membership* — who's actually in `grp-sales-analysts-prod` —
@@ -377,7 +574,20 @@ bootstrapped-identity pattern already used for `sp-terraform-*`):
 | `grp-sales-stakeholders-<env>` | Sales — report consumers | `gold` only | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
 | `grp-sales-analysts-<env>` | Sales — ad hoc/drill-down analysis | `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
 | `grp-sales-data-engineers-<env>` | Data Engineering — builds/operates pipelines | `bronze`, `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `INSERT`, `UPDATE` (+ `DELETE` in `dev` only — see below) |
+| `grp-sales-data-governance-<env>` | Administrative/governance role, not an operational one — decides who else gets access | n/a (no data-layer grants) | **Owner** of the `sales` catalog and its three schemas in both environments |
 | `sp-terraform-<env>` (existing) | CI/CD automation, not a human role | all | `USE_CATALOG`, `USE_SCHEMA`, `CREATE_SCHEMA`, `CREATE_TABLE` |
+
+`grp-sales-data-governance-<env>` isn't one of PRD §6's named stakeholder
+groups -- it's introduced here for separation of duties. Catalog/schema
+`owner` in Unity Catalog is an administrative role (grant/revoke
+privileges, rename, drop, transfer ownership), not a data-access grant
+like the rows above it. Making `grp-sales-data-engineers-<env>` both the
+operator (writes data, runs pipelines) *and* the owner (controls who
+else gets access) would let that group grant itself or anyone else
+broader access with nobody else in the loop. Splitting the two keeps
+"who can touch the data" and "who can change who can touch the data" as
+different groups, at the cost of one more group to provision per
+environment.
 
 `grp-sales-data-engineers-*` uses the fine-grained DML privileges
 (`INSERT`/`UPDATE`/`DELETE`, least-privilege children of the composite
@@ -552,8 +762,7 @@ validate` warning this decision was prompted by.
 **Context.** The existing pipeline (`../ARCHITECTURE.md` §3,
 `../adr/0002-*`) already implements: `fmt-check` → `plan-dev` (PR comment)
 → `apply-dev` (auto, on merge) → `plan-prod` → `apply-prod` (gated by the
-`production` GitHub Environment's required reviewer) → a manual `sandbox`
-`workflow_dispatch` job.
+`production` GitHub Environment's required reviewer).
 
 **Decision.** All resources above are added as new `module` blocks inside
 the *existing* `environments/dev`/`environments/prod` root modules (see
@@ -583,8 +792,7 @@ current configuration.
 **Consequences.** Explicit, documented gap, not an oversight — revisit if a
 real networking requirement emerges (compliance, private connectivity to
 on-prem systems), at which point it becomes its own ADR given the scope of
-change involved (analogous to `../adr/0001-*`'s treatment of the sandbox
-subscription-scope gap).
+change involved.
 
 ---
 
@@ -605,9 +813,13 @@ subscription-scope gap).
       Databricks workspace  Databricks workspace
       + access connector    + access connector
               │                 │
-        catalog: dev        catalog: prod
-      schemas: bronze/      schemas: bronze/
-       silver/gold           silver/gold
+     catalog: sales_dev   catalog: sales_prod
+      schemas: bronze      schemas: bronze
+    (external, own        (external, own
+     container) +          container) +
+    silver/gold            silver/gold
+    (UC managed,           (UC managed,
+     no container)          no container)
               │                 │
      bronze/ lifecycle:    bronze/ lifecycle:
      cool@90d, archive@1y,  cool@90d, archive@1y,

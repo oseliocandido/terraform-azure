@@ -14,8 +14,8 @@ variable "environment" {
   description = "Deployment environment. Drives tagging and sizing decisions. No default -- every caller must decide this explicitly."
 
   validation {
-    condition     = contains(["dev", "prod", "sandbox"], var.environment)
-    error_message = "environment must be one of: dev, prod, sandbox."
+    condition     = contains(["dev", "prod"], var.environment)
+    error_message = "environment must be one of: dev, prod."
   }
 }
 
@@ -44,4 +44,9 @@ variable "storage_account_suffix" {
     condition     = can(regex("^[a-z0-9]{0,6}$", var.storage_account_suffix))
     error_message = "storage_account_suffix must be 0-6 lowercase alphanumeric characters."
   }
+}
+
+variable "tags" {
+  type        = map(string)
+  description = "Base tags applied to every taggable resource this module creates, merged with workload/environment (see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section for the required keys and why each exists). Passed in from the calling root module rather than hardcoded here, since managed_by/repository/cost_center/data_owner are account-wide constants, not module-specific."
 }

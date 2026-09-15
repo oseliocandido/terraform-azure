@@ -7,9 +7,7 @@ Accepted.
 ## Context
 
 This ADR consolidates the technical decisions behind how this repo is
-structured, authenticated, and deployed — everything except the sandbox
-subscription-scope question, which has its own record in
-[ADR-0001](0001-sandbox-subscription-scope.md). See
+structured, authenticated, and deployed. See
 [ARCHITECTURE.md](../ARCHITECTURE.md) for the diagrams these decisions
 produced.
 
@@ -18,10 +16,10 @@ produced.
 Terraform has no built-in "environment" concept. Reusability comes from
 `module` blocks (`modules/analytics`, `modules/budget_alert`), and
 environment separation comes purely from **directory structure + backend
-state key** — `environments/dev`, `environments/prod`, and the top-level
-`sandbox/` are each independent root modules with their own state file,
-their own `terraform.tfvars`, and their own provider block. A module itself
-has no state; only a root module (the thing you actually run `terraform
+state key** — `environments/dev` and `environments/prod` are each
+independent root modules with their own state file, their own
+`terraform.tfvars`, and their own provider block. A module itself has no
+state; only a root module (the thing you actually run `terraform
 init`/`plan`/`apply` in) does.
 
 **Alternative considered and rejected:** one root module with a single
@@ -34,8 +32,8 @@ one root's state file spans every environment.
 ## OIDC identity per environment
 
 Each environment authenticates to Azure as its own Service Principal
-(`sp-terraform-dev`, `sp-terraform-prod`, `sp-terraform-sandbox`), each with
-its own Entra App Registration and its own federated identity credential.
+(`sp-terraform-dev`, `sp-terraform-prod`), each with its own Entra App
+Registration and its own federated identity credential.
 
 Authentication is a two-step token exchange, not a shared secret:
 
@@ -113,9 +111,8 @@ broke jobs that legitimately needed it.
 `modules/budget_alert` originally created an
 `azurerm_consumption_budget_subscription` — a resource scoped to the whole
 subscription (`/subscriptions/<id>/providers/Microsoft.Consumption/budgets/<name>`,
-no resource group in the ID path). Since `dev`, `prod`, and `sandbox` all
-share one subscription (see [ADR-0001](0001-sandbox-subscription-scope.md)
-for why), `dev`'s applied budget and `prod`'s attempted budget were
+no resource group in the ID path). Since `dev` and `prod` share one
+subscription, `dev`'s applied budget and `prod`'s attempted budget were
 actually racing to create *the same Azure resource* under a hardcoded name
 — `prod`'s first apply failed outright.
 
@@ -163,12 +160,10 @@ catches both cases at the cost of also flagging plain deletions — treated
 as an acceptable false-positive rate for a warning that's purely
 informational and never blocks anything.
 
-This is intentionally **not** an automatic "verify in sandbox before
-applying" pipeline — see
-[ADR-0001](0001-sandbox-subscription-scope.md#context) for why a clean
-sandbox run doesn't actually prove a change is safe against dev/prod's real
-accumulated state. The warning exists to prompt a human to *consider*
-manually verifying via the sandbox `workflow_dispatch` job, not to gate
+This is intentionally **not** an automatic gate — a `delete` in the plan
+doesn't mean the change is wrong, and `plan` alone can't tell the
+difference between an intended cleanup and an accidental one. The warning
+exists to prompt a human to look closely before merging, not to block
 anything automatically.
 
 ## Consequences

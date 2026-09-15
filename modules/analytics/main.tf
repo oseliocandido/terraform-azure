@@ -1,9 +1,3 @@
-## -----------------------------------------------------------------------
-## Locals -- everything computed from the variables above. One place to
-## change the naming scheme; every resource references these rather than
-## repeating literals.
-## -----------------------------------------------------------------------
-
 locals {
   # Azure's short region codes. Add to this map as new regions are needed;
   # an unmapped region fails loudly here (Invalid index) rather than
@@ -32,11 +26,10 @@ locals {
     0, 24 - length(var.storage_account_suffix)
   )}${var.storage_account_suffix}"
 
-  common_tags = {
+  common_tags = merge(var.tags, {
     workload    = var.workload
     environment = var.environment
-    managed_by  = "terraform" # just a label -- Terraform never reads this back
-  }
+  })
 }
 
 ## -----------------------------------------------------------------------
@@ -95,23 +88,54 @@ resource "azurerm_storage_account" "analytics" {
   # That guard belongs on production data-bearing resources.
 }
 
-# Medallion layers -- bronze (raw), silver (refined), gold (business-ready).
-# Storage/catalog structure only; see docs/analytics-platform/ARCHITECTURE.md
-# for the "Analytical data layering" decision this implements.
+# bronze -- the raw ingestion layer. Genuinely needs direct blob access
+# (file-event ingestion triggers, the lifecycle/retention policy below),
+# both of which operate below Unity Catalog, at the blob layer -- so it's
+# registered as a Unity Catalog EXTERNAL location, not managed.
 resource "azurerm_storage_container" "bronze" {
   name                  = "bronze"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
 }
 
-resource "azurerm_storage_container" "silver" {
-  name                  = "silver"
+# landing-pos / landing-ecommerce -- one container per source system,
+# not folders inside bronze. A folder/prefix can't be its own Unity
+# Catalog external location, so it can't get its own enable_file_events
+# scoping either -- it would have shared bronze's own external location,
+# which also covers the bronze schema's internal __unitystorage/...
+# managed-table writes, making file events there track that internal
+# churn too, not just genuine external drops (see bronze's external
+# location comment in modules/databricks/unity_catalog/main.tf). A
+# dedicated container has none of that internal traffic, so file events
+# are safe to enable on it. Also a real Terraform resource each, unlike a
+# folder -- named per PRD's actual source systems (point-of-sale,
+# e-commerce), not a generic "landing" catch-all.
+resource "azurerm_storage_container" "landing_pos" {
+  name                  = "landing-pos"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
 }
 
-resource "azurerm_storage_container" "gold" {
-  name                  = "gold"
+resource "azurerm_storage_container" "landing_ecommerce" {
+  name                  = "landing-ecommerce"
+  storage_account_id    = azurerm_storage_account.analytics.id
+  container_access_type = "private"
+}
+
+# managed -- the Unity Catalog managed-storage root for this environment's
+# catalog, set as databricks_catalog.sales's own storage_root (see
+# modules/databricks/unity_catalog/main.tf). silver/gold schemas have no
+# container of their own: Unity Catalog owns the internal layout inside
+# this one (__unitystorage/schemas/<id>/tables/<id>/...) entirely; this
+# container only draws the outer boundary. Deliberately per catalog, not
+# left to fall back to the metastore's own shared storage_root -- that
+# fallback commingles every catalog on the metastore into one container,
+# which only gets worse as more business domains get their own catalog
+# over time. Access control doesn't depend on this boundary either way
+# (UC grants govern managed storage regardless), but blast radius and
+# cost attribution do.
+resource "azurerm_storage_container" "managed" {
+  name                  = "managed"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
 }
@@ -121,7 +145,7 @@ resource "azurerm_storage_container" "gold" {
 # derived and rebuildable from bronze, so they don't need the same
 # multi-year retention (see ARCHITECTURE.md's "Data retention and
 # lifecycle policy" decision).
-resource "azurerm_storage_management_policy" "sales_retention" {
+resource "azurerm_storage_management_policy" "default_retention_policy" {
   storage_account_id = azurerm_storage_account.analytics.id
 
   rule {

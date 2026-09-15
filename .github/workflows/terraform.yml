@@ -13,14 +13,6 @@ on:
       - "modules/**"
       - "environments/**"
       - ".github/workflows/terraform.yml"
-  workflow_dispatch:
-    inputs:
-      action:
-        description: "What to do in the sandbox environment"
-        required: true
-        type: choice
-        options: [apply, destroy]
-        default: apply
 
 permissions:
   id-token: write       # required for Terraform's azurerm provider to fetch its own OIDC token
@@ -66,12 +58,25 @@ jobs:
     # (via GitHub's auto-injected ACTIONS_ID_TOKEN_REQUEST_* env vars) using
     # these ARM_* variables -- no azure/login step needed, since nothing
     # here runs a raw `az` command.
+    #
+    # DATABRICKS_* below is a completely separate OIDC exchange -- Databricks'
+    # own native workload identity federation, unrelated to ARM_USE_OIDC/
+    # azurerm. Requires the service principal federation policy already
+    # created on sp-terraform-dev (Account Console -> User management ->
+    # Service principals -> sp-terraform-dev -> Credentials & secrets ->
+    # Federation policies), matching this exact repo/branch. DATABRICKS_HOST
+    # is a literal, not a Terraform output -- dev's workspace already exists,
+    # so its URL is a known constant here, not something this job's own
+    # apply could resolve for itself in time to authenticate with.
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       ARM_USE_OIDC: "true"
       ARM_USE_CLI: "false"
+      DATABRICKS_AUTH_TYPE: github-oidc
+      DATABRICKS_HOST: https://adb-7405615984891164.4.azuredatabricks.net/
+      DATABRICKS_CLIENT_ID: 5e93b219-9bc5-4a7b-8956-40d6c3648c1d # sp-terraform-dev
     steps:
       - uses: actions/checkout@v4
 
@@ -110,7 +115,7 @@ jobs:
               echo '```'
               echo "$DELETIONS"
               echo '```'
-              echo "Consider verifying this change manually against \`sandbox\` before merging."
+              echo "Review carefully before merging -- these resources will be destroyed."
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
@@ -164,12 +169,18 @@ jobs:
     defaults:
       run:
         working-directory: environments/dev
+    # See plan-dev's identical env block for why DATABRICKS_* exists
+    # alongside ARM_* -- two separate OIDC exchanges, azurerm's and
+    # Databricks' own.
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       ARM_USE_OIDC: "true"
       ARM_USE_CLI: "false"
+      DATABRICKS_AUTH_TYPE: github-oidc
+      DATABRICKS_HOST: https://adb-7405615984891164.4.azuredatabricks.net/
+      DATABRICKS_CLIENT_ID: 5e93b219-9bc5-4a7b-8956-40d6c3648c1d # sp-terraform-dev
     steps:
       - uses: actions/checkout@v4
 
@@ -239,7 +250,7 @@ jobs:
               echo "$DELETIONS"
               echo '```'
               echo ""
-              echo "Consider verifying this change manually against \`sandbox\` before merging."
+              echo "Review carefully before approving apply-prod below -- these resources will be destroyed."
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No destructive changes in this plan."
@@ -276,38 +287,3 @@ jobs:
           name: tfplan-prod
           path: environments/prod
       - run: terraform apply -input=false -lock-timeout=5m tfplan
-
-  # --- Sandbox: manual-only, never runs on push/PR. Trigger by hand from the
-  # Actions tab ("Run workflow") after a force-replace warning above tells you
-  # to verify a change against real Azure before merging. Applies or destroys
-  # depending on the `action` input -- always destroy when you're done, this
-  # is throwaway infra, not a third data environment. ---
-
-  sandbox:
-    needs: fmt-check
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sandbox
-    env:
-      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_SANDBOX }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      ARM_USE_OIDC: "true"
-      ARM_USE_CLI: "false"
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - run: terraform init -input=false
-      - run: terraform validate
-
-      - if: inputs.action == 'apply'
-        run: terraform apply -no-color -input=false -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
-
-      - if: inputs.action == 'destroy'
-        run: terraform destroy -no-color -input=false -auto-approve -var-file=../environments/common.tfvars -var-file=terraform.tfvars -lock-timeout=5m
