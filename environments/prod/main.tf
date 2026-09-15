@@ -89,6 +89,25 @@ resource "databricks_entitlements" "ci_group" {
   workspace_access = true
 }
 
+# See environments/dev/main.tf's identical blocks for the full reasoning
+# (grp-databricks-platform-prod needs workspace membership + entitlement
+# too, same as grp-databricks-ci-prod above -- account-level registration
+# alone isn't enough).
+resource "databricks_permission_assignment" "platform_group" {
+  group_name  = "grp-databricks-platform-prod"
+  permissions = ["ADMIN"]
+}
+
+data "databricks_group" "platform_workspace" {
+  display_name = "grp-databricks-platform-prod"
+  depends_on   = [databricks_permission_assignment.platform_group]
+}
+
+resource "databricks_entitlements" "platform_group" {
+  group_id         = data.databricks_group.platform_workspace.id
+  workspace_access = true
+}
+
 # Textually identical to environments/dev/main.tf's copy of this block --
 # see that file's comment for why this lives here rather than
 # environments/shared (databricks_grants needs a workspace-level provider,
@@ -127,7 +146,11 @@ module "platform_storage" {
   pos_landing_storage_root       = "abfss://${module.analytics_group.landing_pos_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
   ecommerce_landing_storage_root = "abfss://${module.analytics_group.landing_ecommerce_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
 
-  depends_on = [databricks_grants.metastore_admins]
+  depends_on = [
+    databricks_grants.metastore_admins,
+    databricks_permission_assignment.platform_group,
+    databricks_entitlements.platform_group,
+  ]
 }
 
 module "unity_catalog" {
