@@ -57,14 +57,15 @@ module "budget_alert_databricks_managed" {
   budget_amount     = var.budget_amount
 }
 
-# See environments/dev/main.tf's identical block for the full reasoning
-# (workspace membership is separate from account-level existence -- every
-# databricks_* resource here resolves through this root's own workspace-
-# scoped provider, so sp-terraform-prod needs membership in THIS workspace
-# specifically, not just an account-level record). USER, not ADMIN -- same
-# least-privilege reasoning as dev's copy.
+# See environments/dev/main.tf's identical blocks for the full reasoning
+# on both the lookup (var.ci_service_principal_name, not a hardcoded SCIM
+# numeric ID) and the workspace-membership grant itself.
+data "databricks_service_principal" "ci" {
+  application_id = var.ci_service_principal_name
+}
+
 resource "databricks_permission_assignment" "sp_terraform_prod" {
-  principal_id = 145491546031502 # sp-terraform-prod's account-level numeric ID (not its Application/client ID)
+  principal_id = data.databricks_service_principal.ci.id
   permissions  = ["USER"]
 }
 

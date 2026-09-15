@@ -61,6 +61,18 @@ module "budget_alert_databricks_managed" {
   budget_amount     = var.budget_amount
 }
 
+# Looked up by var.ci_service_principal_name (the Application ID this file
+# already carries), not a hardcoded SCIM numeric ID -- an earlier version
+# hardcoded 144445470688734 directly, a second identifier for the same SP
+# with no connection to the variable already identifying it below, and
+# specific to this one already-created workspace besides. Copying this
+# root module's pattern to a new environment now only means setting
+# ci_service_principal_name (already required); there's no separate numeric
+# ID to go look up and hardcode by hand each time.
+data "databricks_service_principal" "ci" {
+  application_id = var.ci_service_principal_name
+}
+
 # Workspace membership, not just account-level existence -- discovered the
 # hard way in CI: sp-terraform-dev already existed as an account-level
 # service principal (confirmed via the account SCIM API) and already had
@@ -80,7 +92,7 @@ module "budget_alert_databricks_managed" {
 # sp-terraform-dev can't be the one to grant itself this). After this one
 # apply, every future CI run already finds the SP a member.
 resource "databricks_permission_assignment" "sp_terraform_dev" {
-  principal_id = 144445470688734 # sp-terraform-dev's account-level numeric ID (not its Application/client ID)
+  principal_id = data.databricks_service_principal.ci.id
   permissions  = ["USER"]
 }
 
