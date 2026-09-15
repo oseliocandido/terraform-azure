@@ -73,16 +73,20 @@ outside Terraform's scope. Status as of this session:
 `grp-databricks-platform-prod` at the Databricks account level, then flip
 `enable_grants = true` when ready for the data-layer grants too.
 
-**Also outstanding:** `grp-databricks-ci-<env>` will eventually need its
-own explicit grant on the storage credential too (not just
-`grp-databricks-platform-<env>` membership) — CI's own identity has to
-keep reading `databricks_storage_credential.analytics` on every future
-`terraform plan`, and metastore-level `CREATE_STORAGE_CREDENTIAL` doesn't
-cascade to privileges on an already-existing credential it doesn't own.
-Confirmed directly: CI failed with `User does not have any privileges on
-Credential 'cred-analytics-dev'` even with the metastore grant already in
-place. Not yet fixed -- deferred pending confirmation of the exact
-minimal grant needed.
+**Fixed** (was "also outstanding" here): `grp-databricks-ci-<env>` now
+has an explicit `CREATE_EXTERNAL_LOCATION` grant directly on the storage
+credential (`modules/databricks/platform_storage/main.tf`'s
+`databricks_grants.credential_ci`), not membership in
+`grp-databricks-platform-<env>` — CI's own identity has to keep reading
+`databricks_storage_credential.analytics` on every future `terraform
+plan`, and metastore-level `CREATE_STORAGE_CREDENTIAL` doesn't cascade to
+privileges on an already-existing credential it doesn't own. Confirmed
+directly: CI failed with both `User does not have any privileges on
+Credential 'cred-analytics-dev'` and `User does not have CREATE EXTERNAL
+LOCATION on Credential 'cred-analytics-dev'` even with the metastore
+grant already in place. Not yet verified end-to-end in CI -- still
+blocked on `grp-databricks-platform-dev`/`-prod` account-level
+registration above.
 
 ---
 
