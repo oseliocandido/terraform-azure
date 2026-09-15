@@ -576,6 +576,19 @@ bootstrapped-identity pattern already used for `sp-terraform-*`):
 | `grp-sales-data-engineers-<env>` | Data Engineering — builds/operates pipelines | `bronze`, `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `INSERT`, `UPDATE` (+ `DELETE` in `dev` only — see below) |
 | `grp-sales-data-governance-<env>` | Administrative/governance role, not an operational one — decides who else gets access | n/a (no data-layer grants) | **Owner** of the `sales` catalog and its three schemas in both environments |
 | `sp-terraform-<env>` (existing) | CI/CD automation, not a human role | all | `USE_CATALOG`, `USE_SCHEMA`, `CREATE_SCHEMA`, `CREATE_TABLE` |
+| `grp-databricks-ci-<env>` | CI/CD automation's *own* access, not data access — `sp-terraform-<env>` as a member | n/a (no data-layer grants) | Workspace membership + metastore `CREATE_CATALOG`/`CREATE_EXTERNAL_LOCATION`/`CREATE_STORAGE_CREDENTIAL` (`environments/<env>/main.tf`, not this module) |
+
+`grp-databricks-ci-<env>` is a different kind of group from the four
+above it -- it's not PRD-derived data governance, it's the identity
+plumbing CI needs to reach a workspace/metastore at all. Granting these
+two things (workspace membership, metastore `CREATE_*`) to a group
+instead of directly to `sp-terraform-<env>` means a second workspace in
+the same environment tier, or a second CI service principal, is an Entra
+ID group-membership change and one new `databricks_permission_assignment`
+block -- not an edit to every existing grant. See
+`environments/dev/main.tf`'s `ci_group` resources for where this is
+actually declared (root-module-level, not this module -- it's about
+workspace/metastore access, upstream of anything catalog-specific here).
 
 `grp-sales-data-governance-<env>` isn't one of PRD §6's named stakeholder
 groups -- it's introduced here for separation of duties. Catalog/schema
