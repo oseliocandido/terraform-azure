@@ -97,6 +97,32 @@ resource "databricks_permission_assignment" "ci_group" {
   permissions = ["USER"]
 }
 
+# Workspace membership (above) is necessary but not sufficient --
+# discovered in CI, again the hard way: with only permission_assignment
+# applied, every databricks_* resource here still failed, this time with
+# "This API is disabled for users without the databricks-sql-access or
+# workspace-access or workspace-consume entitlements." USER-level
+# workspace membership adds the group to the workspace's default `users`
+# group, but that alone doesn't carry any entitlement to actually call the
+# workspace's API surface -- entitlements are a separate, explicit grant.
+# workspace_access = true is the minimal one of the three the error
+# lists as sufficient; no databricks_sql_access or allow_cluster_create,
+# since nothing here needs the SQL UI or compute creation rights.
+#
+# Bare data "databricks_group" lookup, not circular this time (unlike the
+# permission_assignment above) -- by the time this resource is evaluated,
+# the group already IS a workspace member (via the resource above), so a
+# workspace-scoped lookup for it now resolves fine.
+data "databricks_group" "ci" {
+  display_name = "grp-databricks-ci-dev"
+  depends_on   = [databricks_permission_assignment.ci_group]
+}
+
+resource "databricks_entitlements" "ci_group" {
+  group_id         = data.databricks_group.ci.id
+  workspace_access = true
+}
+
 # Metastore-wide, not per-catalog -- stays here rather than in
 # environments/shared, despite being conceptually account-wide: checked
 # first, and databricks_grants genuinely requires the workspace-level
@@ -145,11 +171,12 @@ resource "databricks_grants" "metastore_admins" {
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
 
-  # Ensures the group is a workspace member before Databricks evaluates
-  # anything that requires it -- not a hard API dependency, but the CI
-  # failure this fixes happened on the very first read this provider tried
-  # to make, so ordering this first removes any doubt.
-  depends_on = [databricks_permission_assignment.ci_group]
+  # Ensures the group is both a workspace member and entitled to call the
+  # workspace API before Databricks evaluates anything that requires it --
+  # not a hard API dependency, but the CI failures this fixes happened on
+  # the very first read this provider tried to make, so ordering this
+  # first removes any doubt.
+  depends_on = [databricks_permission_assignment.ci_group, databricks_entitlements.ci_group]
 }
 
 # storage_credential and the 3 external_locations moved into

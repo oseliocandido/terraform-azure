@@ -71,6 +71,21 @@ resource "databricks_permission_assignment" "ci_group" {
   permissions = ["USER"]
 }
 
+# See environments/dev/main.tf's identical blocks for the full reasoning
+# (workspace membership alone doesn't carry the entitlement to actually
+# call the workspace API -- discovered in CI via "This API is disabled
+# for users without the databricks-sql-access or workspace-access or
+# workspace-consume entitlements").
+data "databricks_group" "ci" {
+  display_name = "grp-databricks-ci-prod"
+  depends_on   = [databricks_permission_assignment.ci_group]
+}
+
+resource "databricks_entitlements" "ci_group" {
+  group_id         = data.databricks_group.ci.id
+  workspace_access = true
+}
+
 # Textually identical to environments/dev/main.tf's copy of this block --
 # see that file's comment for why this lives here rather than
 # environments/shared (databricks_grants needs a workspace-level provider,
@@ -89,7 +104,7 @@ resource "databricks_grants" "metastore_admins" {
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
 
-  depends_on = [databricks_permission_assignment.ci_group]
+  depends_on = [databricks_permission_assignment.ci_group, databricks_entitlements.ci_group]
 }
 
 module "unity_catalog" {
