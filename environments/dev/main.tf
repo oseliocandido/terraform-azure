@@ -206,6 +206,7 @@ module "platform_storage" {
   access_connector_id            = module.databricks_workspace.access_connector_id
   resource_group_name            = module.analytics_group.resource_group_name
   subscription_id                = var.subscription_id
+  ci_group_name                  = "grp-databricks-ci-dev"
   bronze_storage_root            = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
   pos_landing_storage_root       = "abfss://${module.analytics_group.landing_pos_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
   ecommerce_landing_storage_root = "abfss://${module.analytics_group.landing_ecommerce_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"

@@ -39,6 +39,31 @@ resource "databricks_storage_credential" "analytics" {
   owner = data.databricks_group.platform.display_name
 }
 
+# CREATE_EXTERNAL_LOCATION, not ownership or ALL_PRIVILEGES -- CI needs
+# just enough to keep reading this credential on every future plan and
+# create/manage external locations referencing it (its own "managed"
+# external location per domain, plus this module's own bronze/landing
+# ones). Discovered as a genuinely separate requirement from the
+# metastore-level CREATE_EXTERNAL_LOCATION grant (databricks_grants.
+# metastore_admins in the root module): that one only covers creating a
+# brand-new external location in the abstract; an existing credential you
+# don't own additionally gates who can create locations that reference
+# IT specifically -- confirmed directly, CI failed with "User does not
+# have CREATE EXTERNAL LOCATION on Credential 'cred-analytics-dev'" even
+# with the metastore-level grant already in place. Ungated by
+# enable_grants (unlike the domain-level stakeholder/analyst/engineer
+# grants in modules/databricks/unity_catalog) -- this isn't a business
+# data-access grant, it's infrastructure CI needs to function at all,
+# same reasoning as databricks_grants.metastore_admins in the root module.
+resource "databricks_grants" "credential_ci" {
+  storage_credential = databricks_storage_credential.analytics.id
+
+  grant {
+    principal  = var.ci_group_name
+    privileges = ["CREATE_EXTERNAL_LOCATION"]
+  }
+}
+
 resource "databricks_external_location" "bronze" {
   name            = "loc-analytics-${var.environment}-bronze"
   url             = var.bronze_storage_root

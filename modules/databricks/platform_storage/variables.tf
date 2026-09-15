@@ -42,3 +42,8 @@ variable "subscription_id" {
   type        = string
   description = "Azure subscription ID -- same reason as resource_group_name, both required arguments for the managed_aqs file-event queue block."
 }
+
+variable "ci_group_name" {
+  type        = string
+  description = "grp-databricks-ci-dev / grp-databricks-ci-prod -- granted CREATE_EXTERNAL_LOCATION on the storage credential below, since Terraform (running as this group's member, sp-terraform-<env>) has to keep reading/managing that credential on every future plan, and owning it belongs to grp-databricks-platform-<env> instead (see main.tf's ownership comment)."
+}
