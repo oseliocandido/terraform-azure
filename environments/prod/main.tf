@@ -58,15 +58,17 @@ module "budget_alert_databricks_managed" {
 }
 
 # See environments/dev/main.tf's identical blocks for the full reasoning
-# on both the lookup (var.ci_service_principal_name, not a hardcoded SCIM
-# numeric ID) and the workspace-membership grant itself.
-data "databricks_service_principal" "ci" {
-  application_id = var.ci_service_principal_name
-}
-
-resource "databricks_permission_assignment" "sp_terraform_prod" {
-  principal_id = data.databricks_service_principal.ci.id
-  permissions  = ["USER"]
+# (group-based, not per-SP -- workspace membership and the metastore grant
+# below are the two genuinely per-identity/per-workspace grants a new
+# workspace or a new SP would otherwise mean repeating by hand; granting
+# the group once and managing access via its membership avoids that).
+# group_name, not a data "databricks_group" lookup -- same circularity
+# reasoning as dev's copy (this resource establishes the group's
+# workspace membership, so a workspace-scoped lookup here would need the
+# membership it's creating).
+resource "databricks_permission_assignment" "ci_group" {
+  group_name  = "grp-databricks-ci-prod"
+  permissions = ["USER"]
 }
 
 # Textually identical to environments/dev/main.tf's copy of this block --
@@ -79,15 +81,15 @@ resource "databricks_grants" "metastore_admins" {
   metastore = var.metastore_id
 
   grant {
-    principal  = "5e93b219-9bc5-4a7b-8956-40d6c3648c1d" # sp-terraform-dev
+    principal  = "grp-databricks-ci-dev"
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
   grant {
-    principal  = "f922b7ef-fa80-4230-b1aa-1c9798fe8ebf" # sp-terraform-prod
+    principal  = "grp-databricks-ci-prod"
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
 
-  depends_on = [databricks_permission_assignment.sp_terraform_prod]
+  depends_on = [databricks_permission_assignment.ci_group]
 }
 
 module "unity_catalog" {

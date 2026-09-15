@@ -61,39 +61,40 @@ module "budget_alert_databricks_managed" {
   budget_amount     = var.budget_amount
 }
 
-# Looked up by var.ci_service_principal_name (the Application ID this file
-# already carries), not a hardcoded SCIM numeric ID -- an earlier version
-# hardcoded 144445470688734 directly, a second identifier for the same SP
-# with no connection to the variable already identifying it below, and
-# specific to this one already-created workspace besides. Copying this
-# root module's pattern to a new environment now only means setting
-# ci_service_principal_name (already required); there's no separate numeric
-# ID to go look up and hardcode by hand each time.
-data "databricks_service_principal" "ci" {
-  application_id = var.ci_service_principal_name
-}
-
-# Workspace membership, not just account-level existence -- discovered the
-# hard way in CI: sp-terraform-dev already existed as an account-level
-# service principal (confirmed via the account SCIM API) and already had
-# the metastore-level CREATE_* grants below, but every databricks_* resource
-# in this root module still failed with "user is not a member of workspace
-# <id>" -- every one of them resolves through this root's single, workspace-
-# scoped databricks provider (host = module.databricks_workspace.workspace_url),
-# and account-level existence alone doesn't grant access to any one specific
-# workspace's API. USER, not ADMIN -- this only needs to let the SP call the
-# workspace's API surface at all; actual UC object creation rights come from
-# the metastore-level grant below, not from a workspace admin role, so ADMIN
-# would be unnecessary over-scoping.
+# Granted to grp-databricks-ci-dev, not sp-terraform-dev directly -- an
+# earlier version granted the SP itself (first as a hardcoded numeric ID,
+# then via a data source lookup keyed on var.ci_service_principal_name),
+# discovered along the way that this doesn't scale: workspace membership
+# and the metastore grant below are both genuinely per-identity grants,
+# so a second workspace in this same environment tier, or a second SP for
+# a different pipeline, would mean repeating both grants by hand again.
+# Grant the GROUP once; membership in it is what determines who actually
+# gets the access, changeable without touching this file. Per Databricks'
+# own identity best practices: "assign groups permissions to workspaces
+# instead of assigning workspace permissions to users individually" and
+# "when multiple service principals need the same permissions, add them
+# as members of a group and assign permissions to the group."
+#
+# group_name (a bare string), not a data "databricks_group" lookup -- a
+# deliberate exception to the "look it up, don't hardcode" pattern used
+# everywhere else in this codebase (see modules/databricks/unity_catalog's
+# data "databricks_group" blocks): a workspace-scoped data source lookup
+# for this group would itself require the group to already be a member of
+# this workspace, which is exactly what this resource is establishing in
+# the first place -- looking it up here would be circular. USER, not
+# ADMIN -- this only needs to let the group's members call the workspace's
+# API surface at all; actual UC object creation rights come from the
+# metastore-level grant below, not a workspace admin role.
 #
 # Applied once, locally, by a human session that's already a workspace
 # member (this resource requires a workspace-level provider -- same
 # chicken-and-egg constraint as everything else here, so CI's own
 # sp-terraform-dev can't be the one to grant itself this). After this one
-# apply, every future CI run already finds the SP a member.
-resource "databricks_permission_assignment" "sp_terraform_dev" {
-  principal_id = data.databricks_service_principal.ci.id
-  permissions  = ["USER"]
+# apply, every future CI run already finds the group -- and therefore any
+# current or future member -- already has access.
+resource "databricks_permission_assignment" "ci_group" {
+  group_name  = "grp-databricks-ci-dev"
+  permissions = ["USER"]
 }
 
 # Metastore-wide, not per-catalog -- stays here rather than in
@@ -119,28 +120,36 @@ resource "databricks_permission_assignment" "sp_terraform_dev" {
 # member (checked directly in the Account Console's group member list),
 # and a metastore's owner has every privilege on it implicitly, CREATE_*
 # included -- an explicit personal grant on top would be redundant, not
-# an extra safety net. The two SPs below still need their own explicit
-# grants: they're deliberately NOT members of grp-databricks-account-admins
-# (that group carries the actual account_admin role -- adding CI/automation
-# SPs to it would hand them full account-wide admin just to get these three
-# narrow metastore privileges, over-scoped for what they need).
+# an extra safety net.
+#
+# Granted to grp-databricks-ci-dev/grp-databricks-ci-prod, not individual
+# SPs -- same reasoning as the permission_assignment above. Deliberately
+# NOT grp-databricks-account-admins: that group carries the actual
+# account_admin role, and adding CI/automation groups to it would hand
+# every member full account-wide admin just to get these three narrow
+# metastore privileges. Both groups appear in both dev's and prod's copy
+# of this block, symmetric with the pre-group-based version -- each
+# environment's CI identity technically gets CREATE_* across the whole
+# metastore, not just its own environment's catalog, same as before this
+# change; narrowing that further is a separate improvement, not something
+# this refactor changes either way.
 resource "databricks_grants" "metastore_admins" {
   metastore = var.metastore_id
 
   grant {
-    principal  = "5e93b219-9bc5-4a7b-8956-40d6c3648c1d" # sp-terraform-dev
+    principal  = "grp-databricks-ci-dev"
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
   grant {
-    principal  = "f922b7ef-fa80-4230-b1aa-1c9798fe8ebf" # sp-terraform-prod
+    principal  = "grp-databricks-ci-prod"
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
 
-  # Ensures the SP is a workspace member before Databricks evaluates
+  # Ensures the group is a workspace member before Databricks evaluates
   # anything that requires it -- not a hard API dependency, but the CI
   # failure this fixes happened on the very first read this provider tried
   # to make, so ordering this first removes any doubt.
-  depends_on = [databricks_permission_assignment.sp_terraform_dev]
+  depends_on = [databricks_permission_assignment.ci_group]
 }
 
 # storage_credential and the 3 external_locations moved into
