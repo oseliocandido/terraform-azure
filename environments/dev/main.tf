@@ -81,10 +81,20 @@ module "budget_alert_databricks_managed" {
 # data "databricks_group" blocks): a workspace-scoped data source lookup
 # for this group would itself require the group to already be a member of
 # this workspace, which is exactly what this resource is establishing in
-# the first place -- looking it up here would be circular. USER, not
-# ADMIN -- this only needs to let the group's members call the workspace's
-# API surface at all; actual UC object creation rights come from the
-# metastore-level grant below, not a workspace admin role.
+# the first place -- looking it up here would be circular.
+#
+# ADMIN, not USER -- an earlier version used USER, reasoning it was the
+# minimal thing needed to let the group's members call the workspace API
+# at all. Confirmed wrong in CI, not just cautious: this resource GRANTS
+# workspace access to others, and Terraform has to read it on every single
+# plan (to detect drift) regardless of whether anything changed. Reading/
+# managing databricks_permission_assignment specifically requires the
+# calling identity to already be a workspace or account admin -- "User
+# with userId ... is not an account admin ... or a workspace admin" is
+# the literal error USER-level membership produced. This isn't scope
+# creep, it's what Terraform itself needs to keep managing this one
+# resource going forward, on every future CI run, not just this bootstrap
+# apply.
 #
 # Applied once, locally, by a human session that's already a workspace
 # member (this resource requires a workspace-level provider -- same
@@ -94,7 +104,7 @@ module "budget_alert_databricks_managed" {
 # current or future member -- already has access.
 resource "databricks_permission_assignment" "ci_group" {
   group_name  = "grp-databricks-ci-dev"
-  permissions = ["USER"]
+  permissions = ["ADMIN"]
 }
 
 # Workspace membership (above) is necessary but not sufficient --

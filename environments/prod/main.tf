@@ -65,10 +65,13 @@ module "budget_alert_databricks_managed" {
 # group_name, not a data "databricks_group" lookup -- same circularity
 # reasoning as dev's copy (this resource establishes the group's
 # workspace membership, so a workspace-scoped lookup here would need the
-# membership it's creating).
+# membership it's creating). ADMIN, not USER -- see dev's copy for why
+# (confirmed in CI: reading/managing databricks_permission_assignment
+# itself requires the calling identity to already be a workspace/account
+# admin, not just a workspace member).
 resource "databricks_permission_assignment" "ci_group" {
   group_name  = "grp-databricks-ci-prod"
-  permissions = ["USER"]
+  permissions = ["ADMIN"]
 }
 
 # See environments/dev/main.tf's identical blocks for the full reasoning
