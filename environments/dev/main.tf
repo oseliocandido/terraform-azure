@@ -61,6 +61,29 @@ module "budget_alert_databricks_managed" {
   budget_amount     = var.budget_amount
 }
 
+# Workspace membership, not just account-level existence -- discovered the
+# hard way in CI: sp-terraform-dev already existed as an account-level
+# service principal (confirmed via the account SCIM API) and already had
+# the metastore-level CREATE_* grants below, but every databricks_* resource
+# in this root module still failed with "user is not a member of workspace
+# <id>" -- every one of them resolves through this root's single, workspace-
+# scoped databricks provider (host = module.databricks_workspace.workspace_url),
+# and account-level existence alone doesn't grant access to any one specific
+# workspace's API. USER, not ADMIN -- this only needs to let the SP call the
+# workspace's API surface at all; actual UC object creation rights come from
+# the metastore-level grant below, not from a workspace admin role, so ADMIN
+# would be unnecessary over-scoping.
+#
+# Applied once, locally, by a human session that's already a workspace
+# member (this resource requires a workspace-level provider -- same
+# chicken-and-egg constraint as everything else here, so CI's own
+# sp-terraform-dev can't be the one to grant itself this). After this one
+# apply, every future CI run already finds the SP a member.
+resource "databricks_permission_assignment" "sp_terraform_dev" {
+  principal_id = 144445470688734 # sp-terraform-dev's account-level numeric ID (not its Application/client ID)
+  permissions  = ["USER"]
+}
+
 # Metastore-wide, not per-catalog -- stays here rather than in
 # environments/shared, despite being conceptually account-wide: checked
 # first, and databricks_grants genuinely requires the workspace-level
@@ -100,6 +123,12 @@ resource "databricks_grants" "metastore_admins" {
     principal  = "f922b7ef-fa80-4230-b1aa-1c9798fe8ebf" # sp-terraform-prod
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
+
+  # Ensures the SP is a workspace member before Databricks evaluates
+  # anything that requires it -- not a hard API dependency, but the CI
+  # failure this fixes happened on the very first read this provider tried
+  # to make, so ordering this first removes any doubt.
+  depends_on = [databricks_permission_assignment.sp_terraform_dev]
 }
 
 # storage_credential and the 3 external_locations moved into

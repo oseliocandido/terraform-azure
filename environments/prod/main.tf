@@ -57,6 +57,17 @@ module "budget_alert_databricks_managed" {
   budget_amount     = var.budget_amount
 }
 
+# See environments/dev/main.tf's identical block for the full reasoning
+# (workspace membership is separate from account-level existence -- every
+# databricks_* resource here resolves through this root's own workspace-
+# scoped provider, so sp-terraform-prod needs membership in THIS workspace
+# specifically, not just an account-level record). USER, not ADMIN -- same
+# least-privilege reasoning as dev's copy.
+resource "databricks_permission_assignment" "sp_terraform_prod" {
+  principal_id = 145491546031502 # sp-terraform-prod's account-level numeric ID (not its Application/client ID)
+  permissions  = ["USER"]
+}
+
 # Textually identical to environments/dev/main.tf's copy of this block --
 # see that file's comment for why this lives here rather than
 # environments/shared (databricks_grants needs a workspace-level provider,
@@ -74,6 +85,8 @@ resource "databricks_grants" "metastore_admins" {
     principal  = "f922b7ef-fa80-4230-b1aa-1c9798fe8ebf" # sp-terraform-prod
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
+
+  depends_on = [databricks_permission_assignment.sp_terraform_prod]
 }
 
 module "unity_catalog" {
