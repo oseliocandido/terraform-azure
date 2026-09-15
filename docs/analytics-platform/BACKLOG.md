@@ -48,36 +48,28 @@ duplicating the current structure a second time), or a real destroy of
 
 ---
 
-## Identity: `grp-sales-*` groups not yet provisioned (blocks grants + ownership)
+## Identity: group provisioning status
 
-**Blocks two things right now, not just a future phase.** Every
-`grp-sales-*-<env>` principal referenced in
-[ARCHITECTURE.md's "Identity model"](ARCHITECTURE.md#identity-model-groups-not-custom-roles)
-is an Entra ID group, sourced there and synced to the Databricks account
-via SCIM — group creation/membership is an Entra ID/IT-admin action
-outside Terraform's scope, and none of them have been created yet.
-Confirmed directly: `terraform apply` on `dev` fails with
-`Could not find principal with name grp-sales-data-governance-dev` when
-setting `databricks_catalog`/`databricks_schema` `owner` — this isn't
-hypothetical, it's the current blocking error on `environments/dev`.
+Every `grp-*` principal referenced anywhere in this repo is an Entra ID
+group, created via `az ad group create` and then registered at the
+Databricks account level by hand (Account Console → User management →
+Groups → Add group) — Automatic Identity Management syncs an *existing*
+account-level group's membership continuously, but registering a group
+at the account level in the first place is still a one-time manual step,
+outside Terraform's scope. Status as of this session:
 
-Four groups per environment (eight total, `dev`/`prod` never share a
-group), plus one account-level group shared by both:
+| Group | Status | Needed for |
+|---|---|---|
+| `grp-databricks-account-admins` (account-level, one, not per-env) | Provisioned, member confirmed | `owner` on `databricks_metastore.primary` |
+| `grp-sales-data-governance-dev` | Provisioned | `owner` on `sales_dev`'s catalog/schemas/storage credential |
+| `grp-sales-data-governance-prod` | **Not yet provisioned** | `owner` on `sales_prod`'s catalog/schemas/storage credential — blocks `terraform apply` on `prod` once its `unity_catalog` module actually runs |
+| `grp-sales-stakeholders-<env>`, `grp-sales-analysts-<env>`, `grp-sales-data-engineers-<env>` (dev + prod, 6 total) | Provisioned | `databricks_grants` once `enable_grants = true` |
+| `grp-databricks-ci-dev` / `grp-databricks-ci-prod` (Entra ID groups, `sp-terraform-dev`/`-prod` added as members) | **Not yet registered at the Databricks account level** | Workspace membership (`databricks_permission_assignment`) and metastore `CREATE_*` privileges (`databricks_grants.metastore_admins`) for the CI service principals — see `environments/dev/main.tf`/`environments/prod/main.tf`'s `ci_group` resources |
 
-| Group | Needed for |
-|---|---|
-| `grp-sales-stakeholders-<env>` | `databricks_grants` once `enable_grants = true` |
-| `grp-sales-analysts-<env>` | `databricks_grants` once `enable_grants = true` |
-| `grp-sales-data-engineers-<env>` | `databricks_grants` once `enable_grants = true` |
-| `grp-sales-data-governance-<env>` | `owner` on `databricks_catalog.sales`, its three schemas, and `databricks_storage_credential.sales` — **blocks `terraform apply` on `dev` today**, independent of `enable_grants` |
-| `grp-databricks-account-admins` (account-level, one group total, not per-env) | `owner` on `databricks_metastore.primary` — **blocks `terraform apply` on `environments/shared` today** (see ARCHITECTURE.md's "Ownership note") |
-
-**Action needed, outside Terraform:** create all nine groups in Entra
-ID, confirm SCIM sync has brought them into the Databricks account
-(Account Console → User management → Groups), then `terraform apply`
-`environments/shared` and `environments/dev` (owner changes) and flip
-`enable_grants = true` when ready for the data-layer grants too. `prod`'s
-four env-scoped groups follow once `prod` itself is built.
+**Remaining action needed, outside Terraform:** register
+`grp-sales-data-governance-prod`, `grp-databricks-ci-dev`, and
+`grp-databricks-ci-prod` at the Databricks account level, then flip
+`enable_grants = true` when ready for the data-layer grants too.
 
 ---
 
@@ -282,10 +274,9 @@ follow the same one-time-`az`-CLI bootstrap pattern already used for
 `sp-terraform-*` (`docs/azure-setup-commands.sh`).
 
 **Also deferred to that point:** a fifth, pipeline-specific SP alongside
-whatever `grp-sales-*` groups exist by then — see "Identity: `grp-sales-*`
-groups not yet provisioned" above for the four groups already blocking
-`dev` today; that item isn't pipeline-phase-specific and shouldn't wait
-for this one.
+whatever `grp-sales-*` groups exist by then — see "Identity: group
+provisioning status" above for what's still outstanding; that item isn't
+pipeline-phase-specific and shouldn't wait for this one.
 
 ---
 
