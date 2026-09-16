@@ -43,6 +43,11 @@ variable "ci_service_principal_name" {
   description = "sp-terraform-dev / sp-terraform-prod -- granted full catalog access for pipeline automation."
 }
 
+variable "ci_group_name" {
+  type        = string
+  description = "grp-databricks-ci-dev / grp-databricks-ci-prod -- granted CREATE_EXTERNAL_TABLE on this domain's \"managed\" external location, since Terraform has to keep reading it on every future plan and that object's owner is this domain's own governance group, not CI. See modules/databricks/platform_storage's identical grant for the fuller reasoning."
+}
+
 variable "enable_grants" {
   type        = bool
   default     = false

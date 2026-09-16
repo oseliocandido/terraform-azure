@@ -61,32 +61,47 @@ outside Terraform's scope. Status as of this session:
 | Group | Status | Needed for |
 |---|---|---|
 | `grp-databricks-account-admins` (account-level, one, not per-env) | Provisioned, member confirmed | `owner` on `databricks_metastore.primary` |
-| `grp-sales-data-governance-dev` | Provisioned, member confirmed | `owner` on `sales_dev`'s catalog/schemas (no longer the storage credential -- see below) |
+| `grp-sales-data-governance-dev` | Provisioned | `owner` on `sales_dev`'s catalog/schemas (bare-string reference, not a data-source lookup -- see below). No workspace-level permission, deliberately |
 | `grp-sales-data-governance-prod` | **Not yet provisioned** | `owner` on `sales_prod`'s catalog/schemas — blocks `terraform apply` on `prod` once its `unity_catalog` module actually runs |
-| `grp-sales-stakeholders-<env>`, `grp-sales-analysts-<env>`, `grp-sales-data-engineers-<env>` (dev + prod, 6 total) | Provisioned | `databricks_grants` once `enable_grants = true` |
-| `grp-databricks-ci-dev` / `grp-databricks-ci-prod` (Entra ID groups, `sp-terraform-dev`/`-prod` added as members) | **Not yet registered at the Databricks account level** | Workspace membership (`databricks_permission_assignment`) and metastore `CREATE_*` privileges (`databricks_grants.metastore_admins`) for the CI service principals — see `environments/dev/main.tf`/`environments/prod/main.tf`'s `ci_group` resources |
-| `grp-databricks-platform-dev` / `grp-databricks-platform-prod` (Entra ID groups; `oseliocandido` added to `-dev` for bootstrap) | **Not yet registered at the Databricks account level** | `owner` on `databricks_storage_credential.analytics` and the bronze/landing external locations (`modules/databricks/platform_storage`) — moved off `grp-sales-data-governance-<env>` once a second business domain (marketing) became concrete: that infrastructure isn't sales-specific |
+| `grp-sales-stakeholders-<env>`, `grp-sales-analysts-<env>`, `grp-sales-data-engineers-<env>` (dev + prod, 6 total) | Provisioned | `databricks_grants` once `enable_grants = true` (flipped for `dev` in `environments/dev/terraform.tfvars`) |
+| `grp-databricks-ci-dev` / `grp-databricks-ci-prod` (Entra ID groups, `sp-terraform-dev`/`-prod` added as members) | `-dev` registered and applied; `-prod` registered, not yet applied (`prod` itself doesn't exist) | Workspace membership (`databricks_permission_assignment`) and metastore `CREATE_*` privileges (`databricks_grants.metastore_admins`) for the CI service principals — see `environments/dev/main.tf`/`environments/prod/main.tf`'s `ci_group` resources |
+| `grp-databricks-platform-dev` / `grp-databricks-platform-prod` (Entra ID groups; `oseliocandido` added to `-dev` for bootstrap) | Registered | `owner` on `databricks_storage_credential.analytics` and the bronze/landing external locations (bare-string reference -- see below). No workspace-level permission, deliberately |
 
-**Remaining action needed, outside Terraform:** register
-`grp-sales-data-governance-prod`, `grp-databricks-ci-dev`,
-`grp-databricks-ci-prod`, `grp-databricks-platform-dev`, and
-`grp-databricks-platform-prod` at the Databricks account level, then flip
-`enable_grants = true` when ready for the data-layer grants too.
+**Only `grp-databricks-ci-<env>` needs workspace-level presence.**
+An earlier version also gave `grp-databricks-platform-<env>` and
+`grp-sales-data-governance-<env>` workspace membership + the
+`workspace_access` entitlement, purely as a side effect of using
+`data "databricks_group"` lookups for their `owner =` references (a
+workspace-scoped lookup requires the looked-up group to already be a
+workspace member to resolve). Neither group actually operates in the
+workspace -- they're pure Unity Catalog ownership/governance, enforced by
+UC itself independent of workspace membership. Switched both to bare
+string `owner` references instead (losing the "fails clearly at plan
+time if the group doesn't exist" diagnostic for these two specifically,
+in exchange for not granting workspace access to groups with no
+operational need for it) and removed their `databricks_permission_
+assignment`/`databricks_entitlements` resources entirely. This also
+resolved a real drift found via the Account Console: `grp-sales-data-
+governance-dev` had a manual, non-Terraform-tracked workspace `Admin`
+grant (presumably added by hand mid-session to unblock something) --
+confirmed gone after this cleanup (checked directly against the account's
+own SCIM API).
 
-**Fixed** (was "also outstanding" here): `grp-databricks-ci-<env>` now
-has an explicit `CREATE_EXTERNAL_LOCATION` grant directly on the storage
-credential (`modules/databricks/platform_storage/main.tf`'s
-`databricks_grants.credential_ci`), not membership in
-`grp-databricks-platform-<env>` — CI's own identity has to keep reading
-`databricks_storage_credential.analytics` on every future `terraform
-plan`, and metastore-level `CREATE_STORAGE_CREDENTIAL` doesn't cascade to
-privileges on an already-existing credential it doesn't own. Confirmed
-directly: CI failed with both `User does not have any privileges on
-Credential 'cred-analytics-dev'` and `User does not have CREATE EXTERNAL
-LOCATION on Credential 'cred-analytics-dev'` even with the metastore
-grant already in place. Not yet verified end-to-end in CI -- still
-blocked on `grp-databricks-platform-dev`/`-prod` account-level
-registration above.
+**`dev` is fully applied** as of this session, including the catalog-level
+grant that was blocked earlier by this metastore's privilege version:
+`grp-sales-data-engineers-<env>`'s catalog grant is blanket `MODIFY`, not
+the fine-grained `INSERT`/`UPDATE`/`DELETE` split an earlier version used
+(this metastore's privilege version `1.0` doesn't support fine-grained
+DML privileges at the catalog level -- confirmed via `terraform apply`
+error, `Privilege UPDATE is not applicable to this entity
+[CATALOG/CATALOG_STANDARD]`; no dev/prod `DELETE` distinction is possible
+on this metastore version either way). `sales_dev` catalog, all three
+schemas, the storage credential, bronze/managed/landing external
+locations, all catalog/schema-level grants, and both landing volumes'
+grants all exist for real in Databricks now, not just planned. `prod`
+still doesn't exist at all (no workspace, no catalog);
+`grp-sales-data-governance-prod` is the only remaining un-registered
+group, and registering it is what unblocks `prod`'s first apply.
 
 ---
 

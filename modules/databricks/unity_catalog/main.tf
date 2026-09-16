@@ -1,11 +1,16 @@
-# Looked up, not referenced as a bare string, for every owner = below --
-# if this group hasn't been registered at the Databricks account level
-# yet (see BACKLOG.md's Identity section), this makes `terraform plan`
-# fail immediately with a clear "no such group" error instead of `apply`
-# failing later with Databricks' own less obvious "Could not find
-# principal with name ..." message.
-data "databricks_group" "data_governance" {
-  display_name = "grp-sales-data-governance-${var.environment}"
+# Bare string, not a data "databricks_group" lookup -- an earlier version
+# looked this up (to fail clearly at plan time if the group didn't exist),
+# but that forced grp-sales-data-governance-<env> to be a workspace
+# member just to satisfy the lookup, even though it never actually
+# operates in this workspace -- it's a pure ownership/governance group
+# (see ARCHITECTURE.md's Identity model section), and setting `owner` is
+# just another field in the same API call CI (which IS a real workspace
+# member) is already making. Traded the plan-time diagnostic for not
+# granting workspace access to a group that has no real business holding
+# it -- same reasoning as modules/databricks/platform_storage's identical
+# change for grp-databricks-platform-<env>.
+locals {
+  data_governance_group_name = "grp-sales-data-governance-${var.environment}"
 }
 
 resource "databricks_catalog" "sales" {
@@ -54,7 +59,7 @@ resource "databricks_catalog" "sales" {
   # keeping "who can touch the data" and "who can change who can touch
   # the data" as two different groups. See ARCHITECTURE.md's Identity
   # model section.
-  owner = data.databricks_group.data_governance.display_name
+  owner = local.data_governance_group_name
 }
 
 # Without this, dev.* and prod.* are both queryable from either workspace
@@ -85,6 +90,27 @@ resource "databricks_external_location" "managed" {
   name            = "loc-analytics-${var.environment}-${var.domain}-managed"
   url             = var.catalog_storage_root
   credential_name = var.storage_credential_name
+
+  # Domain-scoped, unlike platform_storage's own external locations --
+  # this one backs THIS domain's catalog specifically, so its owner is
+  # this domain's own governance group, not grp-databricks-platform-<env>.
+  owner = local.data_governance_group_name
+}
+
+# Same non-cascading-ownership problem as platform_storage's own
+# databricks_grants.bronze_ci/pos_landing_ci/ecommerce_landing_ci --
+# CI has to keep reading this external location on every future plan,
+# and metastore/credential-level CREATE_EXTERNAL_LOCATION grants don't
+# cascade to privileges on this specific, already-existing, group-owned
+# object. Same CREATE_EXTERNAL_TABLE choice for the same reason (BROWSE
+# alone confirmed insufficient elsewhere in this codebase).
+resource "databricks_grants" "managed_ci" {
+  external_location = databricks_external_location.managed.id
+
+  grant {
+    principal  = var.ci_group_name
+    privileges = ["CREATE_EXTERNAL_TABLE"]
+  }
 }
 
 resource "databricks_schema" "bronze" {
@@ -102,7 +128,7 @@ resource "databricks_schema" "bronze" {
   # Same group-ownership reasoning as databricks_catalog.sales above --
   # applied per schema too, since schema ownership doesn't inherit from
   # the parent catalog's owner.
-  owner = data.databricks_group.data_governance.display_name
+  owner = local.data_governance_group_name
 }
 
 # No storage_root on silver/gold -- unlike bronze, these are Unity Catalog
@@ -117,14 +143,14 @@ resource "databricks_schema" "bronze" {
 resource "databricks_schema" "silver" {
   catalog_name = databricks_catalog.sales.name
   name         = "silver"
-  owner        = data.databricks_group.data_governance.display_name
+  owner        = local.data_governance_group_name
   comment      = "Silver layer schema for the ${var.domain} catalog"
 }
 
 resource "databricks_schema" "gold" {
   catalog_name = databricks_catalog.sales.name
   name         = "gold"
-  owner        = data.databricks_group.data_governance.display_name
+  owner        = local.data_governance_group_name
   comment      = "Gold layer schema for the ${var.domain} catalog"
 }
 
@@ -152,24 +178,25 @@ resource "databricks_grants" "sales_catalog" {
   # Catalog-scoped on purpose: these two need every layer, so inheriting
   # to all current and future schemas is the intended behavior.
   #
-  # INSERT/UPDATE in prod, human group -- a considered divergence, not an
-  # oversight. Databricks' own Unity Catalog best-practices doc recommends
-  # reserving direct MODIFY-class access on production tables for service
-  # principals only, with humans writing through pipelines instead. There
-  # is no pipeline yet that owns these writes (see BACKLOG.md), so
-  # grp-sales-data-engineers-prod keeps direct INSERT/UPDATE for now --
-  # otherwise the team has no way to land or fix prod data at all. DELETE
-  # is still withheld in prod (below) as the one irreversible operation
-  # that shouldn't be a direct human action even under this exception.
-  # Revisit this grant once pipeline automation covers prod writes end to
-  # end -- at that point INSERT/UPDATE should move to sp-terraform-prod
-  # (or a dedicated pipeline service principal) and be dropped here.
+  # Blanket MODIFY, not the fine-grained INSERT/UPDATE/DELETE split an
+  # earlier version of this grant used -- that was a deliberate attempt to
+  # withhold DELETE specifically in prod (Databricks' own Unity Catalog
+  # best-practices doc recommends reserving direct MODIFY-class access on
+  # production tables for service principals only, with humans writing
+  # through pipelines instead; there's no pipeline yet that owns these
+  # writes, so the team still needs SOME direct human write path). Reverted
+  # after `terraform apply` failed outright: "Privilege UPDATE is not
+  # applicable to this entity [CATALOG/CATALOG_STANDARD]... check the
+  # privilege version of the metastore in use [1.0]" -- this metastore's
+  # privilege version doesn't support the fine-grained DML privileges at
+  # the catalog level at all, in either environment, so the dev/prod DELETE
+  # distinction wasn't actually available to begin with. MODIFY includes
+  # DELETE in both environments now -- revisit if this metastore is ever
+  # upgraded to a privilege version that supports the fine-grained split
+  # (see BACKLOG.md).
   grant {
-    principal = "grp-sales-data-engineers-${var.environment}"
-    privileges = concat(
-      ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE"],
-      var.environment == "dev" ? ["DELETE"] : [] # prod: no DELETE
-    )
+    principal  = "grp-sales-data-engineers-${var.environment}"
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY"]
   }
   grant {
     principal  = var.ci_service_principal_name # sp-terraform-dev / sp-terraform-prod

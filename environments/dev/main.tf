@@ -133,30 +133,23 @@ resource "databricks_entitlements" "ci_group" {
   workspace_access = true
 }
 
-# Same shape as ci_group above, for the same reason -- grp-databricks-
-# platform-dev needs workspace membership + the workspace_access
-# entitlement to manage the storage credential in module.platform_storage
-# below, and account-level group registration alone doesn't grant access
-# to any one specific workspace. Confirmed directly: registering the
-# group at the account level (Account Console -> Add group) was NOT
-# enough on its own -- terraform still failed with "cannot find group:
-# grp-databricks-platform-dev" until this resource (the actual, already-
-# built-for-exactly-this-purpose Terraform mechanism) ran, instead of
-# also doing this by hand in the UI.
-resource "databricks_permission_assignment" "platform_group" {
-  group_name  = "grp-databricks-platform-dev"
-  permissions = ["ADMIN"]
-}
-
-data "databricks_group" "platform_workspace" {
-  display_name = "grp-databricks-platform-dev"
-  depends_on   = [databricks_permission_assignment.platform_group]
-}
-
-resource "databricks_entitlements" "platform_group" {
-  group_id         = data.databricks_group.platform_workspace.id
-  workspace_access = true
-}
+# No workspace-level resources here for grp-databricks-platform-dev or
+# grp-sales-data-governance-dev, deliberately -- an earlier version gave
+# both workspace membership + entitlements, the same shape as ci_group
+# above. Turned out unnecessary: neither group actually operates in this
+# workspace, they're pure Unity Catalog ownership/governance groups (see
+# their `owner =` references in modules/databricks/platform_storage and
+# modules/databricks/unity_catalog, now bare strings instead of a
+# data-source lookup for exactly this reason -- see those files'
+# comments). Only grp-databricks-ci-dev genuinely needs workspace
+# presence, since it's the identity actually calling this workspace's API
+# on every plan/apply.
+#
+# Note: grp-sales-data-governance-dev still shows as a workspace Admin in
+# the real Account Console -- that was a manual grant made outside
+# Terraform at some point (see BACKLOG.md), never something Terraform
+# created, so removing these resources doesn't revoke it. Cleaning that
+# up, if wanted, is a manual UI action, not a Terraform one.
 
 # Metastore-wide, not per-catalog -- stays here rather than in
 # environments/shared, despite being conceptually account-wide: checked
@@ -238,14 +231,8 @@ module "platform_storage" {
 
   # Same race-condition reasoning as module.unity_catalog's own depends_on
   # below -- this module's databricks_storage_credential also needs
-  # CREATE_STORAGE_CREDENTIAL on the metastore first, and (since it's
-  # owned by grp-databricks-platform-dev) that group needs workspace
-  # membership + entitlement before Terraform can even read it back.
-  depends_on = [
-    databricks_grants.metastore_admins,
-    databricks_permission_assignment.platform_group,
-    databricks_entitlements.platform_group,
-  ]
+  # CREATE_STORAGE_CREDENTIAL on the metastore first.
+  depends_on = [databricks_grants.metastore_admins]
 }
 
 # Purely per-domain now -- storage_credential and the bronze/landing
@@ -259,6 +246,7 @@ module "unity_catalog" {
   metastore_id                 = var.metastore_id
   workspace_id                 = module.databricks_workspace.workspace_id
   ci_service_principal_name    = var.ci_service_principal_name
+  ci_group_name                = "grp-databricks-ci-dev"
   enable_grants                = var.enable_grants
   storage_credential_name      = module.platform_storage.storage_credential_name
   bronze_external_location_url = module.platform_storage.bronze_external_location_url

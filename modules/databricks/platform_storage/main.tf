@@ -12,12 +12,17 @@
 # begin with. This module now owns that shared infrastructure once per
 # environment; modules/databricks/unity_catalog stays purely per-domain.
 
-# Looked up, not referenced as a bare string -- see
-# modules/databricks/unity_catalog/main.tf's identical data source for the
-# full reasoning (fails clearly at plan time if this group hasn't been
-# registered at the Databricks account level yet).
-data "databricks_group" "platform" {
-  display_name = "grp-databricks-platform-${var.environment}"
+# Bare string, not a data "databricks_group" lookup -- an earlier version
+# looked this up (to fail clearly at plan time if the group didn't exist),
+# but that forced grp-databricks-platform-<env> to be a workspace member
+# just to satisfy the lookup, even though it never actually operates in
+# this workspace -- it's a pure ownership/governance group, and setting
+# `owner` is just another field in the same API call CI (which IS a real
+# workspace member) is already making. Traded the plan-time diagnostic
+# for not granting workspace access to a group that has no real business
+# holding it.
+locals {
+  platform_group_name = "grp-databricks-platform-${var.environment}"
 }
 
 resource "databricks_storage_credential" "analytics" {
@@ -36,7 +41,7 @@ resource "databricks_storage_credential" "analytics" {
   # shared infrastructure (this credential, bronze, source-system landing)
   # the same way a domain's governance group administers that domain's own
   # catalog/schemas. See ARCHITECTURE.md's Identity model section.
-  owner = data.databricks_group.platform.display_name
+  owner = local.platform_group_name
 }
 
 # CREATE_EXTERNAL_LOCATION, not ownership or ALL_PRIVILEGES -- CI needs
@@ -80,6 +85,32 @@ resource "databricks_external_location" "bronze" {
   # events on, precisely because they don't have this contamination
   # problem.
   enable_file_events = false
+
+  # Explicit owner, same as the storage credential above and for the same
+  # reason -- environment-wide infrastructure, not domain-specific, so
+  # grp-databricks-platform-<env> administers it rather than whichever
+  # identity happened to apply this first.
+  owner = local.platform_group_name
+}
+
+# CI needs to keep reading each external location it doesn't own on every
+# future plan, same non-cascading-ownership problem as the storage
+# credential's own databricks_grants.credential_ci above -- confirmed
+# directly: CI failed with "User does not have any non-BROWSE privileges
+# on External Location 'loc-analytics-dev-bronze'" (and the two landing
+# locations below) even with CREATE_EXTERNAL_LOCATION already granted on
+# the credential they reference. CREATE_EXTERNAL_TABLE, not BROWSE or
+# ownership -- BROWSE alone is confirmed insufficient (the error is
+# explicit that it wants "any non-BROWSE" privilege), and
+# CREATE_EXTERNAL_TABLE is the narrowest privilege that's actually useful
+# beyond browsing.
+resource "databricks_grants" "bronze_ci" {
+  external_location = databricks_external_location.bronze.id
+
+  grant {
+    principal  = var.ci_group_name
+    privileges = ["CREATE_EXTERNAL_TABLE"]
+  }
 }
 
 # One external location per source system, not a shared one -- see
@@ -111,6 +142,17 @@ resource "databricks_external_location" "pos_landing" {
       subscription_id = var.subscription_id
     }
   }
+
+  owner = local.platform_group_name
+}
+
+resource "databricks_grants" "pos_landing_ci" {
+  external_location = databricks_external_location.pos_landing.id
+
+  grant {
+    principal  = var.ci_group_name
+    privileges = ["CREATE_EXTERNAL_TABLE"]
+  }
 }
 
 resource "databricks_external_location" "ecommerce_landing" {
@@ -124,5 +166,16 @@ resource "databricks_external_location" "ecommerce_landing" {
       resource_group  = var.resource_group_name
       subscription_id = var.subscription_id
     }
+  }
+
+  owner = local.platform_group_name
+}
+
+resource "databricks_grants" "ecommerce_landing_ci" {
+  external_location = databricks_external_location.ecommerce_landing.id
+
+  grant {
+    principal  = var.ci_group_name
+    privileges = ["CREATE_EXTERNAL_TABLE"]
   }
 }

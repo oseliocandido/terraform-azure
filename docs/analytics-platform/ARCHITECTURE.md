@@ -585,7 +585,7 @@ bootstrapped-identity pattern already used for `sp-terraform-*`):
 |---|---|---|---|
 | `grp-sales-stakeholders-<env>` | Sales — report consumers | `gold` only | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
 | `grp-sales-analysts-<env>` | Sales — ad hoc/drill-down analysis | `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
-| `grp-sales-data-engineers-<env>` | Data Engineering — builds/operates pipelines | `bronze`, `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `INSERT`, `UPDATE` (+ `DELETE` in `dev` only — see below) |
+| `grp-sales-data-engineers-<env>` | Data Engineering — builds/operates pipelines | `bronze`, `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `MODIFY` (see below — the metastore's privilege version doesn't support a finer split) |
 | `grp-sales-data-governance-<env>` | Administrative/governance role, not an operational one — decides who else gets access | n/a (no data-layer grants) | **Owner** of the `sales` catalog and its three schemas in both environments |
 | `sp-terraform-<env>` (existing) | CI/CD automation, not a human role | all | `USE_CATALOG`, `USE_SCHEMA`, `CREATE_SCHEMA`, `CREATE_TABLE` |
 | `grp-databricks-ci-<env>` | CI/CD automation's *own* access, not data access — `sp-terraform-<env>` as a member | n/a (no data-layer grants) | Workspace membership + metastore `CREATE_CATALOG`/`CREATE_EXTERNAL_LOCATION`/`CREATE_STORAGE_CREDENTIAL` (`environments/<env>/main.tf`, not this module) |
@@ -623,11 +623,15 @@ broader access with nobody else in the loop. Splitting the two keeps
 different groups, at the cost of one more group to provision per
 environment.
 
-`grp-sales-data-engineers-*` uses the fine-grained DML privileges
-(`INSERT`/`UPDATE`/`DELETE`, least-privilege children of the composite
-`MODIFY` privilege, GA on current Databricks Runtime) instead of blanket
-`MODIFY` — a pipeline identity that only ever appends new bronze data
-doesn't need delete rights just because it needs write rights.
+`grp-sales-data-engineers-*` uses blanket `MODIFY`, not the fine-grained
+`INSERT`/`UPDATE`/`DELETE` split an earlier version of this grant tried —
+that split would have been the more least-privilege choice (a pipeline
+identity that only ever appends new bronze data doesn't need delete
+rights just because it needs write rights), but `terraform apply` failed
+outright: this metastore's own privilege version (`1.0`) doesn't support
+those fine-grained DML privileges at the catalog level at all, confirmed
+by Databricks' own error message. Revisit if this metastore is ever
+upgraded to a privilege version that supports it (see BACKLOG.md).
 
 Stakeholders don't get `bronze`/`silver` access at all — they're raw and
 intermediate layers, not meant for direct business consumption; PRD §7's
@@ -678,7 +682,7 @@ resource "databricks_grants" "dev_catalog" {
   # to all current and future schemas is exactly the intended behavior
   grant {
     principal  = "grp-sales-data-engineers-dev"
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE", "DELETE"]
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY"]
   }
   grant {
     principal  = "sp-terraform-dev"
@@ -709,8 +713,9 @@ resource "databricks_grants" "dev_silver_schema" {
     privileges = ["USE_SCHEMA", "SELECT"]
   }
 }
-# prod_catalog / prod_gold_schema / prod_silver_schema follow the same
-# shape, with grp-sales-data-engineers-prod's grant omitting DELETE
+# prod_catalog / prod_gold_schema / prod_silver_schema follow the exact
+# same shape as dev's, including grp-sales-data-engineers-prod's grant --
+# no dev/prod difference on this one (see "Identity model" above for why).
 ```
 
 **Consequences.** Downward inheritance is used *selectively*: it's what
