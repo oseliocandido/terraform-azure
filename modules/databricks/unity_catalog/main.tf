@@ -149,12 +149,25 @@ resource "databricks_external_location" "managed" {
 # cascade to privileges on this specific, already-existing, group-owned
 # object. Same CREATE_EXTERNAL_TABLE choice for the same reason (BROWSE
 # alone confirmed insufficient elsewhere in this codebase).
+#
+# CREATE MANAGED STORAGE added after a real apply failed on exactly this
+# gap: "cannot create catalog: User does not have CREATE MANAGED STORAGE
+# on External Location 'loc-analytics-dev-marketing-managed'" --
+# CREATE_EXTERNAL_TABLE alone lets CI register external tables against
+# this location, but databricks_catalog.this below uses it as a
+# catalog's own storage_root, which is a distinct, stricter privilege.
+# sales_dev's own catalog (re)creation never hit this because that
+# external location's owner (grp-sales-data-governance-dev) already
+# implicitly covers it for anyone who's a member -- CI itself never had
+# an explicit grant for it either, this was a latent gap that only
+# surfaced once a genuinely new domain (marketing) actually exercised
+# catalog creation for real.
 resource "databricks_grants" "managed_ci" {
   external_location = databricks_external_location.managed.id
 
   grant {
     principal  = var.ci_group_name
-    privileges = ["CREATE_EXTERNAL_TABLE"]
+    privileges = ["CREATE_EXTERNAL_TABLE", "CREATE MANAGED STORAGE"]
   }
 }
 
