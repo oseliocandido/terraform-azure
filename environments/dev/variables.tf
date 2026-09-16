@@ -3,6 +3,23 @@ variable "subscription_id" {
   description = "Azure subscription ID. Get it with: az account show --query id -o tsv"
 }
 
+# Unused by this root today -- dev/prod configure the databricks provider at
+# the WORKSPACE level (host/token per environment), not the account level,
+# so no resource here actually needs the account ID. Declared anyway purely
+# to silence Terraform's "Value for undeclared variable" warning that
+# environments/common.tfvars's shared databricks_account_id value otherwise
+# triggers on every plan/apply here (see that file's own comment for why
+# one shared tfvars file covering the union of every root's variables was
+# chosen over splitting it further). default = null, not a real value --
+# environments/shared/variables.tf's identical declaration is what actually
+# consumes this value; safe to reference directly here too if a future
+# resource in this root ever needs account-level Databricks API access.
+variable "databricks_account_id" {
+  type        = string
+  default     = null
+  description = "Account-wide Databricks account ID -- see this variable's own comment above."
+}
+
 variable "workload" {
   type        = string
   description = "Short workload name used to derive every resource name. No default -- always set explicitly in common.tfvars."
@@ -51,7 +68,7 @@ variable "ci_service_principal_name" {
 variable "enable_grants" {
   type        = bool
   default     = false
-  description = "Gates every databricks_grants resource that references a grp-sales-*-<env> principal (inside module.unity_catalog and the two landing-volume grants below) -- false by default because those groups aren't all provisioned yet. Threaded through to the module rather than left to its own default, so the root's volume grants and the module's own grants can't drift out of sync with each other."
+  description = "Gates every databricks_grants resource that references a grp-sales-*-<env> principal -- inside module.unity_catalog_sales (catalog/schema grants) and module.platform_storage (the ingestion catalog's bronze schema + landing-volume grants, see that module's own \"Ingestion catalog\" section) -- false by default because those groups aren't all provisioned yet. Threaded through to both modules rather than left to their own defaults, so they can't drift out of sync with each other. Deliberately NOT also threaded into module.unity_catalog_marketing's own enable_grants -- that one has its own, independent literal false until grp-marketing-*-<env> exists (see environments/dev/main.tf)."
 }
 
 variable "storage_account_suffix" {

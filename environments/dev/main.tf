@@ -19,7 +19,13 @@ module "analytics_group" {
   location               = var.location
   instance               = var.instance
   storage_account_suffix = var.storage_account_suffix
-  tags                   = local.common_tags
+  # "ingestion" isn't a business domain -- see modules/analytics/variables.tf's
+  # additional_domains description (that variable is really "additional
+  # managed-storage owners", not literally domains). Backs the ingestion
+  # catalog's own managed root (module.platform_storage), same mechanism as
+  # marketing's own container.
+  additional_domains = ["marketing", "ingestion"]
+  tags               = local.common_tags
 }
 
 module "budget_alert" {
@@ -32,7 +38,7 @@ module "budget_alert" {
 }
 
 module "databricks_workspace" {
-  source = "../../modules/databricks/databricks_workspace"
+  source = "../../modules/databricks/workspaces"
 
   resource_group_name = module.analytics_group.resource_group_name
   location            = var.location
@@ -215,114 +221,134 @@ resource "databricks_grants" "metastore_admins" {
 # modules/databricks/unity_catalog after discovering that module declared
 # these with no domain in their names -- calling it twice for a second
 # business domain would have collided. See
-# modules/databricks/platform_storage/main.tf for the full reasoning.
+# modules/databricks/storage/main.tf for the full reasoning.
 module "platform_storage" {
-  source = "../../modules/databricks/platform_storage"
+  source = "../../modules/databricks/storage"
 
   environment                    = var.environment
   metastore_id                   = var.metastore_id
+  workspace_id                   = module.databricks_workspace.workspace_id
   access_connector_id            = module.databricks_workspace.access_connector_id
   resource_group_name            = module.analytics_group.resource_group_name
   subscription_id                = var.subscription_id
   ci_group_name                  = "grp-databricks-ci-dev"
-  bronze_storage_root            = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
-  pos_landing_storage_root       = "abfss://${module.analytics_group.landing_pos_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
-  ecommerce_landing_storage_root = "abfss://${module.analytics_group.landing_ecommerce_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  ci_service_principal_name      = var.ci_service_principal_name
+  enable_grants                  = var.enable_grants
+  bronze_consumer_group_name     = "grp-sales-data-engineers-${var.environment}"
+  bronze_storage_root = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
 
-  # Same race-condition reasoning as module.unity_catalog's own depends_on
-  # below -- this module's databricks_storage_credential also needs
-  # CREATE_STORAGE_CREDENTIAL on the metastore first.
+  # Built from modules/analytics's landing_container_names map (one entry
+  # per its own var.landing_source_systems), not two hand-written args --
+  # a new source system added on that side automatically flows through
+  # here too. See modules/databricks/platform_storage's landing_storage_roots
+  # variable description.
+  landing_storage_roots = {
+    for source_system, container_name in module.analytics_group.landing_container_names :
+    source_system => "abfss://${container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  }
+
+  ingestion_catalog_storage_root = "abfss://${module.analytics_group.additional_managed_container_names["ingestion"]}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+
+  # Same race-condition reasoning as module.unity_catalog_sales/_marketing's
+  # own depends_on below -- this module's databricks_storage_credential
+  # also needs CREATE_STORAGE_CREDENTIAL on the metastore first.
   depends_on = [databricks_grants.metastore_admins]
 }
 
 # Purely per-domain now -- storage_credential and the bronze/landing
 # external locations moved into module.platform_storage above (called
 # once per environment, not once per domain).
-module "unity_catalog" {
+#
+# Renamed from the unlabeled "unity_catalog" to "unity_catalog_sales" now
+# that a real second domain (marketing, below) exists -- an unlabeled name
+# implied there'd only ever be one. moved block protects dev's already-
+# applied sales_dev catalog and everything under it from a destroy/
+# recreate (a module call's label is part of every child resource's
+# address, same as a resource's own label).
+moved {
+  from = module.unity_catalog
+  to   = module.unity_catalog_sales
+}
+
+module "unity_catalog_sales" {
   source = "../../modules/databricks/unity_catalog"
 
-  environment                  = var.environment
-  domain                       = "sales"
-  metastore_id                 = var.metastore_id
-  workspace_id                 = module.databricks_workspace.workspace_id
-  ci_service_principal_name    = var.ci_service_principal_name
-  ci_group_name                = "grp-databricks-ci-dev"
-  enable_grants                = var.enable_grants
-  storage_credential_name      = module.platform_storage.storage_credential_name
-  bronze_external_location_url = module.platform_storage.bronze_external_location_url
-  catalog_storage_root         = "abfss://${module.analytics_group.managed_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  environment               = var.environment
+  domain                    = "sales"
+  metastore_id              = var.metastore_id
+  workspace_id              = module.databricks_workspace.workspace_id
+  ci_service_principal_name = var.ci_service_principal_name
+  ci_group_name             = "grp-databricks-ci-dev"
+  enable_grants             = var.enable_grants
+  storage_credential_name   = module.platform_storage.storage_credential_name
+  catalog_storage_root      = "abfss://${module.analytics_group.managed_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
 
   # Needs CREATE_CATALOG / CREATE_EXTERNAL_LOCATION on the metastore
-  # (granted above) and module.platform_storage's storage credential/
-  # bronze external location to already exist -- without this, Terraform
-  # applies in parallel and loses the race on a real single-shot apply
-  # (found by hand, repeatedly, earlier this session).
+  # (granted above) and module.platform_storage's storage credential to
+  # already exist -- without this, Terraform applies in parallel and loses
+  # the race on a real single-shot apply (found by hand, repeatedly,
+  # earlier this session).
   depends_on = [databricks_grants.metastore_admins, module.platform_storage]
 }
 
-# BACKLOG.md "Ingestion landing: databricks_volume" -- named and ownership
-# already decided in ARCHITECTURE.md's Terraform/DABs boundary section
-# (Terraform-owned, since it sits on infrastructure Terraform already
-# creates; a future pipeline references this by name, never declares its
-# own competing copy). One volume per source system, not one shared
-# "sales_bronze_landing" -- each now backed by its own dedicated
-# container/external location (see modules/analytics/main.tf and
-# modules/databricks/unity_catalog/main.tf), so each gets the bare
-# external-location root directly, not a landing/ subpath -- there's no
-# schema-internal namespace sharing this container to overlap with.
-resource "databricks_volume" "pos_landing" {
-  name         = "pos_landing"
-  catalog_name = module.unity_catalog.catalog_name
-  schema_name  = "bronze"
-  volume_type  = "EXTERNAL"
-  # module.platform_storage's output now, not module.unity_catalog's -- the
-  # landing external location moved there (environment-scoped, not
-  # domain-scoped). Still registered under THIS domain's own bronze
-  # schema -- a second domain wanting the same raw feed would register its
-  # own volume against this same external location, not get this one
-  # duplicated for it.
-  storage_location = module.platform_storage.pos_landing_external_location_url
-  comment          = "Ingestion landing zone for point-of-sale source files -- see docs/analytics-platform/BACKLOG.md#bronze-ingestion-file-driven-triggering-auto-loader--file-events for the future consumer."
+# Second domain, same module -- this is the actual proof that var.domain
+# makes modules/databricks/unity_catalog genuinely reusable, not just
+# documented as such. enable_grants deliberately left at its own literal
+# false here, NOT var.enable_grants like sales' call above -- sales' own
+# grants only turned on once grp-sales-*-dev existed as real Databricks
+# principals (see BACKLOG.md); grp-marketing-*-dev doesn't exist yet, so
+# this domain needs its own, independent gate rather than piggybacking on
+# sales' readiness. catalog_storage_root points at its own container
+# (managed-marketing, module.analytics_group's additional_domains) rather
+# than sales' "managed" container -- see that module's own comments for
+# why they can't share one (Unity Catalog external-location overlap).
+module "unity_catalog_marketing" {
+  source = "../../modules/databricks/unity_catalog"
 
-  # catalog_name/schema_name are plain strings, not resource-attribute
-  # references, so Terraform can't infer this needs module.unity_catalog's
-  # catalog+schema to exist first -- explicit.
-  depends_on = [module.unity_catalog]
+  environment               = var.environment
+  domain                    = "marketing"
+  metastore_id              = var.metastore_id
+  workspace_id              = module.databricks_workspace.workspace_id
+  ci_service_principal_name = var.ci_service_principal_name
+  ci_group_name             = "grp-databricks-ci-dev"
+  enable_grants             = false
+  storage_credential_name   = module.platform_storage.storage_credential_name
+  catalog_storage_root      = "abfss://${module.analytics_group.additional_managed_container_names["marketing"]}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+
+  depends_on = [databricks_grants.metastore_admins, module.platform_storage]
 }
 
-resource "databricks_volume" "ecommerce_landing" {
-  name             = "ecommerce_landing"
-  catalog_name     = module.unity_catalog.catalog_name
-  schema_name      = "bronze"
-  volume_type      = "EXTERNAL"
-  storage_location = module.platform_storage.ecommerce_landing_external_location_url
-  comment          = "Ingestion landing zone for e-commerce source files -- see docs/analytics-platform/BACKLOG.md#bronze-ingestion-file-driven-triggering-auto-loader--file-events for the future consumer."
-
-  depends_on = [module.unity_catalog]
+# pos_landing / ecommerce_landing volumes (+ their READ VOLUME grants) and
+# the two checkpoint volumes all moved into module.platform_storage --
+# see that module's own "Ingestion catalog" section for the full
+# reasoning (bronze/landing are source-system-oriented, not domain-owned,
+# same problem the unity_catalog_sales/_marketing split just exposed one
+# layer up). moved blocks below protect dev's two already-applied landing
+# volumes/grants from looking like an unrelated destroy+create -- Terraform
+# still replaces the underlying UC objects (catalog_name is ForceNew, and
+# it's genuinely moving to a different catalog), but that's safe: EXTERNAL
+# volumes are registration-only, dropping one never touches the underlying
+# blob files (confirmed against Databricks' own managed-vs-external volume
+# docs). The two checkpoint volumes never existed in applied state (added,
+# planned, never applied, in the same session as this move), so no moved
+# block needed for those -- they're declared fresh inside
+# module.platform_storage instead.
+moved {
+  from = databricks_volume.pos_landing
+  to   = module.platform_storage.databricks_volume.pos_landing
 }
 
-# READ VOLUME only, never WRITE -- these volumes are written to by their
-# source systems directly via Azure RBAC, entirely outside Unity Catalog.
-# No Databricks principal is meant to write here; granting WRITE VOLUME to
-# a broad group would be an unused, unnecessary privilege. Gated by
-# enable_grants like every other grant here, since grp-sales-data-engineers-*
-# doesn't exist as a recognized principal yet either.
-resource "databricks_grants" "pos_landing_volume" {
-  count  = var.enable_grants ? 1 : 0
-  volume = databricks_volume.pos_landing.id
-
-  grant {
-    principal  = "grp-sales-data-engineers-${var.environment}"
-    privileges = ["READ VOLUME"]
-  }
+moved {
+  from = databricks_volume.ecommerce_landing
+  to   = module.platform_storage.databricks_volume.ecommerce_landing
 }
 
-resource "databricks_grants" "ecommerce_landing_volume" {
-  count  = var.enable_grants ? 1 : 0
-  volume = databricks_volume.ecommerce_landing.id
+moved {
+  from = databricks_grants.pos_landing_volume
+  to   = module.platform_storage.databricks_grants.pos_landing_volume
+}
 
-  grant {
-    principal  = "grp-sales-data-engineers-${var.environment}"
-    privileges = ["READ VOLUME"]
-  }
+moved {
+  from = databricks_grants.ecommerce_landing_volume
+  to   = module.platform_storage.databricks_grants.ecommerce_landing_volume
 }

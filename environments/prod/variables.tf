@@ -3,6 +3,16 @@ variable "subscription_id" {
   description = "Azure subscription ID. Get it with: az account show --query id -o tsv"
 }
 
+# See environments/dev/variables.tf's identical declaration for the full
+# reasoning -- unused here too, declared only to silence the
+# "Value for undeclared variable" warning environments/common.tfvars's
+# shared databricks_account_id otherwise triggers.
+variable "databricks_account_id" {
+  type        = string
+  default     = null
+  description = "Account-wide Databricks account ID -- see this variable's own comment above."
+}
+
 variable "workload" {
   type        = string
   description = "Short workload name used to derive every resource name. No default -- always set explicitly in common.tfvars."
@@ -77,5 +87,5 @@ variable "ci_service_principal_name" {
 variable "enable_grants" {
   type        = bool
   default     = false
-  description = "Gates every databricks_grants resource that references a grp-sales-*-<env> principal (inside module.unity_catalog and the two landing-volume grants below) -- false by default because those groups aren't all provisioned yet. Threaded through to the module rather than left to its own default, so the root's volume grants and the module's own grants can't drift out of sync with each other."
+  description = "Gates every databricks_grants resource that references a grp-sales-*-<env> principal -- inside module.unity_catalog_sales (catalog/schema grants) and module.platform_storage (the ingestion catalog's bronze schema + landing-volume grants, see that module's own \"Ingestion catalog\" section) -- false by default because those groups aren't all provisioned yet. Threaded through to both modules rather than left to their own defaults, so they can't drift out of sync with each other. Deliberately NOT also threaded into module.unity_catalog_marketing's own enable_grants -- that one has its own, independent literal false until grp-marketing-*-<env> exists (see environments/prod/main.tf)."
 }

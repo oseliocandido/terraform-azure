@@ -88,17 +88,27 @@ resource "azurerm_storage_account" "analytics" {
   # That guard belongs on production data-bearing resources.
 }
 
-# bronze -- the raw ingestion layer. Genuinely needs direct blob access
-# (file-event ingestion triggers, the lifecycle/retention policy below),
-# both of which operate below Unity Catalog, at the blob layer -- so it's
-# registered as a Unity Catalog EXTERNAL location, not managed.
+# bronze -- backs modules/databricks/storage's own bronze schema
+# (databricks_schema.bronze), which is a plain Unity-Catalog-MANAGED schema
+# (schemas have no EXTERNAL/MANAGED type at all -- only tables/volumes do),
+# just pointed at its own container instead of falling through to
+# ingestion_<env>'s default managed root. NOT registered for the
+# lifecycle/retention policy below -- see that resource's own comment for
+# why: bronze will hold real Delta tables, and an Azure blob-lifecycle
+# policy has no awareness of the Delta transaction log, so tiering/deleting
+# individual blobs by age here can silently corrupt a Delta table (moving
+# or deleting data files the log still references). That policy belongs on
+# the genuinely raw, unmanaged files in landing_pos/landing_ecommerce below
+# instead. Delta-native retention for bronze itself (VACUUM /
+# delta.deletedFileRetentionDuration, or a partition-based archival job) is
+# still-unbuilt pipeline work -- see BACKLOG.md.
 resource "azurerm_storage_container" "bronze" {
   name                  = "bronze"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
 }
 
-# landing-pos / landing-ecommerce -- one container per source system,
+# landing-<system> -- one container per source system (var.landing_source_systems),
 # not folders inside bronze. A folder/prefix can't be its own Unity
 # Catalog external location, so it can't get its own enable_file_events
 # scoping either -- it would have shared bronze's own external location,
@@ -107,53 +117,129 @@ resource "azurerm_storage_container" "bronze" {
 # churn too, not just genuine external drops (see bronze's external
 # location comment in modules/databricks/unity_catalog/main.tf). A
 # dedicated container has none of that internal traffic, so file events
-# are safe to enable on it. Also a real Terraform resource each, unlike a
-# folder -- named per PRD's actual source systems (point-of-sale,
-# e-commerce), not a generic "landing" catch-all.
-resource "azurerm_storage_container" "landing_pos" {
-  name                  = "landing-pos"
+# are safe to enable on it.
+#
+# Also where the retention policy below derives its prefix_match from --
+# plain, immutable, Databricks-never-writes files, safe for a blob-age-based
+# lifecycle rule in a way bronze's own Delta storage isn't (see that
+# resource's own comment).
+#
+# for_each keyed by source-system name, not a fixed pair of resources --
+# renamed off azurerm_storage_container.landing_pos/landing_ecommerce (moved
+# blocks below protect dev's already-applied landing-pos/landing-ecommerce
+# containers from a destroy/recreate) specifically so a third source system
+# is one addition to var.landing_source_systems, not a second Terraform
+# resource block to hand-write and a second prefix_match entry to remember.
+resource "azurerm_storage_container" "landing" {
+  for_each = toset(var.landing_source_systems)
+
+  name                  = "landing-${each.key}"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
 }
 
-resource "azurerm_storage_container" "landing_ecommerce" {
-  name                  = "landing-ecommerce"
-  storage_account_id    = azurerm_storage_account.analytics.id
-  container_access_type = "private"
+moved {
+  from = azurerm_storage_container.landing_pos
+  to   = azurerm_storage_container.landing["pos"]
 }
 
-# managed -- the Unity Catalog managed-storage root for this environment's
-# catalog, set as databricks_catalog.sales's own storage_root (see
-# modules/databricks/unity_catalog/main.tf). silver/gold schemas have no
+moved {
+  from = azurerm_storage_container.landing_ecommerce
+  to   = azurerm_storage_container.landing["ecommerce"]
+}
+
+# managed-sales -- the Unity Catalog managed-storage root for the ORIGINAL
+# domain's (sales) catalog, set as databricks_catalog.this's own
+# storage_root (see modules/databricks/unity_catalog/main.tf) via
+# module.unity_catalog_sales's own call site. Every domain after this one
+# gets its own container instead -- see azurerm_storage_container.managed_domain
+# below and var.additional_domains. silver/gold schemas have no
 # container of their own: Unity Catalog owns the internal layout inside
 # this one (__unitystorage/schemas/<id>/tables/<id>/...) entirely; this
 # container only draws the outer boundary. Deliberately per catalog, not
 # left to fall back to the metastore's own shared storage_root -- that
 # fallback commingles every catalog on the metastore into one container,
 # which only gets worse as more business domains get their own catalog
-# over time. Access control doesn't depend on this boundary either way
-# (UC grants govern managed storage regardless), but blast radius and
-# cost attribution do.
+# over time. Blast radius is genuinely improved by this boundary; "cost
+# attribution" isn't automatic the way that phrase implies -- Azure billing
+# attributes cost to the storage account, not to individual containers
+# within it, so seeing sales' own spend separately still needs either
+# container-level metrics (opt-in, capacity/transactions only, still
+# requires manually multiplying by unit price -- Cost Management won't do
+# it) or a separate storage account per domain, not just a separate
+# container.
+#
+# Renamed from the bare "managed" it launched with -- that name predates
+# marketing_dev/ingestion_dev existing, and reads ambiguously once
+# "managed-marketing"/"managed-ingestion" exist alongside it (looks like
+# "the" managed container, not "sales' own"). azurerm_storage_container's
+# name is ForceNew, so this rename forces a real destroy/recreate of this
+# container, which cascades: databricks_external_location.managed's own
+# url is also ForceNew (ties to this container), and databricks_catalog.this's
+# storage_root is ForceNew too -- so this one rename forces sales_dev's
+# real catalog (and everything under it: bronze/silver/gold schemas, its
+# workspace binding, every grant) to be destroyed and recreated. Accepted
+# deliberately: no real table data exists yet (no pipeline has ever
+# written to silver/gold), so nothing but the catalog's own UUID and
+# grants are actually lost, not business data.
 resource "azurerm_storage_container" "managed" {
-  name                  = "managed"
+  name                  = "managed-sales"
+  storage_account_id    = azurerm_storage_account.analytics.id
+  container_access_type = "private"
+}
+
+# One container per ADDITIONAL domain (var.additional_domains), named
+# mechanically from the domain instead of the bare "managed" name above --
+# this is the comment's own "gets worse as more business domains get their
+# own catalog over time" concern, now genuinely exercised by a real second
+# domain (marketing) instead of just anticipated. See
+# var.additional_domains's own description for why the original domain
+# isn't folded into this same for_each (ForceNew container rename risk).
+# Same blast-radius/cost-attribution reasoning as the "managed" container
+# above, plus one more: a real per-domain container (unlike a shared
+# container's subpath) can later be scoped with its own narrower Azure RBAC
+# role assignment if ever needed -- Azure RBAC has no path-prefix-scoped
+# role at all, only account- or container-level, so that option only stays
+# open if each domain has its own container.
+resource "azurerm_storage_container" "managed_domain" {
+  for_each = toset(var.additional_domains)
+
+  name                  = "managed-${each.key}"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
 }
 
 # Enforces the 5-year retention requirement (docs/analytics-platform/PRD.md
-# §9) at the infrastructure level, scoped to bronze only -- silver/gold are
-# derived and rebuildable from bronze, so they don't need the same
-# multi-year retention (see ARCHITECTURE.md's "Data retention and
-# lifecycle policy" decision).
+# §9) at the infrastructure level, scoped to the raw landing containers, not
+# bronze -- see azurerm_storage_container.bronze's own comment for why a
+# blob-age-based Azure policy targeting bronze specifically would be unsafe
+# once it holds real Delta tables (no transaction-log awareness -- can
+# tier/delete files the Delta log still references). Landing holds plain,
+# immutable, source-system-written files Databricks never writes to, so
+# blob-age-based tiering/deletion is safe there. This does NOT by itself
+# satisfy the "queryable at lower cost" half of PRD §9 for bronze/silver's
+# own Delta data -- that needs a Delta-native mechanism (VACUUM /
+# delta.deletedFileRetentionDuration, or a partition-based archival job),
+# still-unbuilt pipeline work tracked in BACKLOG.md, not something an Azure
+# storage policy can do for managed Delta storage. silver/gold don't need
+# either kind of retention -- they're derived and rebuildable from bronze.
 resource "azurerm_storage_management_policy" "default_retention_policy" {
   storage_account_id = azurerm_storage_account.analytics.id
 
   rule {
-    name    = "bronze-retention"
+    name    = "landing-retention"
     enabled = true
 
     filters {
-      prefix_match = ["bronze/"]
+      # Derived from var.landing_source_systems (the same list
+      # azurerm_storage_container.landing's for_each uses), not a hardcoded
+      # pair -- a new source system's container is automatically covered by
+      # this policy the moment it's added to that one list, no separate
+      # prefix_match edit needed. Azure's prefix_match is a literal string
+      # prefix, not a glob/regex -- "landing-*" is not valid here, this list
+      # comprehension is what actually gets every current container covered
+      # explicitly.
+      prefix_match = [for s in var.landing_source_systems : "landing-${s}/"]
       blob_types   = ["blockBlob"]
     }
 

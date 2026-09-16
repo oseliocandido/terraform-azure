@@ -176,20 +176,29 @@ one PRD requirement that maps directly onto a concrete Azure resource
 rather than a design decision left to a future pipeline.
 
 **Decision.** One `azurerm_storage_management_policy` per environment's
-storage account, with a lifecycle rule scoped to the `bronze/` prefix
-(the raw, full-history layer — `silver`/`gold` are derived and can be
-rebuilt from `bronze`, so they don't need the same multi-year retention):
+storage account, with a lifecycle rule scoped to the raw **landing**
+containers (`landing-pos/`, `landing-ecommerce/`) — not `bronze`. Bronze
+holds real Delta tables (see "Ingestion catalog: bronze isn't
+domain-owned" above); an Azure blob-lifecycle rule has no awareness of the
+Delta transaction log, so tiering or deleting individual blobs there by
+age alone can silently corrupt a Delta table — it can move or delete data
+files the log still references (active data, or files still inside
+Delta's own time-travel/`VACUUM` retention window). Landing holds plain,
+immutable, source-system-written files that Databricks never writes to
+(see "Unity Catalog: external locations" below) — nothing depends on a
+specific blob staying put once Auto Loader has read it, so a blob-age
+policy is safe there in a way it isn't for bronze:
 
 ```hcl
 resource "azurerm_storage_management_policy" "default_retention_policy" {
   storage_account_id = azurerm_storage_account.analytics.id
 
   rule {
-    name    = "bronze-retention"
+    name    = "landing-retention"
     enabled = true
 
     filters {
-      prefix_match = ["bronze/"]
+      prefix_match = ["landing-pos/", "landing-ecommerce/"]
       blob_types   = ["blockBlob"]
     }
 
@@ -204,15 +213,17 @@ resource "azurerm_storage_management_policy" "default_retention_policy" {
 }
 ```
 
-**Consequences.** The five-year business requirement is now an enforced
-Azure policy, not a convention someone has to remember — data older than
-1825 days is deleted automatically regardless of whether any pipeline
-process ever runs. `silver`/`gold` have no equivalent rule, and don't need
-one: they're Unity Catalog managed schemas with no container of their own
-(see "Unity Catalog: metastore, catalog, and schema strategy" below), so
-there's no blob-level lifecycle to configure at all — retention/cleanup
-for derived data is a UC/pipeline-level concern (e.g. `VACUUM`), not an
-Azure storage policy.
+**Consequences.** This only covers the raw-file half of PRD §9. It does
+**not** by itself satisfy the "remain queryable at lower cost" half for
+bronze/silver's own Delta data — that needs a Delta-native mechanism
+(`VACUUM` / `delta.deletedFileRetentionDuration`, or a partition-based
+archival job), which is pipeline work that doesn't exist yet (see
+BACKLOG.md). `silver`/`gold` have no equivalent rule and don't need one
+either way — they're Unity Catalog managed schemas with no container of
+their own (see "Unity Catalog: metastore, catalog, and schema strategy"
+below), so there's no blob-level lifecycle to configure at all;
+retention/cleanup for all derived Delta data (bronze included) is a
+UC/pipeline-level concern, not an Azure storage policy.
 
 ---
 
@@ -229,11 +240,11 @@ Azure storage policy.
 deferred" below):
 
 ```hcl
-resource "azurerm_databricks_workspace" "sales" {
+resource "azurerm_databricks_workspace" "this" {
   name                = "dbw-analytics-${var.environment}-neu-01"
   resource_group_name = azurerm_resource_group.analytics.name
   location             = var.location
-  sku                  = "standard"
+  sku                  = "premium" # Unity Catalog requires it -- see BACKLOG.md's "Checked and ruled out" note
 }
 ```
 
@@ -268,13 +279,21 @@ resource "azurerm_databricks_access_connector" "sales" {
   }
 }
 
-resource "databricks_storage_credential" "sales" {
+resource "databricks_storage_credential" "analytics" {
   name = "cred-analytics-${var.environment}"
   azure_managed_identity {
     access_connector_id = azurerm_databricks_access_connector.sales.id
   }
 }
 ```
+
+One credential per environment, not per domain — the access connector's
+managed identity already has `Storage Blob Data Contributor` across the
+whole storage account, not scoped to any one domain's containers, so
+declaring a second credential per domain would just be a second wrapper
+around the identical identity. Every domain's own `managed` external
+location (below) and `ingestion_<env>`'s own reference this same
+credential by name (`modules/databricks/storage`'s output).
 
 **Consequences.** No Databricks-side secret to rotate or leak — the trust
 relationship is an Azure-native managed identity + RBAC role assignment,
@@ -329,28 +348,58 @@ become an architecture debate.
 explicitly registered, rather than trusting any path the credential above
 could technically reach.
 
-**Decision.** One `databricks_external_location`, for `bronze` only —
-not one per medallion layer. `silver`/`gold` are Unity Catalog managed
-schemas (see "metastore, catalog, and schema strategy" below), so they
-have no external storage path to register at all; only `bronze` needs
-direct blob-level access (file-event ingestion triggers, the retention
-policy above), which is exactly what an external location is for.
+**Decision.** External locations exist for exactly two kinds of thing, not
+one per medallion layer:
+
+1. **Genuine raw file access** — the raw `bronze` container and the two
+   source-system landing containers (`pos_landing`/`ecommerce_landing`),
+   all environment-wide (`modules/databricks/storage`, not
+   per-domain — see "Ingestion catalog: bronze isn't domain-owned" above).
+   These need direct blob-level access (file-event ingestion triggers,
+   the retention policy above), which is exactly what an external
+   location is for.
+2. **Each catalog's own managed storage root** — even a `MANAGED` schema
+   with no `storage_root` of its own still resolves to *some* physical
+   path, one level up (its catalog's `storage_root`), and Unity Catalog
+   rejects a catalog `storage_root` that isn't covered by a registered
+   external location — found by hand, in practice: catalog creation
+   failed outright with `External Location '...' does not exist` before
+   this was added. So every domain catalog (`sales_dev`, `marketing_dev`,
+   ...) and the `ingestion_<env>` catalog each get their own `"managed"`
+   external location, even though nothing inside them is itself an
+   external table — "managed" only changes what happens *below* that
+   root (Unity Catalog owns the internal layout), not whether the root
+   itself needs registering.
+
+`silver`/`gold`, and each domain's own `bronze` schema, have **no
+external location of their own** — they inherit their catalog's managed
+root (category 2 above), which is the only registration they need.
 
 ```hcl
 resource "databricks_external_location" "bronze" {
   name            = "loc-analytics-${var.environment}-bronze"
   url             = "abfss://bronze@${azurerm_storage_account.analytics.name}.dfs.core.windows.net/"
-  credential_name = databricks_storage_credential.sales.id
+  credential_name = databricks_storage_credential.analytics.id
+}
+
+# One of these per catalog -- domain catalogs AND the non-domain
+# ingestion catalog each need their own (category 2 above).
+resource "databricks_external_location" "managed" {
+  name            = "loc-analytics-${var.environment}-${var.domain}-managed"
+  url             = "abfss://managed-${var.domain}@${azurerm_storage_account.analytics.name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.analytics.id
 }
 ```
 
 **Consequences.** Even though the storage credential *could* reach any
 container on the account, Unity Catalog only allows managed access through
 registered external locations — an extra layer of least-privilege beyond
-the Azure RBAC role assignment. `silver`/`gold` get a stronger version of
-this same property for free: with no external location at all, the *only*
-way to reach their data is through Unity Catalog itself — there's no
-parallel Azure-RBAC-on-a-container path to keep in sync with UC grants.
+the Azure RBAC role assignment. `silver`/`gold` (and each domain's own
+`bronze`) get a stronger version of this same property: with no external
+location covering anything but their catalog's own managed root, the
+*only* way to reach their data is through Unity Catalog itself — there's
+no parallel Azure-RBAC-on-a-container path scoped narrowly enough to
+bypass UC grants for just that schema.
 
 ---
 
@@ -369,39 +418,45 @@ by a per-environment CI/CD pipeline run.
   [IMPLEMENTATION.md §Bootstrap](IMPLEMENTATION.md#bootstrap)), assigned to
   each workspace via `databricks_metastore_assignment`.
 - **Catalog** — one per *domain, per environment*, not one per medallion
-  layer: `sales_dev` and `sales_prod` today. Environment isolation still
+  layer: `sales_dev`/`sales_prod` and (as of the first real second domain)
+  `marketing_dev`/`marketing_prod` today. Environment isolation still
   lives at the catalog level (PRD §10: "a change or failure in Development
   must not unintentionally affect Production") — a `dev`-scoped identity
   has no catalog-level path to `prod` data even if it somehow reached the
-  `prod` workspace. The domain prefix is there so a second business domain
-  (marketing, orders, ...) gets its own catalog (`marketing_dev`,
-  `orders_prod`, ...) without renaming this one out from under existing
-  data — sales is the only domain on this metastore today, but naming it
-  `dev`/`prod` alone would have made every future domain either collide on
-  the name or force a rename under load. This is the catalog-per-business-
-  domain shape from Databricks' own functional-workspace-organization
-  guidance, not something invented here.
+  `prod` workspace. `modules/databricks/unity_catalog` takes `domain` as a
+  required input (no default) specifically so a second business domain
+  gets its own catalog just by calling the module again with a different
+  domain — no rename of the first domain's already-applied catalog
+  required. This is the catalog-per-business-domain shape from
+  Databricks' own functional-workspace-organization guidance, not
+  something invented here.
 - **Schema** — one per medallion layer, inside each domain's catalog:
-  `bronze`, `silver`, `gold`. Only `bronze` is external (`storage_root`
-  pointing at its own container); `silver`/`gold` are Unity Catalog
-  managed schemas with no `storage_root` at all — see "Unity Catalog:
-  external locations" above for why.
+  `bronze`, `silver`, `gold` — ALL Unity Catalog `MANAGED` (no
+  `storage_root`) as of the ingestion-catalog restructure below. This
+  domain-owned `bronze` is populated by a data-engineering decision
+  (which raw record belongs to which domain), downstream of a separate,
+  non-domain `ingestion_<env>` catalog that owns the actual raw landing —
+  see "Ingestion catalog: bronze isn't domain-owned" further down for why
+  bronze needed splitting into two different things with the same schema
+  name.
 
 ```hcl
-resource "databricks_catalog" "sales" {
-  name         = "sales_${var.environment}" # "sales_dev" or "sales_prod"
+resource "databricks_catalog" "this" {
+  name         = "${var.domain}_${var.environment}" # "sales_dev", "marketing_dev", ...
   metastore_id = var.metastore_id
-  comment      = "Sales analytics — ${var.environment}"
+  comment      = "${var.domain} analytics catalog — ${var.environment}"
 }
 
 resource "databricks_schema" "bronze" {
-  catalog_name = databricks_catalog.sales.name
+  catalog_name = databricks_catalog.this.name
   name         = "bronze"
-  storage_root = "abfss://bronze@${azurerm_storage_account.analytics.name}.dfs.core.windows.net/"
+  # No storage_root -- see "Ingestion catalog: bronze isn't domain-owned"
+  # below. This schema is domain-curated/pipeline-populated, not a
+  # registration against raw landing files.
 }
 
 resource "databricks_schema" "silver" {
-  catalog_name = databricks_catalog.sales.name
+  catalog_name = databricks_catalog.this.name
   name         = "silver"
   # No storage_root -- managed by Unity Catalog under the catalog's own
   # managed storage location.
@@ -410,10 +465,67 @@ resource "databricks_schema" "silver" {
 ```
 
 **Consequences.** Querying is always `sales_dev.bronze.*` /
-`sales_prod.gold.*` — domain, environment, and layer are all explicit in
-every fully-qualified table name, with no risk of a `dev` query
-accidentally resolving against `prod` data, and no naming collision if a
-second domain is added later.
+`sales_prod.gold.*` (or `marketing_dev.*`, ...) — domain, environment, and
+layer are all explicit in every fully-qualified table name, with no risk
+of a `dev` query accidentally resolving against `prod` data, and no
+naming collision as a real second domain gets added.
+
+---
+
+## Ingestion catalog: bronze isn't domain-owned
+
+**Context.** An earlier version of this design put a `bronze` schema
+inside each domain's own catalog, pointing its `storage_root` directly at
+the raw POS/e-commerce landing containers (the same shape "Unity Catalog:
+external locations" above still describes for how those containers get
+registered). That held up with one domain. The moment a real second
+domain (`marketing`) called the same module, it broke: `bronze` was never
+actually domain-specific data — a raw file lands because of *which source
+system* produced it, not because of which business domain will eventually
+own it — so `sales_dev.bronze` and `marketing_dev.bronze` ended up as two
+separate Unity Catalog schema objects, both registered against the
+*identical* physical raw-landing container. Unity Catalog doesn't reject
+that outright (nothing stops two schemas pointing at the same external
+location's URL), but it's a real correctness problem: two domains'
+`bronze` schemas silently sharing one underlying set of files, with no
+Unity-Catalog-enforced boundary between them at all.
+
+**Decision.** Split "bronze" into two different things that happen to
+share a schema name:
+
+- **Raw ingestion bronze** — `ingestion_<env>.bronze`, in a new,
+  non-domain catalog (`databricks_catalog.ingestion`,
+  `modules/databricks/storage`), owned by
+  `grp-databricks-platform-<env>` like the rest of that environment-wide
+  infrastructure. This is where `pos_landing`/`ecommerce_landing`
+  (external volumes) and their checkpoint volumes actually live, and it's
+  registered against the real raw landing containers exactly once,
+  regardless of how many business domains eventually exist.
+- **Domain-curated bronze** — `<domain>_<env>.bronze`, still inside each
+  domain's own catalog (`modules/databricks/unity_catalog`), but now a
+  Unity Catalog `MANAGED` schema with no `storage_root` of its own —
+  populated by a downstream data-engineering decision (which raw record
+  belongs to which domain), not a second registration against the shared
+  raw files. This is genuinely domain-owned physical storage, under that
+  domain's own managed container, reachable only through a pipeline
+  write — not the same kind of object the removed version was.
+
+A domain that needs to read the raw feed gets an explicit grant on
+`ingestion_<env>.bronze` (`bronze_consumer_group_name` in
+`modules/databricks/storage`, currently
+`grp-sales-data-engineers-<env>` only — no second domain has a real,
+PRD-backed need for it yet) — the same way any other cross-catalog read
+works in Unity Catalog, no special mechanism.
+
+**Consequences.** `bronze` now means two different things depending on
+which catalog it's in, which is a real cost to hold in mind when reading
+a query — `ingestion_dev.bronze.pos_landing` (a volume, raw files) is not
+`sales_dev.bronze` (a schema, domain-curated tables). The alternative —
+one shared `bronze` schema location referenced by every domain's catalog
+directly — was rejected because it reintroduces the exact overlap problem
+this decision exists to fix; giving up a single unambiguous meaning for
+"bronze" is the accepted tradeoff for keeping each domain's data
+genuinely isolated from the others'.
 
 ---
 
@@ -437,14 +549,14 @@ paired with exactly one `databricks_workspace_binding` tying it to its
 own environment's workspace only:
 
 ```hcl
-resource "databricks_catalog" "sales" {
-  name           = "sales_${var.environment}"
+resource "databricks_catalog" "this" {
+  name           = "${var.domain}_${var.environment}"
   metastore_id   = var.metastore_id
   isolation_mode = "ISOLATED"
 }
 
-resource "databricks_workspace_binding" "sales" {
-  securable_name = databricks_catalog.sales.name
+resource "databricks_workspace_binding" "this" {
+  securable_name = databricks_catalog.this.name
   workspace_id   = var.workspace_id # this environment's own workspace
 }
 ```
@@ -541,8 +653,8 @@ group-owned:
 | Object | Owner |
 |---|---|
 | `databricks_metastore.primary` | `grp-databricks-account-admins` — account-level, one group, not per-environment (one metastore, shared) |
-| `databricks_storage_credential.analytics`, the bronze/landing external locations (per environment, `modules/databricks/platform_storage`) | `grp-databricks-platform-<env>` |
-| `databricks_catalog.sales` and its three schemas (per domain, `modules/databricks/unity_catalog`) | `grp-sales-data-governance-<env>` |
+| `databricks_storage_credential.analytics`, the bronze/landing external locations, and `databricks_catalog.ingestion` and its own `bronze` schema (per environment, `modules/databricks/storage`) | `grp-databricks-platform-<env>` |
+| `databricks_catalog.this` and its three schemas, per domain (`modules/databricks/unity_catalog`, called once per domain — `sales_dev`, `marketing_dev`, ...) | `grp-<domain>-data-governance-<env>` (`grp-sales-data-governance-<env>` for the `sales` catalog, etc.) |
 
 The storage credential and bronze/landing external locations moved to a
 **different** owner than the catalog/schemas -- `grp-databricks-platform-
@@ -573,23 +685,36 @@ and a principal is a user, a service principal, or a group. A "custom
 role" in Unity Catalog is therefore not a separate resource to create; it
 *is* a named group plus the fixed set of grants applied to that group.
 
-**Decision.** Four account-level groups per environment (eight total,
-`dev`/`prod` never share a group — see "Groups are environment-scoped,"
+**Decision.** Four account-level groups per **domain**, per environment
+(`dev`/`prod` never share a group — see "Groups are environment-scoped,"
 below), sourced from Entra ID and synced to the Databricks account via
 SCIM (group *membership* — who's actually in `grp-sales-analysts-prod` —
 is an Entra ID/HR concern, not something Terraform manages; Terraform only
 references the group name as a grant principal, the same externally-
-bootstrapped-identity pattern already used for `sp-terraform-*`):
+bootstrapped-identity pattern already used for `sp-terraform-*`). Sales
+was the only domain when this decision was first written (four groups,
+eight total); a real second domain (`marketing`) now exists too, with its
+own four groups (`grp-marketing-*`, currently created in Entra ID but not
+yet registered at the Databricks account level — see `BACKLOG.md`'s
+group-provisioning table), following the exact same shape:
 
-| Group | Represents (PRD §6) | Layers | Privileges |
+| Group | Represents (PRD §6, generalized per-domain) | Layers | Privileges |
 |---|---|---|---|
-| `grp-sales-stakeholders-<env>` | Sales — report consumers | `gold` only | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
-| `grp-sales-analysts-<env>` | Sales — ad hoc/drill-down analysis | `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
-| `grp-sales-data-engineers-<env>` | Data Engineering — builds/operates pipelines | `bronze`, `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `MODIFY` (see below — the metastore's privilege version doesn't support a finer split) |
-| `grp-sales-data-governance-<env>` | Administrative/governance role, not an operational one — decides who else gets access | n/a (no data-layer grants) | **Owner** of the `sales` catalog and its three schemas in both environments |
-| `sp-terraform-<env>` (existing) | CI/CD automation, not a human role | all | `USE_CATALOG`, `USE_SCHEMA`, `CREATE_SCHEMA`, `CREATE_TABLE` |
+| `grp-<domain>-stakeholders-<env>` | Report consumers for that domain (Sales, per PRD §6) | `gold` only | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
+| `grp-<domain>-analysts-<env>` | Ad hoc/drill-down analysis for that domain | `silver`, `gold` | `USE_CATALOG`, `USE_SCHEMA`, `SELECT` |
+| `grp-<domain>-data-engineers-<env>` | Builds/operates that domain's own pipelines | `bronze`, `silver`, `gold` (this domain's own, curated `bronze` — see "Ingestion catalog: bronze isn't domain-owned" above, not the shared raw landing) | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `MODIFY` (see below — the metastore's privilege version doesn't support a finer split) |
+| `grp-<domain>-data-governance-<env>` | Administrative/governance role, not an operational one — decides who else gets access | n/a (no data-layer grants) | **Owner** of that domain's own catalog and its three schemas |
+| `sp-terraform-<env>` (existing) | CI/CD automation, not a human role | all, every domain | `USE_CATALOG`, `USE_SCHEMA`, `CREATE_SCHEMA`, `CREATE_TABLE` (granted per domain catalog) |
 | `grp-databricks-ci-<env>` | CI/CD automation's *own* access, not data access — `sp-terraform-<env>` as a member | n/a (no data-layer grants) | Workspace membership + metastore `CREATE_CATALOG`/`CREATE_EXTERNAL_LOCATION`/`CREATE_STORAGE_CREDENTIAL` (`environments/<env>/main.tf`, not this module) |
-| `grp-databricks-platform-<env>` | Environment-wide infrastructure governance, not a domain's own — administers what every domain's catalog depends on | n/a (no data-layer grants) | **Owner** of the storage credential and bronze/landing external locations (`modules/databricks/platform_storage`) |
+| `grp-databricks-platform-<env>` | Environment-wide infrastructure governance, not any one domain's own — administers what every domain's catalog depends on | `ingestion_<env>.bronze` (its own, raw) | **Owner** of the storage credential, bronze/landing external locations, and the `ingestion_<env>` catalog (`modules/databricks/storage`) |
+
+`bronze_consumer_group_name` (`modules/databricks/storage`) is
+the one exception to "per domain" above — only `grp-sales-data-engineers-
+<env>` is granted `READ VOLUME`/`SELECT` on the shared raw
+`ingestion_<env>.bronze` today, since no second domain has a real,
+PRD-backed need for that raw feed yet. A second domain that genuinely
+needed it would get its own grant added by hand, not a list mechanism
+built ahead of that need.
 
 `grp-databricks-ci-<env>` is a different kind of group from the four
 above it -- it's not PRD-derived data governance, it's the identity
@@ -664,8 +789,8 @@ catalog-level `USE_CATALOG` (which only lets a principal *address* the
 catalog by name — it exposes nothing on its own):
 
 ```hcl
-resource "databricks_grants" "dev_catalog" {
-  catalog = databricks_catalog.sales.name # "dev"
+resource "databricks_grants" "catalog" {
+  catalog = databricks_catalog.this.name # "sales_dev"
 
   # USE_CATALOG only — lets these two principals reference dev.<schema>.<table>
   # at all; grants no visibility into any schema by itself
@@ -764,15 +889,24 @@ overlapping:
   must never declare a `grant`/permissions block targeting a catalog or
   schema this repo already provisions.
 - **Shared Unity Catalog objects that wrap infrastructure this repo
-  provisions** — catalogs, schemas, external locations, and the bronze
-  ingestion **volume** — **Terraform-owned only**, the same rule as
-  grants, for the same reason: these sit directly on top of the storage
-  account/containers Terraform already creates, and any future pipeline
-  needs to reference *the same* volume by name rather than each defining
-  its own competing copy. A future `databricks.yml` references
-  `sales_bronze_landing` (or whatever this repo names it) as an
-  already-existing volume, never declares its own `resources: volumes:`
-  entry for it.
+  provisions** — catalogs, schemas, external locations, and the
+  source-system landing volumes (`pos_landing`/`ecommerce_landing`, and
+  now also their Auto Loader checkpoint volumes,
+  `pos_landing_checkpoint`/`ecommerce_landing_checkpoint` — see
+  `modules/databricks/storage`) — **Terraform-owned only**, the
+  same rule as grants, for the same reason: these sit directly on top of
+  the storage account/containers Terraform already creates, and any
+  future pipeline needs to reference *the same* volume by name rather
+  than each defining its own competing copy. A future `databricks.yml`
+  references `pos_landing`, `pos_landing_checkpoint`, etc. as
+  already-existing volumes, never declares its own `resources: volumes:`
+  entry for any of them. (Checkpoint volumes moved into this
+  Terraform-owned category deliberately, not automatically — Databricks'
+  own Auto Loader/Unity Catalog guidance recommends checkpoint state live
+  in UC-managed storage rather than as pipeline-scratch state, which put
+  it on the "shared, foundational" side of the test below rather than the
+  "specific to one pipeline's own implementation" side a first read might
+  assume.)
 - **Workspace object permissions** (who can view/run/manage a specific
   job or pipeline — DAB's own `permissions:` block, or the Terraform
   `databricks_permissions` resource) — **DAB-owned**, since that's scoped
@@ -783,8 +917,12 @@ overlapping:
 object is Terraform's if it's shared, foundational, and would need to
 outlive or be referenced by more than one future pipeline; it's DAB's if
 it's specific to one pipeline's own implementation (its jobs, its
-notebooks, a scratch/working volume only that pipeline uses for its own
-checkpoints or temp state — as opposed to the shared landing volume). When
+notebooks, any genuinely scratch/temp working volume a pipeline creates
+purely for its own intermediate state — as distinct from the shared
+landing and checkpoint volumes above, which are Terraform's precisely
+because they're not scratch: the checkpoint volumes hold durable
+streaming state Databricks recommends keeping in UC-managed storage, not
+disposable working data). When
 the pipeline phase starts, its `databricks.yml` should reference this
 platform's catalogs/schemas/volumes by **name only** (as objects that
 already exist, created by this repo) and must not attempt to declare,
@@ -852,17 +990,30 @@ change involved.
       Databricks workspace  Databricks workspace
       + access connector    + access connector
               │                 │
-     catalog: sales_dev   catalog: sales_prod
-      schemas: bronze      schemas: bronze
-    (external, own        (external, own
-     container) +          container) +
-    silver/gold            silver/gold
-    (UC managed,           (UC managed,
-     no container)          no container)
-              │                 │
-     bronze/ lifecycle:    bronze/ lifecycle:
-     cool@90d, archive@1y,  cool@90d, archive@1y,
-        delete@5y              delete@5y
+   ┌──────────┼──────────┐         (same shape, "-prod")
+   ▼          ▼          ▼
+catalog:   catalog:    catalog:
+sales_dev  marketing_  ingestion_dev
+(own       dev         (own managed
+managed    (own        container;
+container; managed     bronze schema
+bronze/    container)  -- own container,
+silver/                NOT managed --
+gold, all              + landing-pos/
+UC managed,             landing-
+no container            ecommerce
+of their own            volumes,
+except                  EXTERNAL,
+bronze)                 read_only)
+   │          │              │
+   └──────────┴──────┬───────┘
+                      ▼
+         landing-pos/ + landing-ecommerce/
+         lifecycle: cool@90d, archive@1y,
+                     delete@5y
+         (bronze itself has NO blob lifecycle --
+          Delta-native retention only, see
+          "Data retention and lifecycle policy")
 ```
 
 Nothing here introduces a new Terraform root, a new backend, or a new

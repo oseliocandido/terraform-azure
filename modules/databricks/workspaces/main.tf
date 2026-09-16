@@ -36,7 +36,20 @@ locals {
 ## second, normal apply after this one has run.
 ## -----------------------------------------------------------------------
 
-resource "azurerm_databricks_workspace" "sales" {
+# Renamed off the literal "sales" label -- this module is called once per
+# ENVIRONMENT (dev/prod), not once per business domain (that's
+# modules/databricks/unity_catalog's job) -- a workspace, its access
+# connector, and the metastore assignment below are all environment-wide
+# infrastructure with no domain-specific meaning at all, so "sales" here
+# was always a naming leftover from before real multi-domain use (marketing)
+# exposed the same class of bug this module's own sibling files already
+# fixed (see modules/databricks/unity_catalog and modules/databricks/storage's
+# identical renames earlier this session). Already applied to dev's real
+# state (the moved blocks that protected that migration have since been
+# removed -- their job was done once that apply succeeded; state already
+# has the "this" addresses, so keeping them around served no further
+# purpose).
+resource "azurerm_databricks_workspace" "this" {
   name                = "dbw-${local.suffix}"
   resource_group_name = var.resource_group_name
   location            = var.location
@@ -52,7 +65,7 @@ resource "azurerm_databricks_workspace" "sales" {
   tags = local.common_tags
 }
 
-resource "azurerm_databricks_access_connector" "sales" {
+resource "azurerm_databricks_access_connector" "this" {
   name                = "dbac-${local.suffix}"
   resource_group_name = var.resource_group_name
   location            = var.location
@@ -67,7 +80,7 @@ resource "azurerm_databricks_access_connector" "sales" {
 resource "azurerm_role_assignment" "access_connector_storage" {
   scope                = var.storage_account_id
   role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_databricks_access_connector.sales.identity[0].principal_id
+  principal_id         = azurerm_databricks_access_connector.this.identity[0].principal_id
 }
 
 # storage_credential and the 3 external_locations deliberately do NOT live
@@ -88,7 +101,7 @@ resource "azurerm_role_assignment" "access_connector_storage" {
 # level API (a create against a stale/previous metastore_id was rejected
 # with "metastore_id must be empty or equal to the metastore id assigned
 # to the workspace"). This resource is the authoritative fix, not the UI.
-resource "databricks_metastore_assignment" "sales" {
+resource "databricks_metastore_assignment" "this" {
   metastore_id = var.metastore_id
-  workspace_id = azurerm_databricks_workspace.sales.workspace_id
+  workspace_id = azurerm_databricks_workspace.this.workspace_id
 }

@@ -253,3 +253,32 @@ az role assignment delete --assignee f89cb098-cc7c-47b1-8f5c-510203b90cde --role
 az ad app delete --id f89cb098-cc7c-47b1-8f5c-510203b90cde
 # -> sp-terraform-sandbox, appId f89cb098-cc7c-47b1-8f5c-510203b90cde,
 #    SP object id 0959180d-5b37-4723-958f-25cce461a0e8 -- deleted.
+
+# ---------------------------------------------------------------------------
+# 10. grp-marketing-*: the second domain's own Entra ID groups, same shape
+#     as grp-sales-*'s (never individually recorded in this file either --
+#     this is the first time that gap's been closed for a domain's groups).
+#     mail-nickname == display-name, same convention already in use
+#     (confirmed against grp-sales-data-governance-dev via `az ad group
+#     show` before running this). Entra ID creation only -- see BACKLOG.md's
+#     "Identity: group provisioning status" for which of these still need
+#     the separate, manual Databricks-account-level registration step
+#     before module.unity_catalog_marketing's enable_grants can flip to
+#     true.
+# ---------------------------------------------------------------------------
+for env in dev prod; do
+  for role in data-governance stakeholders analysts data-engineers; do
+    name="grp-marketing-${role}-${env}"
+    az ad group create --display-name "$name" --mail-nickname "$name"
+  done
+done
+# -> grp-marketing-data-governance-dev   9bc287cb-c152-4f41-b66d-5349c67817dd
+#    grp-marketing-stakeholders-dev      1fe07af3-41be-4858-9cf4-c815663dc6d6
+#    grp-marketing-analysts-dev          b040a376-d3e7-4b22-b7c5-20b3f1b3c37c
+#    grp-marketing-data-engineers-dev    6659b71b-df64-4c9c-ad4c-1eeb74ffd913
+#    grp-marketing-data-governance-prod  63d4ce81-dbcc-46ee-97de-e1f7969b9b29
+#    grp-marketing-stakeholders-prod     4735eb1a-6b7e-47a8-90e6-2f679bb12c04
+#    grp-marketing-analysts-prod         5b2f5c2f-38cb-4845-9cde-9d4181bebc44
+#    grp-marketing-data-engineers-prod   c1de470c-788f-41ab-9f8a-87c2696da7ae
+# Confirmed created (Entra ID only, not yet registered at the Databricks
+# account level): 2026-09-16.

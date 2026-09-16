@@ -15,11 +15,13 @@
 #
 # azure_tenant_id and databricks_account_id are account-wide constants too
 # (one Databricks account, one metastore per region, shared by every
-# environment -- see environments/shared/) -- not every root declares
-# both (environments/shared doesn't need notify_email; dev/prod don't need
-# databricks_account_id), and Terraform only warns, never errors, on an
-# unused value in a -var-file, so one file covering the union is simpler
-# than splitting further.
+# environment -- see environments/shared/) -- one file covering the union
+# of every root's variables is simpler than splitting further, even though
+# not every root actually uses every value (environments/shared doesn't
+# need notify_email; dev/prod don't need databricks_account_id -- both
+# roots declare a dummy `default = null` variable for it purely to silence
+# Terraform's "Value for undeclared variable" warning, which is otherwise
+# harmless but noisy on every plan/apply).
 
 subscription_id       = "d12d5f8a-c771-485e-b633-c0c4f19c78e2"
 notify_email          = "oseliocandido@outlook.com"

@@ -46,6 +46,28 @@ variable "storage_account_suffix" {
   }
 }
 
+variable "additional_domains" {
+  type        = list(string)
+  default     = []
+  description = "Extra business domains beyond the first, already-applied one this environment's Unity Catalog setup started with (\"sales\") -- each gets its own \"managed-<domain>\" container (see azurerm_storage_container.managed_domain), so a second domain's catalog storage_root doesn't have to overlap or share the original \"managed\" container's Unity Catalog external-location registration. The original domain's container deliberately stays named plain \"managed\" (see managed_container_name output) rather than being retrofitted into this list -- azurerm_storage_container's name is ForceNew, so renaming it would destroy and recreate the container sales already has applied."
+
+  validation {
+    condition     = length(var.additional_domains) == length(distinct(var.additional_domains))
+    error_message = "additional_domains must not contain duplicates."
+  }
+}
+
+variable "landing_source_systems" {
+  type        = list(string)
+  default     = ["pos", "ecommerce"]
+  description = "One dedicated \"landing-<system>\" container per source system (see azurerm_storage_container.landing) -- not folders inside one shared container, so each can get its own Unity Catalog external location and independent file-event scoping (see that resource's own comment). Also what the retention lifecycle policy's prefix_match derives from, so a new source system's container automatically gets covered by the same policy without hand-editing prefix_match separately. \"pos\"/\"ecommerce\" are the two already-applied in dev -- adding a third name here creates its container without disturbing the first two (for_each keys by name, not by list position), but the corresponding Unity Catalog side (external location, volume, grants in modules/databricks/storage) is still wired per-source-system by hand there and needs its own change to actually register and use the new container."
+
+  validation {
+    condition     = length(var.landing_source_systems) == length(distinct(var.landing_source_systems))
+    error_message = "landing_source_systems must not contain duplicates."
+  }
+}
+
 variable "tags" {
   type        = map(string)
   description = "Base tags applied to every taggable resource this module creates, merged with workload/environment (see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section for the required keys and why each exists). Passed in from the calling root module rather than hardcoded here, since managed_by/repository/cost_center/data_owner are account-wide constants, not module-specific."

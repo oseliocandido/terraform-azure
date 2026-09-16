@@ -66,6 +66,7 @@ outside Terraform's scope. Status as of this session:
 | `grp-sales-stakeholders-<env>`, `grp-sales-analysts-<env>`, `grp-sales-data-engineers-<env>` (dev + prod, 6 total) | Provisioned | `databricks_grants` once `enable_grants = true` (flipped for `dev` in `environments/dev/terraform.tfvars`) |
 | `grp-databricks-ci-dev` / `grp-databricks-ci-prod` (Entra ID groups, `sp-terraform-dev`/`-prod` added as members) | `-dev` registered and applied; `-prod` registered, not yet applied (`prod` itself doesn't exist) | Workspace membership (`databricks_permission_assignment`) and metastore `CREATE_*` privileges (`databricks_grants.metastore_admins`) for the CI service principals — see `environments/dev/main.tf`/`environments/prod/main.tf`'s `ci_group` resources |
 | `grp-databricks-platform-dev` / `grp-databricks-platform-prod` (Entra ID groups; `oseliocandido` added to `-dev` for bootstrap) | Registered | `owner` on `databricks_storage_credential.analytics` and the bronze/landing external locations (bare-string reference -- see below). No workspace-level permission, deliberately |
+| `grp-marketing-data-governance-<env>`, `grp-marketing-stakeholders-<env>`, `grp-marketing-analysts-<env>`, `grp-marketing-data-engineers-<env>` (dev + prod, 8 total) | Created in Entra ID (`docs/azure-setup-commands.sh` step 10); **not yet registered at the Databricks account level** | Same roles as their `grp-sales-*` counterparts, for the second domain (`module.unity_catalog_marketing` in `environments/dev/main.tf`/`environments/prod/main.tf`). `module.unity_catalog_marketing`'s `enable_grants` is a literal `false` (not wired to `var.enable_grants`, unlike `unity_catalog_sales`) specifically so flipping `dev`'s `var.enable_grants` for sales' own now-provisioned groups can't accidentally also try to grant to marketing's groups before they exist |
 
 **Only `grp-databricks-ci-<env>` needs workspace-level presence.**
 An earlier version also gave `grp-databricks-platform-<env>` and
@@ -103,7 +104,82 @@ still doesn't exist at all (no workspace, no catalog);
 `grp-sales-data-governance-prod` is the only remaining un-registered
 group, and registering it is what unblocks `prod`'s first apply.
 
----
+**Marketing added as a real second domain (2026-09-16)**, which surfaced
+two bugs `modules/databricks/unity_catalog` had carried since it only
+ever had one caller: the module's own resources (`databricks_catalog`,
+`databricks_workspace_binding`, `databricks_grants`) were labeled `sales`
+regardless of `var.domain`, and worse, every grant principal inside it
+(`grp-sales-stakeholders-<env>`, `grp-sales-analysts-<env>`,
+`grp-sales-data-engineers-<env>`, and the `data_governance_group_name`
+local) was a literal `sales` string too -- calling the module with
+`domain = "marketing"` would have owned/granted `marketing_dev` to sales'
+own groups. Fixed by parameterizing all of it on `var.domain`, renaming
+the resources off the `sales` label (`moved` blocks protect `dev`'s
+already-applied state -- confirmed `0 to destroy` on replan), and
+splitting the root's own module call into `unity_catalog_sales` /
+`unity_catalog_marketing` (also `moved`-protected). Separately,
+`modules/analytics`'s single shared `managed` container couldn't back a
+second catalog's `storage_root` either -- Unity Catalog rejects
+overlapping external-location registrations, and `sales_dev`'s already
+claims the whole container. Rather than migrate `sales`'s already-applied
+storage root to a subpath (real risk, `azurerm_storage_container.name` is
+ForceNew), added `var.additional_domains` and a `managed-<domain>`
+container per entry, leaving the original `managed` container/domain
+untouched. `unity_catalog_marketing.enable_grants` stays a literal
+`false` until the `grp-marketing-*` groups above are provisioned -- see
+the table above.
+
+**Bronze/landing moved to a dedicated `ingestion_<env>` catalog, out of
+the domain catalogs entirely (2026-09-16).** Marketing exposed a second
+bug beyond the group-hardcoding one above: `unity_catalog`'s `bronze`
+schema was created unconditionally per domain, so `sales_dev.bronze` and
+`marketing_dev.bronze` would have been two separate Unity Catalog schema
+objects both pointing at the identical physical bronze container --
+bronze was never actually domain-specific data (it's raw POS/e-commerce
+files), so creating it per domain just duplicated the same source data's
+UC registration once per catalog that happened to call the module.
+Fixed by removing `databricks_schema.bronze` (and `var.
+bronze_external_location_url`) from `modules/databricks/unity_catalog`
+entirely, and adding a new, non-domain `ingestion_<env>` catalog to
+`modules/databricks/storage` (owned by
+`grp-databricks-platform-<env>`, which already administered this
+infrastructure one layer down) holding `bronze` plus the `pos_landing`/
+`ecommerce_landing` volumes and their new `pos_landing_checkpoint`/
+`ecommerce_landing_checkpoint` companions (Auto Loader checkpoint/schema-
+evolution state -- Databricks explicitly recommends this live in UC-
+managed storage, separate from the source files being ingested, and UC
+itself disallows nesting checkpoint files under the ingested-table
+directory anyway). A domain that needs bronze access now gets an
+explicit grant on `ingestion_<env>.bronze` (`bronze_consumer_group_name`,
+currently `grp-sales-data-engineers-<env>` only -- no second domain has a
+real, PRD-backed need for this raw feed yet) instead of inheriting it
+automatically from its own catalog-level grant. `dev`'s already-applied
+`pos_landing`/`ecommerce_landing` volumes and `sales_dev.bronze` schema
+get destroyed/recreated in the new catalog on next apply -- confirmed
+safe: both were external-storage-backed (bronze's own `storage_root`,
+each volume's `storage_location`), so dropping the old UC registrations
+never touches the underlying blob files, same reasoning as any other
+`EXTERNAL` volume/location drop in this codebase. The two checkpoint
+volumes still have no `databricks_grants` -- same "no dedicated pipeline
+service principal yet" gap as before, just relocated along with the
+volumes themselves.
+
+**Domain-level `bronze` schema restored, immediately after removing it
+above (2026-09-16)** -- turned out the removal was half right, not fully
+wrong. `ingestion_<env>.bronze` genuinely needed to be the ONE place raw
+landed files get registered (that part of the fix stands). But each
+domain also needs its own `bronze` schema back:  data engineers decide
+*downstream of ingestion*, not at landing time, whether a given raw
+record belongs to `sales` or `marketing`, and that curated/routed result
+needs its own domain-owned home. The two aren't the same object this
+time, so it isn't the original bug again: the old, removed schema pointed
+`storage_root` at the shared RAW landing container (the actual bug); this
+one is `MANAGED` -- no `storage_root` at all, same shape as `silver`/
+`gold` -- physically stored under each domain's own managed container,
+populated by a pipeline write, not a second registration against
+ingestion's raw files. `sales_dev.bronze` (already applied, currently
+empty) will show as replaced, not a bare destroy, on the next `dev` plan
+-- safe, since it never held real data.
 
 ## Compute / cluster architecture — not yet specified
 
@@ -146,150 +222,89 @@ retrofit against a figure nobody validated.
 
 ---
 
-## Bronze ingestion: file-driven triggering (Auto Loader / file events)
+## Bronze ingestion: file-driven triggering (Auto Loader / file events) — mostly done
 
-**Context.** Discussed at length: new files landing in `bronze` (from the
-POS/e-commerce systems, per PRD §2) should trigger ingestion
-asynchronously rather than relying on polling. Two real mechanisms exist,
-not yet chosen or written into ARCHITECTURE.md as a decision:
+**Done.** The two concerns this section used to treat as speculative are
+both real now, and resolved differently than originally sketched below
+(kept for context, not because the original plan is what got built):
 
-- **Auto Loader, file notification mode** — Event Grid + Azure Queue
-  Storage wired manually (or Auto Loader-provisioned), with three extra
-  RBAC roles needed on the access connector's managed identity
-  (`Contributor`, `Storage Queue Data Contributor`,
-  `EventGrid EventSubscription Contributor`). Not supported on Premium
-  storage accounts (ours is Standard, so not a blocker).
-- **Managed file events on the external location** (the more modern
-  approach) — `enable_file_events = true` + a `file_event_queue` block on
-  `databricks_external_location.bronze`; on Azure this still requires a
-  provided Azure Queue Storage queue (`provided_aqs`), it isn't fully
-  hands-off the way AWS/GCP's managed queues are.
-- **Databricks Jobs' file arrival trigger** — separate from Auto Loader
-  entirely; a Job trigger type that fires a run when files land at a
-  registered external location/volume, without a permanent streaming
-  cluster. Likely the better fit for "simple workflow jobs triggered by
-  async notification" once a pipeline exists — but the job itself is
-  pipeline scope (per the Terraform/DAB ownership boundary already
-  written into ARCHITECTURE.md), so only the *capability* (the external
-  location's file-events configuration, the queue, the RBAC) belongs to
-  this repo.
+- **Per-source-system landing, not one shared container.** Superseded the
+  "second narrower external location scoped to `bronze/landing/`" idea
+  entirely — instead of subpath-scoping one bronze location, POS and
+  e-commerce each got their own dedicated Azure container and their own
+  `databricks_external_location` (`pos_landing`/`ecommerce_landing` in
+  `modules/databricks/storage/main.tf`), each with
+  `enable_file_events = true` and its own `file_event_queue { managed_aqs
+  {...} }`. The raw, undifferentiated `bronze` external location
+  (`modules/databricks/storage/main.tf`'s
+  `databricks_external_location.bronze`) still exists and still has
+  `enable_file_events = false`, and still should stay off — the reasoning
+  in that resource's own comment (it covers the whole container,
+  including every domain's own internal `__unitystorage/...` churn) is
+  unchanged, it just now lives in `ingestion_<env>` rather than one
+  shared per-catalog bronze.
+- **Per-source-system volumes**, `pos_landing`/`ecommerce_landing`
+  (`databricks_volume`, `EXTERNAL`), registered under
+  `ingestion_<env>.bronze` — see "Ingestion catalog and domain bronze,
+  restructured" further down for the fuller story of how that catalog
+  came to exist. Each is `READ VOLUME`-only for
+  `bronze_consumer_group_name` (currently `grp-sales-data-engineers-dev`
+  only), gated by `enable_grants` — never `WRITE`, since these are
+  written by the source systems directly via Azure RBAC, outside Unity
+  Catalog entirely.
+- **Auto Loader checkpoint/schema-evolution volumes**,
+  `pos_landing_checkpoint`/`ecommerce_landing_checkpoint` (`MANAGED`, same
+  module) — added after realizing checkpoints can't live inside the
+  landing volumes themselves (Databricks: *"does not allow you to nest
+  checkpoint or schema inference and evolution files under the table
+  directory"*; separately, the landing volumes are read-only by design
+  regardless). No `databricks_grants` on these two yet — no dedicated
+  pipeline identity exists to grant `READ VOLUME`/`WRITE VOLUME` to (see
+  "Pipeline-phase bootstrap" below).
 
-**Why deferred.** Enabling this is infra, but there's no consumer for it
-yet — no job, no pipeline — until the data-pipeline phase (explicitly out
-of scope per [PRD.md §16](PRD.md#data-pipelines)) actually exists.
-Revisit when that phase starts; add as a new ARCHITECTURE.md
-Context/Decision/Consequences section at that point, likely appended to
-"Unity Catalog: external locations."
-
-**Scoping note for whenever this is picked up.** `modules/unity_catalog`'s
-`databricks_external_location.bronze` covers the *entire* bronze
-container — not just the landing zone. That location also backs the
-`bronze` schema's own `storage_root`, so it covers the schema's internal
-`__unitystorage/schemas/<id>/tables/<id>/` managed-table writes too.
-Enabling `enable_file_events` there as-is would track change
-notifications for that internal Delta churn as well as genuine external
-file drops — not useful, since nothing downstream should be reacting to
-Delta's own writes. The precise design: a **second, narrower external
-location** scoped just to `bronze/landing/` (the same subpath
-`databricks_volume.sales_bronze_landing` already sits on), with
-`enable_file_events` on *that* one only, leaving the broad bronze
-location's file events off. Currently `enable_file_events = false` on
-both (see `modules/unity_catalog/main.tf`'s comment) — correct for now,
-since neither has a consumer yet either way.
-
----
-
-## Bronze landing: per-source-system external volumes
-
-**Context.** PRD §2/§13 names exactly two source systems feeding this
-platform — the point-of-sale system (physical stores) and the
-e-commerce platform — "each system has a different schema and update
-frequency" (PRD §2). Today, `bronze` is one undifferentiated container
-with a single external location
-(`databricks_external_location.bronze`, covering the whole container
-root) and a single landing volume
-(`databricks_volume.sales_bronze_landing` — see "Ingestion landing:
-`databricks_volume`" above). Nothing in the current design
-distinguishes POS files from e-commerce files once they're in `bronze`,
-and nothing scopes access separately per source system.
-
-**Gap, per Databricks' Unity Catalog best practices.** The doc is
-explicit on two points this project doesn't yet implement:
-"use external volumes for landing areas, staging locations, and
-unstructured data access" (plural — one per landing area, not one
-shared catch-all), and "avoid granting general `READ FILES` or
-`WRITE FILES` permissions to end users" — broad file-level access at
-the external-location grain is exactly the shape to avoid; access
-belongs at the volume grain, scoped to the identity that needs it.
-
-**The shape this implies, once a real pipeline exists:**
-
-- Two external volumes instead of one — `bronze.pos_landing` and
-  `bronze.ecommerce_landing` — each backed by its own subfolder
-  (`bronze/pos/landing/`, `bronze/ecommerce/landing/`), not the single
-  shared `bronze/landing/` path `sales_bronze_landing` currently uses.
-  Same narrowing principle as the external-location scoping note above,
-  just carried one level further: per source system, not just
-  per-landing-zone-vs-whole-container.
-  A concrete failure this prevents: an e-commerce ingestion bug that
-  lists/reads its own landing folder recursively can't accidentally
-  enumerate or read POS files sitting in a sibling folder it was never
-  granted `READ VOLUME` on — with one shared volume today, both source
-  systems' files sit under the same grantable object, so nothing
-  Unity-Catalog-enforced stops that.
-- Grants scoped per volume: `READ VOLUME`/`WRITE VOLUME` on
-  `bronze.pos_landing` to whatever identity owns POS ingestion,
-  `READ VOLUME`/`WRITE VOLUME` on `bronze.ecommerce_landing` to whatever
-  identity owns e-commerce ingestion — not a blanket grant on the whole
-  bronze external location, and not human/`grp-sales-data-engineers-*`
-  access to either (per the pipeline-writes-not-humans reasoning already
-  documented for the catalog-level `INSERT`/`UPDATE` grant in
-  ARCHITECTURE.md's Identity model section).
-- `databricks_volume.sales_bronze_landing` (today's single volume) would
-  need to be replaced by these two, not kept alongside them — one
-  shared landing volume and two source-scoped ones would just
-  reintroduce the same overlap problem at a smaller scale.
-
-**Why deferred, not built now.** The ingestion identities that would
-hold these per-volume grants don't exist yet — same dependency as
-"Pipeline-phase bootstrap" below (a pipeline-phase service principal,
-likely one per source system rather than one shared SP, given the
-whole point is that a POS ingestion bug shouldn't be able to touch
-e-commerce files). Revisit together with that item and the file-events
-scoping note above — all three are the same underlying "narrow bronze
-past the container root" work, just at different grains, and are
-cheapest to design once as a single ARCHITECTURE.md section rather than
-three separate retrofits.
+**Still not done — the actual trigger/consumer.** Nothing in this repo
+yet *reacts* to a file landing — no Databricks Job, no Auto Loader
+stream, no DLT pipeline. That's explicitly out of scope per
+[PRD.md §16](PRD.md#data-pipelines) and belongs to whatever picks up
+"Pipeline-phase bootstrap" below. **Databricks Jobs' file arrival
+trigger** (a Job trigger type that fires on new files at a registered
+external location/volume, no permanent streaming cluster needed) is
+still the likely fit once that phase starts — the infra capability
+(external locations, file events, the queues) is what this repo already
+built; the Job/pipeline itself is pipeline-repo scope per
+ARCHITECTURE.md's Terraform/DAB ownership boundary.
 
 ---
 
-## Silver/gold retention and VACUUM
+## Bronze/silver/gold retention and VACUUM
 
-**Context.** The current `azurerm_storage_management_policy` only covers
-`bronze/` (see ARCHITECTURE.md's "Data retention and lifecycle policy") —
-deliberately, since `silver`/`gold` are derived/rebuildable and mutable
-(subject to `UPDATE`/`MERGE`, unlike bronze's append-only shape), so a
-blob-age lifecycle rule risks deleting a file a live Delta table's
-transaction log still references.
+**Context (corrected 2026-09-16).** The `azurerm_storage_management_policy`
+now covers `landing-pos/`/`landing-ecommerce/` only, not `bronze` (see
+ARCHITECTURE.md's "Data retention and lifecycle policy") — an earlier
+version of this policy targeted `bronze/` instead, reasoned as safe because
+bronze is append-only unlike silver/gold's `UPDATE`/`MERGE` shape. That
+reasoning had it backwards: mutation pattern isn't what makes a blob-age
+lifecycle rule unsafe for a Delta table — *being a Delta table at all* is.
+An append-only table's data files stay referenced by the current snapshot
+indefinitely (nothing ever tombstones them the way `MERGE`/`UPDATE` does),
+so a blob-lifecycle rule deleting one by age is deleting live, currently-
+referenced data with zero Delta awareness — arguably worse than doing the
+same to silver/gold, not safer. Landing is the only container actually
+safe for this: plain files, no transaction log, nothing to keep consistent.
 
-**Not yet decided:**
+**Not yet decided / not yet built — real pipeline work, tracked here so it
+doesn't get conflated with the (now landing-only) blob lifecycle policy:**
 
-- Whether `silver`/`gold` ever get their own (shorter, or absent) lifecycle
-  rule once they have real data volume.
-- `VACUUM` retention tuning — a *pipeline-operational* concern (default
-  7-day/168-hour retention, whoever builds the pipeline schedules it), not
-  an infrastructure resource this repo provisions, but worth a one-line
-  cross-reference in ARCHITECTURE.md so a future reader doesn't conflate
-  it with the blob lifecycle policy.
-
----
-
-## Ingestion landing: `databricks_volume` (external, bronze) — done
-
-**Done, `dev`.** `databricks_volume.sales_bronze_landing` — see
-[IMPLEMENTATION.md](IMPLEMENTATION.md#databricks_volume--bronze-ingestion-landing-backlogmd)
-for the resource and the storage-path constraint found while building it.
-Not yet built for `prod`, since `prod` itself doesn't exist yet.
+- PRD §9's "remain queryable at lower cost" half of the five-year
+  requirement isn't satisfied by the landing-only blob policy at all — it
+  describes bronze/silver's own Delta data, not raw landing files. Needs a
+  Delta-native mechanism once a pipeline exists: `VACUUM` retention tuning
+  (`delta.deletedFileRetentionDuration`/`delta.logRetentionDuration`,
+  default 7-day/30-day), and/or a partition-based archival job for the
+  actual multi-year cost-tiering PRD §9 asks for — none of which is an
+  infrastructure resource this repo provisions.
+- Whether `silver`/`gold` (and now `bronze`) ever need any lifecycle
+  handling beyond that once real data volume exists.
 
 ---
 
@@ -318,3 +333,19 @@ Already has a full decision in
 [ARCHITECTURE.md's "Networking — deferred to backlog"](ARCHITECTURE.md#networking--deferred-to-backlog)
 and [PRD.md §16](PRD.md#networking) — listed here only so this file is a
 complete index of open scope, not because the decision itself is unmade.
+
+**Checked and ruled out (2026-09-16):** a throwaway workspace deployed to
+verify Databricks' managed-resource-group provisioning (see
+`modules/databricks/workspaces/main.tf`'s own SKU comment)
+raised two questions that turned out to be non-issues once checked against
+the real `dev` workspace and the `azurerm_databricks_workspace` docs:
+- SKU: this project has used `premium` since commit `00c3380` (Unity
+  Catalog requires it; Standard is being retired for new workspaces
+  anyway) — nothing to change.
+- `enableNoPublicIp` vs. `public_network_access_enabled`: these are two
+  different azurerm fields, not a drift between our config and Azure's
+  default. `public_network_access_enabled` (workspace URL reachability,
+  our config leaves it at its `true` default) and `no_public_ip` (Secure
+  Cluster Connectivity — no public IPs on cluster nodes, also defaults
+  `true`) are both unset in this module and both match the real `dev`
+  workspace's live values. No code change needed.

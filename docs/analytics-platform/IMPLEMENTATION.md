@@ -8,30 +8,55 @@ sourced from the current `hashicorp/azurerm` and `databricks/databricks`
 Terraform provider documentation.
 
 **Status: `dev` is real and applied** — storage, workspace, metastore,
-catalog, schemas, external locations, and the bronze landing volume all
-exist in Azure/Databricks as of this writing. `prod` is not yet built.
-Where this spec differs from what's actually in the repo, the repo is
-correct — this document is kept in sync after the fact, not always ahead
-of it.
+the `sales` catalog + its domain-owned `bronze`/`silver`/`gold` schemas,
+the shared `ingestion` catalog (raw landing bronze, source-system landing
+volumes, Auto Loader checkpoint volumes), and the `marketing` catalog
+(catalog/schemas only, no grants yet) all exist in Azure/Databricks as of
+this writing. `prod` is not yet built. Where this spec differs from
+what's actually in the repo, the repo is correct — this document is kept
+in sync after the fact, not always ahead of it.
 
 ## New Terraform modules
 
-Two new modules under `modules/`, following the existing pattern (stateless,
-composed once per root — see `modules/analytics`, `modules/budget_alert`
-for the established shape):
+Three new modules under `modules/`, following the existing pattern
+(stateless, composed once or more per root — see `modules/analytics`,
+`modules/budget_alert` for the established shape):
 
 ```text
 modules/
 ├── analytics/              # existing — RG + ADLS Gen2 storage account
-│                           #   extended: + bronze container (only --
-│                           #             silver/gold are UC managed, no
-│                           #             container of their own),
-│                           #             + retention lifecycle policy
+│                           #   extended: + bronze/landing-pos/
+│                           #             landing-ecommerce/managed
+│                           #             containers, + a "managed-<domain>"
+│                           #             container per var.additional_domains
+│                           #             entry, + retention lifecycle policy
 ├── budget_alert/          # existing — RG-scoped consumption budget
 └── databricks/            # grouped -- everything using the databricks provider
-    ├── databricks_workspace/  # workspace + access connector + metastore assignment
-    └── unity_catalog/         # one catalog + bronze (external) + silver/gold (managed) schemas + grants (gated)
+    ├── workspaces/             # workspace + access connector + metastore assignment
+    ├── storage/                # called ONCE per environment (not per domain):
+    │                          #   storage credential + bronze/landing external
+    │                          #   locations + the non-domain "ingestion_<env>"
+    │                          #   catalog (raw bronze schema, landing +
+    │                          #   checkpoint volumes)
+    └── unity_catalog/         # called ONCE PER DOMAIN (sales, marketing, ...):
+                               #   one catalog + domain-owned bronze/silver/gold
+                               #   (all MANAGED) + grants (gated)
 ```
+
+**Why three modules, not one.** An earlier version put everything --
+credential, bronze, landing, and the domain catalog -- inside a single
+per-domain `unity_catalog` module. That broke the moment a second real
+domain (`marketing`) got added: the storage credential and the raw
+landing infrastructure aren't domain-specific (the access connector's
+managed identity has storage access at the account/container level, not
+scoped to one domain), so declaring them inside a per-domain module meant
+calling it twice would collide on names, and (a separate, worse bug) an
+unconditional per-domain `bronze` schema meant two domains' `bronze`
+schemas ended up registered against the *identical* physical raw-landing
+container. `platform_storage` now owns everything that's genuinely
+environment-wide once; `unity_catalog` owns only what's genuinely
+per-domain. See `docs/analytics-platform/BACKLOG.md`'s "Ingestion catalog
+and domain bronze, restructured" entries for the full story.
 
 Nested under `modules/databricks/` for organization — grouping "everything
 that manages Unity Catalog/Databricks objects" separately from
@@ -43,29 +68,47 @@ these directories and updating `source = "../../modules/databricks/..."`
 required zero `terraform state mv` operations — a `terraform init` alone
 picks up the new location.
 
-`databricks_storage_credential` and the one `databricks_external_location`
-(bronze only) resource are **not** inside `modules/databricks_workspace`,
-despite an earlier version of this spec putting them there — see "Root
-module additions" below for why, and for where they actually live.
+`databricks_storage_credential` and `databricks_external_location` are
+**not** inside `modules/databricks/workspaces`, despite an
+earlier version of this spec putting them there — see "Root module
+additions" below for why, and for where they actually live
+(`modules/databricks/storage`).
 
 ### `modules/analytics` — extended (existing module, new resources)
 
 ```hcl
-resource "azurerm_storage_container" "bronze" {
-  name                  = "bronze"
-  storage_account_id    = azurerm_storage_account.analytics.id
-  container_access_type = "private"
+resource "azurerm_storage_container" "bronze" { name = "bronze" ... }
+resource "azurerm_storage_container" "landing_pos" { name = "landing-pos" ... }
+resource "azurerm_storage_container" "landing_ecommerce" { name = "landing-ecommerce" ... }
+
+# The ORIGINAL domain's own managed-storage root -- deliberately never
+# renamed to "managed-sales" even after additional_domains (below) was
+# added, since azurerm_storage_container's name is ForceNew and this one
+# is already applied.
+resource "azurerm_storage_container" "managed" { name = "managed" ... }
+
+# One MORE managed container per entry in var.additional_domains -- not
+# just business domains despite the variable's name (dev/prod's own list
+# is ["marketing", "ingestion"]; "ingestion" backs platform_storage's own
+# non-domain catalog, not a business domain). Each domain/owner needs its
+# own container because Unity Catalog rejects overlapping external-location
+# registrations, and the original "managed" container above already
+# claims the whole original domain's root.
+resource "azurerm_storage_container" "managed_domain" {
+  for_each = toset(var.additional_domains)
+  name     = "managed-${each.key}"
+  ...
 }
 
 resource "azurerm_storage_management_policy" "default_retention_policy" {
   storage_account_id = azurerm_storage_account.analytics.id
 
   rule {
-    name    = "bronze-retention"
+    name    = "landing-retention"
     enabled = true
 
     filters {
-      prefix_match = ["bronze/"]
+      prefix_match = ["landing-pos/", "landing-ecommerce/"]
       blob_types   = ["blockBlob"]
     }
 
@@ -80,11 +123,15 @@ resource "azurerm_storage_management_policy" "default_retention_policy" {
 }
 ```
 
-New outputs: `storage_account_id`, `storage_account_name` (already exists),
-`bronze_container_name` — no `silver_container_name`/`gold_container_name`,
-since those schemas have no container.
+Outputs: `storage_account_id`, `storage_account_name`,
+`bronze_container_name`, `landing_pos_container_name`,
+`landing_ecommerce_container_name`, `managed_container_name` (the
+original domain's), `additional_managed_container_names` (a
+`map(domain => container name)`, one entry per `var.additional_domains`).
+No `silver_container_name`/`gold_container_name` — those schemas are
+Unity Catalog `MANAGED`, with no container of their own.
 
-### `modules/databricks_workspace`
+### `modules/databricks/workspaces`
 
 Inputs: `resource_group_name`, `location`, `workload`, `environment`,
 `instance` (same naming convention as `analytics_group`),
@@ -95,7 +142,7 @@ Inputs: `resource_group_name`, `location`, `workload`, `environment`,
 "Bootstrap" below).
 
 ```hcl
-resource "azurerm_databricks_workspace" "sales" {
+resource "azurerm_databricks_workspace" "this" {
   name                = "dbw-${local.suffix}" # local.suffix: workload-environment-region-instance
   resource_group_name = var.resource_group_name
   location            = var.location
@@ -111,7 +158,7 @@ resource "azurerm_databricks_workspace" "sales" {
   managed_resource_group_name = var.managed_resource_group_name
 }
 
-resource "azurerm_databricks_access_connector" "sales" {
+resource "azurerm_databricks_access_connector" "this" {
   name                = "dbac-${local.suffix}"
   resource_group_name = var.resource_group_name
   location            = var.location
@@ -124,7 +171,7 @@ resource "azurerm_databricks_access_connector" "sales" {
 resource "azurerm_role_assignment" "access_connector_storage" {
   scope                = var.storage_account_id
   role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_databricks_access_connector.sales.identity[0].principal_id
+  principal_id         = azurerm_databricks_access_connector.this.identity[0].principal_id
 }
 
 # Authoritative, overrides whatever metastore is currently assigned --
@@ -132,230 +179,228 @@ resource "azurerm_role_assignment" "access_connector_storage" {
 # didn't reliably take effect for the workspace-level API in practice
 # (found by hand: a create against a stale/previous metastore_id was
 # rejected). This resource is the authoritative fix, not the UI.
-resource "databricks_metastore_assignment" "sales" {
+resource "databricks_metastore_assignment" "this" {
   metastore_id = var.metastore_id
-  workspace_id = azurerm_databricks_workspace.sales.workspace_id
+  workspace_id = azurerm_databricks_workspace.this.workspace_id
 }
 ```
 
 Outputs: `workspace_id`, `workspace_url`, `access_connector_id`.
 
 **`databricks_storage_credential` and `databricks_external_location` are
-deliberately NOT in `modules/databricks_workspace`** — an earlier version
-of this spec put them there, but they need
+deliberately NOT in `modules/databricks/workspaces`** — an
+earlier version of this spec put them there, but they need
 `CREATE_STORAGE_CREDENTIAL`/`CREATE_EXTERNAL_LOCATION` grants on the
-metastore, and `modules/databricks_workspace` contains
+metastore, and `modules/databricks/workspaces` contains
 `azurerm_databricks_workspace`, which the `databricks` provider's own
 `host` argument depends on — making that whole module depend on the
 grant creates a real cycle (confirmed by hand: `terraform plan` refuses
-with `Error: Cycle`). They live in `modules/unity_catalog` instead (below)
-— that module has zero `azurerm` resources, so a module-level `depends_on`
-on the grant is safe there.
+with `Error: Cycle`). They live in `modules/databricks/storage`
+instead (below) — that module has zero `azurerm` resources, so a
+module-level `depends_on` on the grant is safe there.
 
-### `modules/unity_catalog`
+### `modules/databricks/storage` — called ONCE per environment
 
-Inputs: `environment`, `metastore_id`, `workspace_id` (this environment's
-own workspace — see "Catalog isolation" below for why this is required,
-not optional), `access_connector_id` (from `modules/databricks_workspace`,
-for the storage credential below), `bronze_storage_root` (the `abfss://`
-URL from `modules/analytics`'s bronze container — also what the bronze
-external location below registers; silver/gold have no equivalent input,
-since those schemas are Unity Catalog managed, not external),
-`ci_service_principal_name` (`sp-terraform-dev` /
-`sp-terraform-prod`), `enable_grants` (bool, default `false`), plus
-`depends_on` at the call site on the root-level metastore grant (see
-"Root module additions" below — this module's resources need that grant
-to exist first, and it can't be expressed as a data dependency since
-nothing in this module's inputs is computed *from* the grant). The four
-`grp-sales-*-<env>` group names aren't separate inputs — they're derived
-from `var.environment` inside the module, following the same naming
-convention as everything else here; group *existence* and membership are
-provisioned outside Terraform (see
-[BACKLOG.md](BACKLOG.md#pipeline-phase-bootstrap-databricks-asset-bundles)).
+Owns everything that's genuinely environment-wide, not domain-specific:
+the storage credential, the raw bronze/landing external locations, and a
+dedicated, non-domain `ingestion_<env>` catalog.
 
-**`enable_grants` gates all three `databricks_grants` resources below**
-(`count = var.enable_grants ? 1 : 0`) — defaults `false` because none of
-their referenced principals (`grp-sales-*-<env>`, the CI service
-principal) are recognized Databricks identities yet. Applying with the
-default would fail on *every* apply, not just the first, since the
-principals don't exist. Flip to `true` per-environment once
-`BACKLOG.md`'s pending group/SP provisioning is done.
-
-`databricks_grants` (plural, below) is deliberately chosen over the
-newer `databricks_grant` (singular): `databricks_grants` is
-*authoritative* — it overwrites the securable's entire grant set to match
-what's declared, resetting anything added outside Terraform — while
-`databricks_grant` only manages the one grant it declares, leaving
-everything else alone. Authoritative is the intended behavior here:
-Terraform should be the single source of truth for who can access what,
-not one voice among several.
+Inputs: `environment`, `metastore_id`, `workspace_id`, `access_connector_id`,
+`resource_group_name`/`subscription_id` (for the landing volumes' file-event
+queues), `ci_group_name`, `ci_service_principal_name`, `enable_grants`,
+`bronze_consumer_group_name` (currently `grp-sales-data-engineers-<env>` —
+the one group with real, PRD-backed access to this raw data today),
+`bronze_storage_root`/`pos_landing_storage_root`/`ecommerce_landing_storage_root`/
+`ingestion_catalog_storage_root` (all `abfss://` URLs from `modules/analytics`).
 
 ```hcl
-resource "databricks_catalog" "sales" {
-  name         = var.environment # "dev" or "prod"
-  metastore_id = var.metastore_id
-  comment      = "Sales analytics catalog — ${var.environment}"
-
-  # Required for databricks_workspace_binding below to have any effect —
-  # an "OPEN" (default) catalog is visible from every workspace attached
-  # to the metastore regardless of any binding resource that exists.
-  isolation_mode = "ISOLATED"
-}
-
-# Without this, dev.* and prod.* are both queryable from either workspace
-# by default (same metastore, same region) — nothing but Unity Catalog
-# grants would stand between a dev-scoped identity and prod data. See
-# ARCHITECTURE.md's "Catalog isolation: workspace-catalog bindings".
-resource "databricks_workspace_binding" "sales" {
-  securable_name = databricks_catalog.sales.name
-  workspace_id   = var.workspace_id
-}
-
-resource "databricks_storage_credential" "sales" {
+resource "databricks_storage_credential" "analytics" {
   name = "cred-analytics-${var.environment}"
   azure_managed_identity {
     access_connector_id = var.access_connector_id
   }
-  owner = var.ci_service_principal_name # environment-scoped SP, not a personal account
+  owner = local.platform_group_name # grp-databricks-platform-<env>, NOT a domain's own governance group
 }
 
 resource "databricks_external_location" "bronze" {
   name                = "loc-analytics-${var.environment}-bronze"
   url                 = var.bronze_storage_root
-  credential_name     = databricks_storage_credential.sales.id
-  # See BACKLOG.md's "Bronze ingestion" scoping note -- this location
-  # covers the whole bronze container, including the schema's own
-  # internal managed-table writes, so file events stay off here until a
-  # narrower, landing-zone-only external location is built.
-  enable_file_events  = false
+  credential_name     = databricks_storage_credential.analytics.id
+  enable_file_events  = false # covers every domain's internal churn too -- stays off
+  owner               = local.platform_group_name
 }
 
-resource "databricks_external_location" "silver" {
-  name            = "loc-analytics-${var.environment}-silver"
-  url             = var.silver_storage_root
-  credential_name = databricks_storage_credential.sales.id
+resource "databricks_external_location" "pos_landing" {
+  name               = "loc-analytics-${var.environment}-landing-pos"
+  url                = var.pos_landing_storage_root
+  credential_name    = databricks_storage_credential.analytics.id
+  enable_file_events = true
+  file_event_queue { managed_aqs { resource_group = var.resource_group_name; subscription_id = var.subscription_id } }
+  owner = local.platform_group_name
+}
+# ecommerce_landing is the same shape
+
+# The non-domain ingestion catalog -- raw bronze + landing/checkpoint
+# volumes live here, NOT inside any one domain's own catalog. Needs its
+# own registered external location for its own managed storage_root, same
+# requirement every domain catalog has.
+resource "databricks_external_location" "ingestion_managed" {
+  name            = "loc-analytics-${var.environment}-ingestion-managed"
+  url             = var.ingestion_catalog_storage_root
+  credential_name = databricks_storage_credential.analytics.id
+  owner           = local.platform_group_name
 }
 
-resource "databricks_external_location" "gold" {
-  name            = "loc-analytics-${var.environment}-gold"
-  url             = var.gold_storage_root
-  credential_name = databricks_storage_credential.sales.id
+resource "databricks_catalog" "ingestion" {
+  name           = "ingestion_${var.environment}"
+  metastore_id   = var.metastore_id
+  storage_root   = databricks_external_location.ingestion_managed.url
+  isolation_mode = "ISOLATED"
+  owner          = local.platform_group_name
+}
+
+resource "databricks_workspace_binding" "ingestion" {
+  securable_name = databricks_catalog.ingestion.name
+  workspace_id   = var.workspace_id
 }
 
 resource "databricks_schema" "bronze" {
-  catalog_name = databricks_catalog.sales.name
+  catalog_name = databricks_catalog.ingestion.name
   name         = "bronze"
-  # References the external location's own url attribute, not var.*_storage_root
-  # directly -- gives Terraform a real data dependency on it, instead of
-  # needing an explicit depends_on for that specific ordering.
-  storage_root = databricks_external_location.bronze.url
+  storage_root = var.bronze_storage_root
+  owner        = local.platform_group_name
+}
+
+# One EXTERNAL volume per source system -- READ VOLUME only for
+# bronze_consumer_group_name (gated by enable_grants), never WRITE: these
+# are written by the source systems directly via Azure RBAC, outside Unity
+# Catalog entirely.
+resource "databricks_volume" "pos_landing" {
+  name              = "pos_landing"
+  catalog_name      = databricks_catalog.ingestion.name
+  schema_name       = databricks_schema.bronze.name
+  volume_type       = "EXTERNAL"
+  storage_location  = databricks_external_location.pos_landing.url
+}
+# ecommerce_landing is the same shape
+
+# Auto Loader checkpoint/schema-evolution state -- MANAGED, not EXTERNAL,
+# and deliberately NOT nested inside pos_landing/ecommerce_landing (Unity
+# Catalog disallows nesting checkpoint files under the ingested-table
+# directory, and the landing volumes are read-only by design anyway). No
+# databricks_grants on these two yet -- no dedicated pipeline service
+# principal exists to grant READ VOLUME + WRITE VOLUME to.
+resource "databricks_volume" "pos_landing_checkpoint" {
+  name         = "pos_landing_checkpoint"
+  catalog_name = databricks_catalog.ingestion.name
+  schema_name  = databricks_schema.bronze.name
+  volume_type  = "MANAGED"
+}
+# ecommerce_landing_checkpoint is the same shape
+```
+
+### `modules/databricks/unity_catalog` — called ONCE PER DOMAIN (`sales`, `marketing`, ...)
+
+Inputs: `environment`, `domain` (no default -- every call site picks one
+explicitly; this is what makes the module callable more than once),
+`metastore_id`, `workspace_id`, `storage_credential_name` (from
+`platform_storage`), `catalog_storage_root` (this domain's own
+`managed-<domain>` container), `ci_service_principal_name`,
+`ci_group_name`, `enable_grants`. No `bronze_storage_root` input anymore
+-- this domain's own `bronze` schema below is `MANAGED`, populated by a
+downstream pipeline decision (which raw record belongs to which domain),
+not a second registration against the shared raw landing container in
+`platform_storage`.
+
+```hcl
+resource "databricks_catalog" "this" {
+  name           = "${var.domain}_${var.environment}" # "sales_dev", "marketing_dev", ...
+  metastore_id   = var.metastore_id
+  storage_root   = databricks_external_location.managed.url
+  isolation_mode = "ISOLATED"
+  owner          = local.data_governance_group_name # grp-<domain>-data-governance-<env>
+}
+
+resource "databricks_workspace_binding" "this" {
+  securable_name = databricks_catalog.this.name
+  workspace_id   = var.workspace_id
+}
+
+resource "databricks_external_location" "managed" {
+  name            = "loc-analytics-${var.environment}-${var.domain}-managed"
+  url             = var.catalog_storage_root
+  credential_name = var.storage_credential_name
+  owner           = local.data_governance_group_name
+}
+
+# This domain's OWN bronze -- MANAGED (no storage_root), distinct from
+# platform_storage's raw ingestion_<env>.bronze. Data engineers curate/
+# route which raw records belong to this domain and write the result
+# here; it isn't a second registration against the raw landing files.
+resource "databricks_schema" "bronze" {
+  catalog_name = databricks_catalog.this.name
+  name         = "bronze"
+  owner        = local.data_governance_group_name
 }
 
 resource "databricks_schema" "silver" {
-  catalog_name = databricks_catalog.sales.name
+  catalog_name = databricks_catalog.this.name
   name         = "silver"
-  storage_root = databricks_external_location.silver.url
+  owner        = local.data_governance_group_name
 }
 
 resource "databricks_schema" "gold" {
-  catalog_name = databricks_catalog.sales.name
+  catalog_name = databricks_catalog.this.name
   name         = "gold"
-  storage_root = databricks_external_location.gold.url
+  owner        = local.data_governance_group_name
 }
 
-resource "databricks_grants" "sales_catalog" {
-  count = var.enable_grants ? 1 : 0
+resource "databricks_grants" "catalog" {
+  count   = var.enable_grants ? 1 : 0
+  catalog = databricks_catalog.this.name
 
-  catalog = databricks_catalog.sales.name
-
-  # USE_CATALOG only — lets these two address the catalog; grants no
-  # schema visibility by itself. Layer access for them comes from the
-  # schema-scoped grants below, not from this catalog-level block.
   grant {
-    principal  = "grp-sales-stakeholders-${var.environment}"
+    principal  = "grp-${var.domain}-stakeholders-${var.environment}"
     privileges = ["USE_CATALOG"]
   }
   grant {
-    principal  = "grp-sales-analysts-${var.environment}"
+    principal  = "grp-${var.domain}-analysts-${var.environment}"
     privileges = ["USE_CATALOG"]
   }
-
-  # Catalog-scoped on purpose: these two need every layer, so inheriting
-  # to all current and future schemas is the intended behavior
+  # Blanket MODIFY, not fine-grained INSERT/UPDATE/DELETE -- this
+  # metastore's privilege version (1.0) rejects the fine-grained split at
+  # the catalog level outright (`terraform apply` error: "Privilege
+  # UPDATE is not applicable to this entity [CATALOG/CATALOG_STANDARD]").
+  # No dev/prod DELETE distinction is possible on this metastore version
+  # either way -- revisit if the metastore's privilege version is ever
+  # upgraded.
   grant {
-    principal = "grp-sales-data-engineers-${var.environment}"
-    privileges = concat(
-      ["USE_CATALOG", "USE_SCHEMA", "SELECT", "INSERT", "UPDATE"],
-      var.environment == "dev" ? ["DELETE"] : [] # prod: no DELETE
-    )
+    principal  = "grp-${var.domain}-data-engineers-${var.environment}"
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY"]
   }
   grant {
-    principal  = var.ci_service_principal_name # sp-terraform-dev / sp-terraform-prod
+    principal  = var.ci_service_principal_name
     privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE"]
   }
 }
-
-# Layer access for the two narrow-scope groups is granted per schema, not
-# inherited from the catalog-level block above — a catalog-level SELECT
-# would silently hand stakeholders/analysts bronze access too, since
-# Unity Catalog privileges inherit downward to every schema in a catalog.
-resource "databricks_grants" "gold_schema" {
-  count = var.enable_grants ? 1 : 0
-
-  schema = databricks_schema.gold.id
-
-  grant {
-    principal  = "grp-sales-stakeholders-${var.environment}"
-    privileges = ["USE_SCHEMA", "SELECT"]
-  }
-  grant {
-    principal  = "grp-sales-analysts-${var.environment}"
-    privileges = ["USE_SCHEMA", "SELECT"]
-  }
-}
-
-resource "databricks_grants" "silver_schema" {
-  count = var.enable_grants ? 1 : 0
-
-  schema = databricks_schema.silver.id
-
-  grant {
-    principal  = "grp-sales-analysts-${var.environment}" # stakeholders excluded — gold only
-    privileges = ["USE_SCHEMA", "SELECT"]
-  }
-}
+# gold_schema / silver_schema grants: same shape as before, per-schema,
+# not inherited from the catalog-level block (a catalog-level SELECT would
+# silently hand stakeholders/analysts bronze access too).
 ```
 
-### `databricks_volume` — bronze ingestion landing (BACKLOG.md)
+`enable_grants` gates the same way it always has: `false` by default
+because the referenced `grp-<domain>-*` groups aren't recognized
+Databricks identities until provisioned (`BACKLOG.md`'s group-provisioning
+table). `sales`'s call site uses `var.enable_grants` (flipped `true` for
+`dev`); `marketing`'s call site uses its own, independent literal `false`
+-- `grp-marketing-*` exists in Entra ID but isn't yet registered at the
+Databricks account level (see `BACKLOG.md`).
 
-Not inside `modules/unity_catalog` — a root-level resource, since it
-needs the catalog and schema to exist first via `depends_on` (not a
-data-flow dependency alone, since `catalog_name`/`schema_name` are plain
-strings), and keeping it at the root avoids the module needing to know
-about a pipeline-facing concept that isn't really "catalog/schema setup."
-References `module.unity_catalog.bronze_external_location_url` (a module
-output), not a reconstructed string.
-
-```hcl
-resource "databricks_volume" "sales_bronze_landing" {
-  name             = "sales_bronze_landing"
-  catalog_name     = module.unity_catalog.catalog_name
-  schema_name      = "bronze"
-  volume_type      = "EXTERNAL"
-  storage_location = "${module.unity_catalog.bronze_external_location_url}landing/"
-  comment          = "Ingestion landing zone for POS/e-commerce source files."
-
-  depends_on = [module.unity_catalog]
-}
-```
-
-**The trailing `landing/` subpath is required, not stylistic.** A
-volume's `storage_location` can't be the bare external-location root —
-Unity Catalog rejects it as overlapping the schema's own internal
-managed-storage namespace (`__unitystorage/schemas/<id>/`, created under
-that same root). Found by hand: the first attempt using the external
-location's URL unmodified failed with `cannot create volume: Input path
-url ... overlaps with managed storage`.
+`databricks_grants` (plural) is still deliberately chosen over the newer
+`databricks_grant` (singular) for the same reason as before: it's
+*authoritative*, overwriting the securable's entire grant set to match
+what's declared, rather than only managing the one grant it declares.
+Terraform should be the single source of truth for who can access what.
 
 ## Root module additions
 
@@ -364,15 +409,15 @@ each gain, in this order:
 
 ```hcl
 module "databricks_workspace" {
-  source = "../../modules/databricks_workspace"
+  source = "../../modules/databricks/workspaces"
 
   resource_group_name = module.analytics_group.resource_group_name
-  location             = var.location
-  workload              = var.workload
-  environment            = var.environment
-  instance                = var.instance
+  location            = var.location
+  workload            = var.workload
+  environment         = var.environment
+  instance            = var.instance
   storage_account_id  = module.analytics_group.storage_account_id
-  metastore_id         = var.metastore_id
+  metastore_id        = var.metastore_id
 }
 
 # Metastore-wide, conceptually account-level -- but stays here, in each
@@ -393,40 +438,80 @@ module "databricks_workspace" {
 # block textually identical (same principals, same privileges). It then
 # doesn't matter which environment's apply runs last; they converge to
 # the same state rather than overwriting each other's grants.
+#
+# Group principals (grp-databricks-ci-dev / -prod), not raw SP Application
+# IDs -- an earlier draft of this spec granted the SP directly; see
+# ARCHITECTURE.md's Identity model section for why the group indirection
+# won out (workspace membership and this grant are the two genuinely
+# per-identity grants a new SP would otherwise mean repeating by hand).
 resource "databricks_grants" "metastore_admins" {
   metastore = var.metastore_id
 
   grant {
-    principal  = "<the applying identity's canonical principal name>"
+    principal  = "grp-databricks-ci-dev"
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
   grant {
-    principal  = "<sp-terraform-dev's Application ID>"
-    privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
-  }
-  grant {
-    principal  = "<sp-terraform-prod's Application ID>"
+    principal  = "grp-databricks-ci-prod"
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
 }
 
-module "unity_catalog" {
-  source = "../../modules/unity_catalog"
+module "platform_storage" {
+  source = "../../modules/databricks/storage"
 
-  environment               = var.environment
-  metastore_id              = var.metastore_id
-  workspace_id               = module.databricks_workspace.workspace_id
-  access_connector_id        = module.databricks_workspace.access_connector_id
-  ci_service_principal_name  = var.ci_service_principal_name
-  bronze_storage_root         = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
-  silver_storage_root         = "abfss://${module.analytics_group.silver_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
-  gold_storage_root           = "abfss://${module.analytics_group.gold_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  environment                    = var.environment
+  metastore_id                   = var.metastore_id
+  workspace_id                   = module.databricks_workspace.workspace_id
+  access_connector_id            = module.databricks_workspace.access_connector_id
+  resource_group_name            = module.analytics_group.resource_group_name
+  subscription_id                = var.subscription_id
+  ci_group_name                  = "grp-databricks-ci-dev"
+  ci_service_principal_name      = var.ci_service_principal_name
+  enable_grants                  = var.enable_grants
+  bronze_consumer_group_name     = "grp-sales-data-engineers-${var.environment}"
+  bronze_storage_root            = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  pos_landing_storage_root       = "abfss://${module.analytics_group.landing_pos_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  ecommerce_landing_storage_root = "abfss://${module.analytics_group.landing_ecommerce_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  ingestion_catalog_storage_root = "abfss://${module.analytics_group.additional_managed_container_names["ingestion"]}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
 
-  # Needs CREATE_CATALOG / CREATE_EXTERNAL_LOCATION / CREATE_STORAGE_CREDENTIAL
-  # on the metastore, granted above -- without this, Terraform applies the
-  # module's resources in parallel with the grant and loses the race on a
-  # real single-shot apply (found by hand, repeatedly).
   depends_on = [databricks_grants.metastore_admins]
+}
+
+# One call per domain -- "unity_catalog_sales" (not the unlabeled
+# "unity_catalog" an earlier, single-domain version used) once marketing
+# became a real second domain; a module call's own label is part of every
+# child resource's address, same as a resource's own label.
+module "unity_catalog_sales" {
+  source = "../../modules/databricks/unity_catalog"
+
+  environment                = var.environment
+  domain                     = "sales"
+  metastore_id               = var.metastore_id
+  workspace_id               = module.databricks_workspace.workspace_id
+  ci_service_principal_name  = var.ci_service_principal_name
+  ci_group_name               = "grp-databricks-ci-dev"
+  enable_grants                = var.enable_grants
+  storage_credential_name      = module.platform_storage.storage_credential_name
+  catalog_storage_root         = "abfss://${module.analytics_group.managed_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+
+  depends_on = [databricks_grants.metastore_admins, module.platform_storage]
+}
+
+module "unity_catalog_marketing" {
+  source = "../../modules/databricks/unity_catalog"
+
+  environment           = var.environment
+  domain                = "marketing"
+  metastore_id          = var.metastore_id
+  workspace_id          = module.databricks_workspace.workspace_id
+  ci_service_principal_name = var.ci_service_principal_name
+  ci_group_name              = "grp-databricks-ci-dev"
+  enable_grants               = false # independent of var.enable_grants -- grp-marketing-* not yet Databricks-account-registered
+  storage_credential_name     = module.platform_storage.storage_credential_name
+  catalog_storage_root        = "abfss://${module.analytics_group.additional_managed_container_names["marketing"]}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+
+  depends_on = [databricks_grants.metastore_admins, module.platform_storage]
 }
 ```
 
@@ -442,10 +527,11 @@ recorded as `created_by`/`owner` on the metastore itself
 (`someone@outlook.com`, visible by checking the metastore's own state) —
 Databricks resolves a calling identity to one canonical principal name
 internally, regardless of which UPN authenticated, and grants must target
-that resolved name, not the raw UPN. Check the metastore's actual
-`created_by`/`owner` field (`terraform state show` in
-`environments/shared`, or Account Console) before writing this grant,
-rather than assuming the UPN.
+that resolved name, not the raw UPN. This is why the grant above moved to
+group principals rather than staying pinned to one resolved personal
+identity — check a metastore's actual `created_by`/`owner` field
+(`terraform state show` in `environments/shared`, or Account Console)
+before writing any grant like this, rather than assuming the UPN.
 
 **On `depends_on` between these resources**: every one of them was found
 by hand, via repeated `terraform apply` failures, not derived up front.
@@ -534,14 +620,27 @@ Follows the existing pattern
 ```text
 dbw-analytics-dev-neu-01           # Databricks workspace, dev
 dbac-analytics-dev-neu-01          # Databricks access connector, dev
-cred-analytics-dev                 # Storage credential, dev
-loc-analytics-dev-bronze           # External location, dev bronze
-dev                                # Unity Catalog catalog name
-bronze / silver / gold             # Unity Catalog schema names (per catalog)
-sales_bronze_landing               # External volume, bronze ingestion landing
+cred-analytics-dev                 # Storage credential, dev (ONE per env, shared across domains)
+loc-analytics-dev-bronze           # External location, raw bronze (platform_storage)
+loc-analytics-dev-landing-pos      # External location, POS landing (platform_storage)
+loc-analytics-dev-ingestion-managed # External location, ingestion catalog's own managed root
+loc-analytics-dev-sales-managed    # External location, sales catalog's own managed root
+sales_dev / marketing_dev          # Unity Catalog catalog names, per domain ("<domain>_<env>")
+ingestion_dev                      # Unity Catalog catalog name, non-domain (platform_storage)
+bronze / silver / gold             # Unity Catalog schema names (per catalog -- sales_dev.bronze
+                                    #   and ingestion_dev.bronze are BOTH real, different things,
+                                    #   see modules/databricks/unity_catalog's own bronze comment)
+pos_landing / ecommerce_landing    # External volumes, ingestion_dev.bronze (source-system landing)
+pos_landing_checkpoint / ecommerce_landing_checkpoint # Managed volumes, Auto Loader checkpoint state
 grp-sales-stakeholders-dev         # Group: Sales report consumers, dev
 grp-sales-analysts-dev             # Group: Sales analysts, dev
 grp-sales-data-engineers-dev       # Group: Data Engineering, dev
+grp-sales-data-governance-dev      # Group: sales_dev catalog owner, dev
+grp-marketing-stakeholders-dev / -analysts-dev / -data-engineers-dev / -data-governance-dev
+                                    # Same 4 roles, marketing's own groups -- see
+                                    # BACKLOG.md's group-provisioning table for status
+grp-databricks-platform-dev        # Group: owns platform_storage's shared infra (credential,
+                                    #   raw bronze/landing, the ingestion catalog itself)
 ```
 
 (`-prod` variants follow the same shape. Group naming/grants are defined
@@ -609,7 +708,7 @@ catalog and storage credential had to be manually deleted first, since
 Unity Catalog refuses to delete a non-empty metastore even with
 `force_destroy = true` on the Terraform side). A workspace's metastore
 *assignment* breaks across that recreation (new `metastore_id`) and needs
-reassigning — `modules/databricks_workspace`'s `databricks_metastore_assignment`
+reassigning — `modules/databricks/workspaces`'s `databricks_metastore_assignment`
 resource handles that going forward, but the very first time, it required
 a manual fix, since Account Console's own "Workspaces" list edit on the
 metastore's page didn't reliably take effect for the API.
@@ -628,7 +727,7 @@ already documents for App Registrations (`../adr/0002-*` Consequences:
 pipeline's own run"). Its resulting `metastore_id` is passed into each
 environment as a plain (non-sensitive) `terraform.tfvars` value.
 Per-workspace metastore *assignment* (linking a workspace to that
-already-existing metastore) is what `modules/databricks_workspace`
+already-existing metastore) is what `modules/databricks/workspaces`
 manages in Terraform.
 
 **Since November 9, 2023, this isn't purely manual anymore — Databricks
@@ -657,12 +756,12 @@ already exists
 somewhere in the subscription/tenant. The first workspace's creation is
 what registers the tenant's account record on Databricks' backend in the
 first place. Concretely, this means "create the metastore by hand" cannot
-be the literal first bootstrap step: **stage 1 of `modules/databricks_workspace`
+be the literal first bootstrap step: **stage 1 of `modules/databricks/workspaces`
 (the `azurerm`-only apply, see below) must run at least once, for at least
 one environment, before Account Console is usable at all.** Bootstrap
 order for a brand-new subscription/tenant:
 
-1. Stage-1 apply of `modules/databricks_workspace` for one environment
+1. Stage-1 apply of `modules/databricks/workspaces` for one environment
    (typically `dev`) — creates the workspace, which unblocks Account
    Console.
 2. By hand, in Account Console: create the metastore's own resource group
@@ -723,14 +822,16 @@ authentication method.
 **Concrete implication for this spec:** on a brand-new environment's
 *first-ever* apply, the `databricks` provider block cannot be configured
 yet, which means none of the `databricks`-provider resources inside
-`modules/databricks_workspace` (`databricks_storage_credential`,
-`databricks_external_location`, `databricks_metastore_assignment`) or
-`modules/unity_catalog` can be created in that same apply. Bootstrap
-order for a fresh environment:
+`modules/databricks/workspaces` (`databricks_metastore_assignment`
+-- `databricks_storage_credential`/`databricks_external_location` moved
+out to `modules/databricks/storage`, same underlying constraint
+applies there too), `modules/databricks/storage`, or
+`modules/databricks/unity_catalog` can be created in that same apply.
+Bootstrap order for a fresh environment:
 
 1. First apply, scoped to the `azurerm`-provider resources only —
    `azurerm_databricks_workspace` and `azurerm_databricks_access_connector`
-   (`terraform apply -target=module.databricks_workspace.azurerm_databricks_workspace.sales`,
+   (`terraform apply -target=module.databricks_workspace.azurerm_databricks_workspace.this`,
    or equivalent). `workspace_url` is now a known value in state.
 2. Second apply, normal (no `-target`) — the `databricks` provider block
    now resolves `host = module.databricks_workspace.workspace_url` from
