@@ -292,9 +292,18 @@ resource "databricks_grants" "ingestion_catalog" {
   # at the catalog level, not per-volume -- catalog-level grants inherit
   # down to every schema/volume/table under it, same as CREATE_VOLUME
   # already does here.
+  # No CREATE_TABLE -- removed, never backed by anything: no
+  # databricks_table/databricks_sql_table resource exists anywhere in this
+  # repo, so Terraform itself never issues a CREATE TABLE call. Table
+  # creation belongs to a future pipeline's own service principal per
+  # ARCHITECTURE.md's Terraform/DAB ownership-boundary decision, not
+  # sp-terraform-<env>. CREATE_SCHEMA and CREATE_VOLUME both stay --
+  # databricks_schema.bronze and databricks_volume.landing/landing_checkpoint
+  # are real Terraform resources here, so CI genuinely issues both kinds of
+  # create call.
   grant {
     principal  = var.ci_service_principal_name
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE", "CREATE_VOLUME", "READ METADATA", "READ VOLUME"]
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_VOLUME", "READ METADATA", "READ VOLUME"]
   }
 
   dynamic "grant" {

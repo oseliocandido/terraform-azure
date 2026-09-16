@@ -271,9 +271,20 @@ resource "databricks_grants" "catalog" {
   # though this specific catalog hadn't triggered the error yet (see
   # Databricks' own workspace-catalog-binding docs: viewing a catalog's
   # workspace bindings needs READ METADATA specifically, not USE_CATALOG).
+  #
+  # No CREATE_TABLE -- removed, it was never backed by anything. No
+  # databricks_table/databricks_sql_table resource exists anywhere in this
+  # repo, so Terraform itself never issues a CREATE TABLE call; actual
+  # table creation belongs to a future pipeline's own service principal
+  # per ARCHITECTURE.md's Terraform/DAB ownership-boundary decision, not
+  # sp-terraform-<env>. Looks like it was copied from the data-engineers
+  # group's grant above (which legitimately needs it -- humans/pipelines
+  # do create tables) without its own justification. CREATE_SCHEMA stays:
+  # databricks_schema.bronze/silver/gold are real Terraform resources, so
+  # CI genuinely issues CREATE SCHEMA calls.
   grant {
     principal  = var.ci_service_principal_name # sp-terraform-dev / sp-terraform-prod
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE", "READ METADATA"]
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "READ METADATA"]
   }
 }
 

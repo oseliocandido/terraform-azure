@@ -50,7 +50,7 @@ variable "workspace_id" {
 
 variable "ci_service_principal_name" {
   type        = string
-  description = "sp-terraform-dev / sp-terraform-prod -- granted ongoing USE_CATALOG/USE_SCHEMA/CREATE_SCHEMA/CREATE_TABLE/CREATE_VOLUME on the ingestion catalog below, ungated by enable_grants (same reasoning as ci_group_name's own grants elsewhere in this module: infrastructure CI needs to keep functioning, not a business data-access grant). Needed because owning the ingestion catalog belongs to grp-databricks-platform-<env>, not to CI, and CREATE_CATALOG at the metastore level (databricks_grants.metastore_admins, root module) doesn't cascade to privileges on this specific, already-existing catalog -- same non-cascading-ownership problem as every other CI grant in this file."
+  description = "sp-terraform-dev / sp-terraform-prod -- granted ongoing USE_CATALOG/USE_SCHEMA/CREATE_SCHEMA/CREATE_VOLUME/READ METADATA/READ VOLUME on the ingestion catalog below, ungated by enable_grants (same reasoning as ci_group_name's own grants elsewhere in this module: infrastructure CI needs to keep functioning, not a business data-access grant). Needed because owning the ingestion catalog belongs to grp-databricks-platform-<env>, not to CI, and CREATE_CATALOG at the metastore level (databricks_grants.metastore_admins, root module) doesn't cascade to privileges on this specific, already-existing catalog -- same non-cascading-ownership problem as every other CI grant in this file. No CREATE_TABLE -- see that grant's own comment in main.tf for why."
 }
 
 variable "ingestion_catalog_storage_root" {
