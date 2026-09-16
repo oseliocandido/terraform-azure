@@ -129,17 +129,17 @@ resource "databricks_grants" "metastore_admins" {
 module "platform_storage" {
   source = "../../modules/databricks/storage"
 
-  environment                    = var.environment
-  metastore_id                   = var.metastore_id
-  workspace_id                   = module.databricks_workspace.workspace_id
-  access_connector_id            = module.databricks_workspace.access_connector_id
-  resource_group_name            = module.analytics_group.resource_group_name
-  subscription_id                = var.subscription_id
-  ci_group_name                  = "grp-databricks-ci-prod"
-  ci_service_principal_name      = var.ci_service_principal_name
-  enable_grants                  = var.enable_grants
-  bronze_consumer_group_name     = "grp-sales-data-engineers-${var.environment}"
-  bronze_storage_root = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  environment                = var.environment
+  metastore_id               = var.metastore_id
+  workspace_id               = module.databricks_workspace.workspace_id
+  access_connector_id        = module.databricks_workspace.access_connector_id
+  resource_group_name        = module.analytics_group.resource_group_name
+  subscription_id            = var.subscription_id
+  ci_group_name              = "grp-databricks-ci-prod"
+  ci_service_principal_name  = var.ci_service_principal_name
+  enable_grants              = var.enable_grants
+  bronze_consumer_group_name = "grp-sales-data-engineers-${var.environment}"
+  bronze_storage_root        = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
 
   # See environments/dev/main.tf's identical block for the full reasoning.
   landing_storage_roots = {
