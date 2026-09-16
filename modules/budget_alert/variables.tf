@@ -1,6 +1,6 @@
 variable "resource_group_id" {
   type        = string
-  description = "ID of the resource group this budget tracks spend for -- scoping the budget at the resource group, not the subscription, means it only tracks THIS environment's actual spend (a subscription-scoped budget would track the whole subscription's combined spend, dev+prod+sandbox together, regardless of which one's name it carried), and different environments can never collide on budget name/scope even when they share one subscription (see ADR-0001)."
+  description = "ID of the resource group this budget tracks spend for -- scoping the budget at the resource group, not the subscription, means it only tracks THIS environment's actual spend (a subscription-scoped budget would track the whole subscription's combined spend, dev+prod together, regardless of which one's name it carried), and different environments can never collide on budget name/scope even when they share one subscription."
 }
 
 variable "environment" {

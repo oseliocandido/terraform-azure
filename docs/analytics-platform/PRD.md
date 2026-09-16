@@ -2,7 +2,7 @@
 
 ## Retail Sales Analytics Platform
 
-**Document version:** 3.0
+**Document version:** 1.0
 **Status:** Proposed
 **Owner:** Data Engineering
 **Primary consumer:** Sales
@@ -16,16 +16,6 @@
 > CI/CD implementation detail, and **no** data-pipeline/transformation
 > logic (e.g. how change over time is captured in a dataset) — only what
 > the business needs the infrastructure to be capable of.
->
-> **Scope note (v3.0):** narrowed from a multi-department, multi-domain
-> platform to a single use case — Sales — since a resource group already
-> represents one business case per environment (see
-> [ARCHITECTURE.md](ARCHITECTURE.md)); there's no need to model multiple
-> departments to demonstrate that. Inventory, customer, supplier, and
-> product domains, and anything describing *how* historical change is
-> modeled inside a dataset, were removed as out of scope for an
-> infrastructure-focused project — that's data-pipeline design, not
-> infrastructure.
 
 ---
 
@@ -110,14 +100,21 @@ foundation capable of supporting:
 * Revenue and sales-performance analysis.
 * Store-level and channel-level (in-store vs. e-commerce) analysis.
 * Future sales data ingestion and transformation workloads.
+* Five years of historical analytical data — see
+  [§9](#9-historical-data-retention), the one volume-related figure this
+  PRD treats as a firm business requirement.
 
-The infrastructure should support an initial scale of approximately:
-
-* 500 stores.
-* 1 million sales transactions per day.
-* Five years of historical analytical data.
-
-The platform should be capable of scaling beyond these initial volumes.
+**Store count and daily transaction volume are deliberately not stated
+as targets here.** No capacity/throughput sizing study has been done yet,
+and this project does not include cluster or compute sizing work (see
+[BACKLOG.md](BACKLOG.md#compute--cluster-architecture--not-yet-specified)).
+Publishing an unvalidated number invites design decisions (storage
+tiering, cluster sizing, partitioning) to silently anchor on a figure
+nobody actually confirmed. The infrastructure is designed to scale
+horizontally regardless of the eventual number — Databricks/Unity
+Catalog and ADLS Gen2 don't require a pre-committed volume figure to be
+provisioned — and a real sizing study, once done, gets folded in here as
+a revision, not treated as a blocker to this phase.
 
 ---
 
@@ -138,7 +135,6 @@ The implementation scope includes:
 * Secure secret management where required.
 * Infrastructure deployment through Infrastructure as Code.
 * Reproducible infrastructure configuration.
-* Remote infrastructure state management.
 * Infrastructure change management through version control and CI/CD.
 * Environment isolation.
 * Cost and resource ownership metadata.
@@ -180,7 +176,19 @@ becomes necessary to provision the initial platform.
 
 ## Sales
 
-Requires the analytical platform to support:
+Two distinct access needs exist within Sales, not one uniform level —
+this distinction is what later drives separate access tiers at the
+architecture level, not just a security-mechanism detail:
+
+* **Report consumers** — need curated, business-ready revenue and
+  performance figures (store-level, channel-level, trend-over-time).
+  Read-only; never need to see intermediate or raw data to do their job.
+* **Analysts** — need everything report consumers need, plus the ability
+  to drill a reported number back toward its more granular inputs when
+  investigating an anomaly or answering an ad hoc question. Still
+  read-only; never modify data.
+
+Both require:
 
 * Revenue analysis.
 * Sales-performance analysis.
@@ -217,10 +225,18 @@ either source system's schema.
 
 The platform should support a logical separation between different stages
 of sales data as it moves from raw source extracts toward business-ready,
-reportable datasets.
+reportable datasets. This progression — raw, refined, and business-ready
+stages — is commonly known in the industry as **medallion architecture**
+(bronze/silver/gold), and this document uses that vocabulary elsewhere
+(e.g. [§6](#6-users-and-stakeholders)'s report-consumer/analyst
+distinction maps onto which of these stages each role can see) so a
+reader moving between this document and
+[ARCHITECTURE.md](ARCHITECTURE.md) isn't working from two different
+vocabularies for the same concept.
 
-The exact storage/organizational implementation of these stages is an
-architecture decision — see
+The exact storage/organizational implementation of these stages —
+including how many stages, and their concrete names — is an architecture
+decision, not fixed by this requirement — see
 [ARCHITECTURE.md](ARCHITECTURE.md#analytical-data-layering).
 
 The infrastructure must provide the storage and analytical capabilities
@@ -261,10 +277,6 @@ Development and Production must be independently managed.
 
 A change or failure in Development must not unintentionally affect
 Production.
-
-A temporary sandbox environment may be used for infrastructure
-experimentation and validation. The sandbox is not a permanent business
-environment.
 
 ---
 
@@ -319,7 +331,16 @@ The platform should provide durable analytical storage and infrastructure
 that can be recreated from source-controlled definitions.
 
 The underlying infrastructure should not depend on manually configured
-resources that cannot be reproduced.
+resources that cannot be reproduced. This does not prohibit a small
+number of one-time, account- or tenant-level objects that Infrastructure
+as Code fundamentally cannot create for itself (an identity a pipeline
+authenticates as cannot be created by that same pipeline's own run) —
+provided each is created through a documented, repeatable procedure
+rather than undocumented manual configuration. This platform already
+follows that pattern for its App Registrations, and extends the same
+exception to any account-level Databricks object a future architecture
+phase introduces (see [ARCHITECTURE.md](ARCHITECTURE.md) for which
+objects, if any, require this).
 
 ---
 
@@ -405,7 +426,8 @@ The project will be considered successful when:
 * Production infrastructure can be provisioned using Terraform.
 * Infrastructure can be reproduced from version-controlled definitions.
 * Development and Production infrastructure are independently managed.
-* Terraform state is stored remotely.
+* Infrastructure configuration is durably stored centrally, not dependent
+  on any single engineer's machine.
 * Infrastructure changes can be reviewed before deployment.
 
 ## Security
@@ -446,7 +468,7 @@ The project will be considered successful when:
 | Production infrastructure changes performed outside Terraform |      0 |
 | Production static CI/CD credentials                           |      0 |
 | Production secrets committed to source control                |      0 |
-| Independent DEV and PROD Terraform state                      |   100% |
+| Independent DEV and PROD infrastructure lifecycle              |   100% |
 | Infrastructure changes traceable through version control      |   100% |
 | Required analytical infrastructure reproducible from code     |   100% |
 
