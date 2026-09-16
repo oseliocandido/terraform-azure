@@ -262,9 +262,18 @@ resource "databricks_grants" "catalog" {
     principal  = "grp-${var.domain}-data-engineers-${var.environment}"
     privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY"]
   }
+  # READ METADATA added preemptively, matching the fix applied to
+  # modules/databricks/storage's identical ingestion-catalog CI grant after
+  # a real CI run failed with "cannot read workspace binding: User does not
+  # have READ METADATA on Catalog 'ingestion_dev'" -- this catalog has the
+  # exact same databricks_workspace_binding.this resource CI must refresh
+  # on every plan, so it carries the same structural requirement even
+  # though this specific catalog hadn't triggered the error yet (see
+  # Databricks' own workspace-catalog-binding docs: viewing a catalog's
+  # workspace bindings needs READ METADATA specifically, not USE_CATALOG).
   grant {
     principal  = var.ci_service_principal_name # sp-terraform-dev / sp-terraform-prod
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE"]
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE", "READ METADATA"]
   }
 }
 

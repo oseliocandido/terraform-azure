@@ -274,9 +274,27 @@ resource "databricks_workspace_binding" "ingestion" {
 resource "databricks_grants" "ingestion_catalog" {
   catalog = databricks_catalog.ingestion.name
 
+  # READ METADATA and READ VOLUME added after a real CI run failed on
+  # exactly this gap: CREATE_VOLUME lets CI create NEW volumes, but grants
+  # no read access to the ones already created (by a different, higher-
+  # privileged session) that CI still has to refresh on every future plan --
+  # same non-cascading-ownership problem as every other CI grant in this
+  # file, just newly hit here because this codebase never had
+  # Terraform-managed volumes before. READ_METADATA is the specific,
+  # separate privilege `terraform plan` needs to even READ
+  # databricks_workspace_binding.ingestion -- confirmed via Databricks' own
+  # workspace-catalog-binding docs: "To view a catalog's workspace bindings
+  # without defining or editing them, you can... have READ METADATA on the
+  # catalog" -- USE_CATALOG alone does not cover it. Real error from CI:
+  # "cannot read workspace binding: User does not have READ METADATA on
+  # Catalog 'ingestion_dev'" and "cannot read volume: User does not have
+  # READ VOLUME on Volume 'ingestion_dev.bronze.pos_landing'". Both granted
+  # at the catalog level, not per-volume -- catalog-level grants inherit
+  # down to every schema/volume/table under it, same as CREATE_VOLUME
+  # already does here.
   grant {
     principal  = var.ci_service_principal_name
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE", "CREATE_VOLUME"]
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE", "CREATE_VOLUME", "READ METADATA", "READ VOLUME"]
   }
 
   dynamic "grant" {
