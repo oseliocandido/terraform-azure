@@ -246,7 +246,10 @@ module "platform_storage" {
   ci_service_principal_name  = var.ci_service_principal_name
   enable_grants              = var.enable_grants
   bronze_consumer_group_name = "grp-sales-data-engineers-${var.environment}"
-  bronze_storage_root        = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  # dev only: engineers experiment with Auto Loader by hand. Prod leaves this
+  # off until the pipeline service principal exists.
+  bronze_consumer_can_write = true
+  bronze_storage_root       = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
 
   # Built from modules/analytics's landing_container_names map (one entry
   # per its own var.landing_source_systems), not two hand-written args --

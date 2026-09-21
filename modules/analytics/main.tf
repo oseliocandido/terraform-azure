@@ -26,6 +26,10 @@ locals {
     0, 24 - length(var.storage_account_suffix)
   )}${var.storage_account_suffix}"
 
+  # Soft delete: a deleted blob/container stays recoverable for this many
+  # days. Longer in prod, where an accidental delete costs the most.
+  soft_delete_days = var.environment == "prod" ? 14 : 7
+
   common_tags = merge(var.tags, {
     workload    = var.workload
     environment = var.environment
@@ -71,21 +75,24 @@ resource "azurerm_storage_account" "analytics" {
 
   tags = local.common_tags
 
-  # Soft delete: a deleted blob/container is retained (not purged) for this
-  # many days, recoverable via undelete. 7 days is a light default -- raise
-  # it for prod if the real retention need is longer.
   blob_properties {
+    # Blob versioning stays off: soft delete above covers accidental deletes.
+    versioning_enabled = false
+
     delete_retention_policy {
-      days = 7
+      days = local.soft_delete_days
     }
     container_delete_retention_policy {
-      days = 7
+      days = local.soft_delete_days
     }
   }
 
-  # No lifecycle { prevent_destroy = true } here on purpose: this is a
-  # dev/learning resource meant to be destroyed at the end of a session.
-  # That guard belongs on production data-bearing resources.
+  # prevent_destroy must be a literal, so it can't be limited to prod: it
+  # applies to every environment. To deliberately destroy or replace this (or
+  # a container below), remove the lifecycle block in a reviewed change first.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # bronze -- backs modules/databricks/storage's own bronze schema
@@ -106,6 +113,10 @@ resource "azurerm_storage_container" "bronze" {
   name                  = "bronze"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
+
+  lifecycle {
+    prevent_destroy = true # see azurerm_storage_account.analytics
+  }
 }
 
 # landing-<system> -- one container per source system (var.landing_source_systems),
@@ -136,6 +147,10 @@ resource "azurerm_storage_container" "landing" {
   name                  = "landing-${each.key}"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
+
+  lifecycle {
+    prevent_destroy = true # see azurerm_storage_account.analytics
+  }
 }
 
 moved {
@@ -186,6 +201,10 @@ resource "azurerm_storage_container" "managed" {
   name                  = "managed-sales"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
+
+  lifecycle {
+    prevent_destroy = true # see azurerm_storage_account.analytics
+  }
 }
 
 # One container per ADDITIONAL domain (var.additional_domains), named
@@ -207,6 +226,10 @@ resource "azurerm_storage_container" "managed_domain" {
   name                  = "managed-${each.key}"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
+
+  lifecycle {
+    prevent_destroy = true # see azurerm_storage_account.analytics
+  }
 }
 
 # Enforces the 5-year retention requirement (docs/analytics-platform/PRD.md

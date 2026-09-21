@@ -329,7 +329,7 @@ resource "databricks_grants" "bronze_schema" {
 
   grant {
     principal  = var.bronze_consumer_group_name
-    privileges = ["USE_SCHEMA", "SELECT"]
+    privileges = concat(["USE_SCHEMA", "SELECT"], var.bronze_consumer_can_write ? ["CREATE_TABLE"] : [])
   }
 }
 
@@ -433,14 +433,19 @@ moved {
   to   = databricks_volume.checkpoints
 }
 
-# No databricks_grants for the checkpoints volume yet, deliberately --
-# unlike databricks_grants.landing_volume above, READ VOLUME isn't the
-# right privilege here (whatever runs the actual Auto Loader stream needs
-# READ VOLUME + WRITE VOLUME, since it owns this state, not just consumes
-# it), and there's no real pipeline identity to grant it to yet: this
-# project doesn't have a dedicated pipeline service principal (see
-# docs/analytics-platform/BACKLOG.md). Granting READ+WRITE VOLUME to
-# bronze_consumer_group_name instead, just because it's a group that
-# already exists, would hand broad human access to internal streaming
-# bookkeeping nobody should be hand-editing -- wrong principal, not just a
-# missing one. Add this grant when that pipeline SP exists.
+# Whatever runs an Auto Loader stream needs READ VOLUME + WRITE VOLUME here,
+# since it owns this state rather than just consuming it. There is no
+# pipeline service principal yet (docs/analytics-platform/BACKLOG.md), so for
+# now the human engineer group gets it, in dev only
+# (var.bronze_consumer_can_write). In prod, grant it to the pipeline SP once
+# it exists instead of a human group.
+resource "databricks_grants" "checkpoints_volume" {
+  count = var.enable_grants && var.bronze_consumer_can_write ? 1 : 0
+
+  volume = databricks_volume.checkpoints.id
+
+  grant {
+    principal  = var.bronze_consumer_group_name
+    privileges = ["READ VOLUME", "WRITE VOLUME"]
+  }
+}

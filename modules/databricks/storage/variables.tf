@@ -63,6 +63,12 @@ variable "bronze_consumer_group_name" {
   description = "grp-sales-data-engineers-<env> today -- the one group granted SELECT on the ingestion catalog's bronze schema and READ VOLUME on the two landing volumes below. A single bare string, not a list, because only sales has a real, PRD-backed consumer for this raw data right now (see main.tf's own \"Ingestion catalog\" comment) -- add a second databricks_grants block by hand if/when a second domain genuinely needs the same raw feed, rather than building a list/for_each mechanism for a need that doesn't exist yet."
 }
 
+variable "bronze_consumer_can_write" {
+  type        = bool
+  default     = false
+  description = "Also lets bronze_consumer_group_name experiment with ingestion by hand: READ VOLUME + WRITE VOLUME on the checkpoints volume and CREATE_TABLE on the bronze schema. Only meaningful when enable_grants is true. Set true in dev; leave false in prod, where the (future) pipeline service principal should hold these instead of a human group."
+}
+
 variable "enable_grants" {
   type        = bool
   default     = false

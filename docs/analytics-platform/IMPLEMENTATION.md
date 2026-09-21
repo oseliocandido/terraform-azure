@@ -83,6 +83,12 @@ Outputs: `resource_group_id`, `resource_group_name`, `storage_account_id`,
 (map source system → container), `managed_container_name` (sales),
 `additional_managed_container_names` (map domain → container).
 
+Storage durability: the account and every container have
+`prevent_destroy = true`. It must be a literal, so it applies to dev as well as
+prod; to deliberately destroy or replace one, remove it in a reviewed change
+first. Soft delete for blobs and containers is 14 days in prod and 7 elsewhere,
+and prod uses GZRS replication. Blob versioning is off in every environment.
+
 Adding a source system is one entry in `landing_source_systems`; the container,
 retention prefix, external location, and volumes all follow from it.
 
@@ -225,7 +231,7 @@ resource "databricks_schema" "bronze" {
   storage_root = var.bronze_storage_root
   owner        = local.platform_group_name
 }
-resource "databricks_grants" "bronze_schema" { count = var.enable_grants ? 1 : 0 ... } # USE_SCHEMA, SELECT
+resource "databricks_grants" "bronze_schema" { count = var.enable_grants ? 1 : 0 ... } # USE_SCHEMA, SELECT (+ CREATE_TABLE if bronze_consumer_can_write)
 
 # One EXTERNAL volume per source system. Group-owned so it is not tied to
 # whoever created it. Consumers get READ VOLUME only (gated); sources write
@@ -253,6 +259,13 @@ resource "databricks_volume" "checkpoints" {
   name        = "checkpoints"
   volume_type = "MANAGED"
   ...
+}
+# Dev only (bronze_consumer_can_write): engineers may experiment by hand.
+# In prod this belongs to the pipeline service principal once it exists.
+resource "databricks_grants" "checkpoints_volume" {
+  count  = var.enable_grants && var.bronze_consumer_can_write ? 1 : 0
+  volume = databricks_volume.checkpoints.id
+  ...                                               # READ VOLUME, WRITE VOLUME
 }
 ```
 
@@ -456,7 +469,10 @@ is **not** a metastore admin. The modules are shaped by that:
   stale". Re-run the whole workflow (plan then apply), not only the failed job.
 
 The existing `plan-*`/`apply-*` jobs pick up these resources with no workflow
-changes. `environments/shared` has no CI job; if added, it should be gated like
+changes. `drift-detection.yml` is a separate, manual-only workflow that never
+applies. It runs `plan -refresh-only` (state vs Azure/Databricks, a warning only,
+since it can show provider normalization noise) and a plain `plan` (code vs
+reality, which fails the job on any diff). `environments/shared` has no CI job; if added, it should be gated like
 `prod`, since a mistake affects every environment's metastore.
 
 ## Naming
