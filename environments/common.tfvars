@@ -37,7 +37,7 @@ databricks_account_id = "6ff6cf67-7a67-49fe-8fa5-9c86897f4493"
 # that metastore is ever recreated.
 metastore_id = "21a657f9-e73b-40b2-8ca5-aaf249b7440b"
 
-# Tag values -- see docs/analytics-platform/IMPLEMENTATION.md's "Tagging"
+# Tag values -- see README.md's "Working with the repo"
 # section for what each key is for and why. terraform_layer isn't here --
 # it's the one tag that's genuinely per-root (dev/prod/shared), set as a
 # local in each root's own main.tf instead.

@@ -47,5 +47,5 @@ variable "managed_resource_group_name" {
 
 variable "tags" {
   type        = map(string)
-  description = "Base tags applied to every taggable resource this module creates, merged with workload/environment -- see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section. Note: the workspace's own managed resource group (databricks-rg-...) is Azure/Databricks-owned, not Terraform's, and never receives these tags -- see that module's own comments for why nothing in it is manageable from here."
+  description = "Base tags applied to every taggable resource this module creates, merged with workload/environment -- see README.md's \"Working with the repo\" section. Note: the workspace's own managed resource group (databricks-rg-...) is Azure/Databricks-owned, not Terraform's, and never receives these tags -- see that module's own comments for why nothing in it is manageable from here."
 }

@@ -6,7 +6,7 @@
 **Owner:** Data Engineering · **Primary consumer:** Sales
 
 This document states what the business needs. It contains no technology or
-implementation detail; those are in [ARCHITECTURE.md](../ARCHITECTURE.md) and
+implementation detail; those are in [ARCHITECTURE.md](ARCHITECTURE.md) and
 [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ---
@@ -133,7 +133,7 @@ infrastructure.
 # 15. Requirements Boundary
 
 This document says **what** the business requires. How it is built is decided in
-[ARCHITECTURE.md](../ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
+[ARCHITECTURE.md](ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 # 16. Future Scope
 
