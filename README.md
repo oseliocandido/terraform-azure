@@ -100,8 +100,9 @@ flowchart LR
 - Merging triggers `apply-dev`, which applies the exact plan artifact that was
   reviewed, never a fresh plan. `plan-prod` then runs, and `apply-prod` waits for a
   reviewer to approve the `production` environment.
-- The workflow only runs for changes under `modules/`, `environments/` or the
-  workflow file itself, so docs-only PRs do not start the required checks.
+- Checks run on every PR, including docs-only ones, so the required checks always
+  report. Merges to `main` only trigger `apply-*` for changes under `modules/`,
+  `environments/` or the workflow file.
 - **Drift detection** is a separate manual workflow. It plans `main` and fails on
   any difference between the code and what is deployed. It never applies.
 
