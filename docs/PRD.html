@@ -232,7 +232,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
     <a href="#nongoals">Non-goals</a>
     <a href="#stakeholders">Stakeholders</a>
     <a href="#data">Data requirements</a>
-    <a href="#retention">Historical retention</a>
+    <a href="#storage">Historical retention</a>
     <a href="#environments">Environments</a>
     <a href="#security">Security</a>
     <a href="#cost">Cost &amp; ownership</a>
@@ -309,7 +309,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       future ingestion/transformation workloads.</p>
       <div class="bignum">
         <div class="figure">5yr</div>
-        <div class="desc">The one volume-related figure treated as a <b>firm business requirement</b> — historical analytical data retention. See <a href="#retention">§9</a>.</div>
+        <div class="desc">The one volume-related figure treated as a <b>firm business requirement</b> — historical analytical data retention. See <a href="#storage">§9</a>.</div>
       </div>
       <div class="callout">
         <b>Store count and daily transaction volume are deliberately not
@@ -401,7 +401,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       above maps onto which of these stages each role can see. The exact
       storage/organizational implementation — including how many stages,
       and their concrete names — is an
-      <a href="ARCHITECTURE.html#layering" id="link-arch-2">architecture decision</a>,
+      <a href="ARCHITECTURE.html#uc" id="link-arch-2">architecture decision</a>,
       not fixed by this requirement.</p>
       <div class="tierpills">
         <span class="pill bronze">bronze</span><span class="pill silver">silver</span><span class="pill gold">gold</span>
@@ -414,7 +414,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
         <div class="figure">5yr</div>
         <div class="desc">Sales analytical data is retained for <b>five years from ingestion</b>. Data older than five years may be deleted. Data does not need to remain queryable at full cost/performance for the entire period — a lower-cost tier is acceptable, provided it isn't deleted before the five-year mark.</div>
       </div>
-      <p class="dim">Historical data remains available independently from the lifecycle of the POS and e-commerce source systems. See <a href="ARCHITECTURE.html#retention" id="link-arch-3">Architecture — data retention &amp; lifecycle policy</a> for how this is technically enforced.</p>
+      <p class="dim">Historical data remains available independently from the lifecycle of the POS and e-commerce source systems. See <a href="ARCHITECTURE.html#storage" id="link-arch-3">Architecture — data retention &amp; lifecycle policy</a> for how this is technically enforced.</p>
     </section>
 
     <section id="environments">
