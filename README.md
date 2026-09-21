@@ -130,8 +130,8 @@ code-test/
 │   ├── prod/                     # root module -- own state, own tfvars
 │   └── shared/                   # account-level metastore, applied by hand
 ├── docs/
-│   ├── ARCHITECTURE.md           # diagrams: modules, Azure topology, CI/CD flow, OIDC
-│   ├── analytics-platform/       # PRD, ARCHITECTURE, IMPLEMENTATION, BACKLOG for the Databricks platform
+│   ├── ARCHITECTURE.md           # repo/CI-CD diagrams (part 1) and the analytics platform design (part 2)
+│   ├── analytics-platform/       # PRD, IMPLEMENTATION, BACKLOG for the Databricks platform
 │   ├── azure-setup-commands.sh   # record of the one-time Azure bootstrap
 │   └── adr/                      # architecture decision records
 │       └── 0002-pipeline-and-identity-architecture.md
@@ -144,9 +144,8 @@ code-test/
 - Everything runs in **one Azure subscription** (Free Trial billing — Azure
   blocks creating additional subscriptions until upgraded to Pay-As-You-Go),
   isolated by resource-group-scoped RBAC rather than a subscription
-  boundary — see `docs/analytics-platform/ARCHITECTURE.md`'s "Environment
-  isolation: resource group vs. subscription boundary" for the tradeoff
-  this implies.
+  boundary — see `docs/ARCHITECTURE.md`'s "Environments and isolation"
+  section for the tradeoff this implies.
 - Entra ID groups (`grp-<domain>-*-<env>`, `grp-databricks-*`) and their sync
   to the Databricks account are managed outside Terraform. `marketing`'s
   business-group grants stay off (`enable_grants = false`) until those groups

@@ -20,7 +20,7 @@ variable "metastore_id" {
 
 variable "workspace_id" {
   type        = string
-  description = "This environment's own workspace ID -- used for the workspace-catalog binding (ARCHITECTURE.md's \"Catalog isolation\" decision), so this catalog is only visible from its own environment's workspace."
+  description = "This environment's own workspace ID -- used for the workspace-catalog binding (docs/ARCHITECTURE.md's \"Access control\" section), so this catalog is only visible from its own environment's workspace."
 }
 
 variable "storage_credential_name" {

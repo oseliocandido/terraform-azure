@@ -10,7 +10,7 @@
 > This is the business-requirements document for the platform built in this
 > repo. Development is implemented; Production is not yet applied. For the
 > architecture decisions this PRD requires, see
-> [ARCHITECTURE.md](ARCHITECTURE.md); for the concrete Terraform/CI-CD
+> [ARCHITECTURE.md](../ARCHITECTURE.md); for the concrete Terraform/CI-CD
 > implementation spec, see [IMPLEMENTATION.md](IMPLEMENTATION.md). This
 > document intentionally contains **no** Terraform, Azure resource, or
 > CI/CD implementation detail, and **no** data-pipeline/transformation
@@ -238,13 +238,13 @@ stages — is commonly known in the industry as **medallion architecture**
 (e.g. [§6](#6-users-and-stakeholders)'s report-consumer/analyst
 distinction maps onto which of these stages each role can see) so a
 reader moving between this document and
-[ARCHITECTURE.md](ARCHITECTURE.md) isn't working from two different
+[ARCHITECTURE.md](../ARCHITECTURE.md) isn't working from two different
 vocabularies for the same concept.
 
 The exact storage/organizational implementation of these stages —
 including how many stages, and their concrete names — is an architecture
 decision, not fixed by this requirement — see
-[ARCHITECTURE.md](ARCHITECTURE.md#unity-catalog-model).
+[ARCHITECTURE.md](../ARCHITECTURE.md#unity-catalog-model).
 
 The infrastructure must provide the storage and analytical capabilities
 required to implement this layering when pipelines are built in the future.
@@ -266,7 +266,7 @@ of the point-of-sale and e-commerce source systems.
 
 The infrastructure should therefore support scalable, durable, and
 cost-tiered analytical storage with an enforced retention period — see
-[ARCHITECTURE.md](ARCHITECTURE.md#storage) for
+[ARCHITECTURE.md](../ARCHITECTURE.md#storage) for
 how this is technically enforced.
 
 ---
@@ -308,7 +308,7 @@ Requirements include:
   Production resources.
 
 The detailed Azure/Databricks security architecture is defined separately
-— see [ARCHITECTURE.md](ARCHITECTURE.md).
+— see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 
@@ -356,7 +356,7 @@ provided each is created through a documented, repeatable procedure
 rather than undocumented manual configuration. This platform already
 follows that pattern for its App Registrations, and extends the same
 exception to any account-level Databricks object a future architecture
-phase introduces (see [ARCHITECTURE.md](ARCHITECTURE.md) for which
+phase introduces (see [ARCHITECTURE.md](../ARCHITECTURE.md) for which
 objects, if any, require this).
 
 ---
@@ -371,7 +371,7 @@ Infrastructure will be managed using **Terraform**.
 
 The exact provider configuration and resource implementation are
 determined during architecture and implementation design — see
-[ARCHITECTURE.md](ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
+[ARCHITECTURE.md](../ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ---
 
@@ -379,7 +379,7 @@ determined during architecture and implementation design — see
 
 This PRD defines **what the business and platform require**. It
 intentionally does not prescribe the complete technical architecture —
-that is the job of [ARCHITECTURE.md](ARCHITECTURE.md) and, at the
+that is the job of [ARCHITECTURE.md](../ARCHITECTURE.md) and, at the
 implementation level, [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ```text
@@ -522,7 +522,7 @@ The immediate objective is to demonstrate the ability to design and
 provision the **underlying cloud infrastructure required by a
 production-oriented analytical data platform**, using Terraform in a
 secure, reproducible, environment-separated manner. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for how that infrastructure is
+[ARCHITECTURE.md](../ARCHITECTURE.md) for how that infrastructure is
 reproducible and environment-isolated in practice.
 
 The resulting infrastructure provides the foundation upon which future

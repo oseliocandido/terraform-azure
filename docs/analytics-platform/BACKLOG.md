@@ -1,7 +1,7 @@
 # Backlog — Retail Sales Analytics Platform
 
 Open work and known gaps only. What is already built is described in
-[ARCHITECTURE.md](ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
+[ARCHITECTURE.md](../ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
 Items are ordered roughly by how soon they matter.
 
 ## 1. Apply `prod` for the first time

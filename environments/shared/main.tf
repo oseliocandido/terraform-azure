@@ -1,5 +1,5 @@
 # Account-level Unity Catalog metastore -- shared across every environment's
-# workspace in this region (see docs/analytics-platform/ARCHITECTURE.md's
+# workspace in this region (see docs/ARCHITECTURE.md's
 # "Unity Catalog: metastore, catalog, and schema strategy" and "Metastore's
 # own Azure resources" decisions). Lives in its own root module, not
 # environments/dev or environments/prod, because it isn't owned by either.

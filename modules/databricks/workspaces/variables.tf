@@ -1,6 +1,6 @@
 variable "resource_group_name" {
   type        = string
-  description = "Name of the existing resource group to deploy into -- this module never creates its own RG, per docs/analytics-platform/ARCHITECTURE.md's Azure resource architecture decision."
+  description = "Name of the existing resource group to deploy into -- this module never creates its own RG, per docs/ARCHITECTURE.md's Azure resource architecture decision."
 }
 
 variable "location" {

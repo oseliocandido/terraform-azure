@@ -1,6 +1,6 @@
 # Implementation — Retail Sales Analytics Platform
 
-How [ARCHITECTURE.md](ARCHITECTURE.md) is built in Terraform: modules, inputs,
+How [ARCHITECTURE.md](../ARCHITECTURE.md) is built in Terraform: modules, inputs,
 resources, grants, CI behavior, and bootstrap steps. Resource names and
 arguments follow the `hashicorp/azurerm` and `databricks/databricks` provider
 docs. HCL below is abridged (`...` marks omitted arguments); the repo is the

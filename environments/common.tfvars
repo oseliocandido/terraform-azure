@@ -31,7 +31,7 @@ azure_tenant_id       = "b49702e3-2804-4841-be78-537ce48521dc"
 databricks_account_id = "6ff6cf67-7a67-49fe-8fa5-9c86897f4493"
 
 # One metastore, shared by every environment's workspace in this region
-# (see environments/shared/ and docs/analytics-platform/ARCHITECTURE.md's
+# (see environments/shared/ and docs/ARCHITECTURE.md's
 # metastore/catalog/schema strategy) -- not environment-specific, so it
 # lives here, not in any one environments/<env>/terraform.tfvars. Re-copy
 # from `terraform output metastore_id` (run from environments/shared) if
