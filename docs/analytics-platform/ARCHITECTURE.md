@@ -430,29 +430,17 @@ by a per-environment CI/CD pipeline run.
   required. This is the catalog-per-business-domain shape from
   Databricks' own functional-workspace-organization guidance, not
   something invented here.
-- **Schema** — one per medallion layer, inside each domain's catalog:
-  `bronze`, `silver`, `gold` — ALL Unity Catalog `MANAGED` (no
-  `storage_root`) as of the ingestion-catalog restructure below. This
-  domain-owned `bronze` is populated by a data-engineering decision
-  (which raw record belongs to which domain), downstream of a separate,
-  non-domain `ingestion_<env>` catalog that owns the actual raw landing —
-  see "Ingestion catalog: bronze isn't domain-owned" further down for why
-  bronze needed splitting into two different things with the same schema
-  name.
+- **Schema** — `silver` and `gold` inside each domain's catalog, both
+  Unity Catalog `MANAGED` (no `storage_root`). There is deliberately no
+  `bronze` schema per domain: raw bronze lives once, in the non-domain
+  `ingestion_<env>` catalog, and each domain builds its silver from it —
+  see "Ingestion catalog: bronze isn't domain-owned" further down.
 
 ```hcl
 resource "databricks_catalog" "this" {
   name         = "${var.domain}_${var.environment}" # "sales_dev", "marketing_dev", ...
   metastore_id = var.metastore_id
   comment      = "${var.domain} analytics catalog — ${var.environment}"
-}
-
-resource "databricks_schema" "bronze" {
-  catalog_name = databricks_catalog.this.name
-  name         = "bronze"
-  # No storage_root -- see "Ingestion catalog: bronze isn't domain-owned"
-  # below. This schema is domain-curated/pipeline-populated, not a
-  # registration against raw landing files.
 }
 
 resource "databricks_schema" "silver" {
@@ -464,7 +452,7 @@ resource "databricks_schema" "silver" {
 # "gold" follows the same managed shape as "silver"
 ```
 
-**Consequences.** Querying is always `sales_dev.bronze.*` /
+**Consequences.** Querying is always `sales_dev.silver.*` /
 `sales_prod.gold.*` (or `marketing_dev.*`, ...) — domain, environment, and
 layer are all explicit in every fully-qualified table name, with no risk
 of a `dev` query accidentally resolving against `prod` data, and no
@@ -501,14 +489,13 @@ share a schema name:
   (external volumes) and their checkpoint volumes actually live, and it's
   registered against the real raw landing containers exactly once,
   regardless of how many business domains eventually exist.
-- **Domain-curated bronze** — `<domain>_<env>.bronze`, still inside each
-  domain's own catalog (`modules/databricks/unity_catalog`), but now a
-  Unity Catalog `MANAGED` schema with no `storage_root` of its own —
-  populated by a downstream data-engineering decision (which raw record
-  belongs to which domain), not a second registration against the shared
-  raw files. This is genuinely domain-owned physical storage, under that
-  domain's own managed container, reachable only through a pipeline
-  write — not the same kind of object the removed version was.
+- **No per-domain bronze.** A domain-level `bronze` schema was tried
+  (MANAGED, meant to hold domain-curated raw) and removed: the flow is
+  landing → `ingestion_<env>.bronze` → domain silver, so routing a record
+  to a domain happens when that domain builds its silver, and a per-domain
+  bronze would only hold a second copy of raw data. Databricks' medallion
+  guidance describes bronze as the single source of truth for raw data,
+  and silver as built from "one or more bronze or silver tables".
 
 A domain that needs to read the raw feed gets an explicit grant on
 `ingestion_<env>.bronze` (`bronze_consumer_group_name` in
@@ -517,15 +504,11 @@ A domain that needs to read the raw feed gets an explicit grant on
 PRD-backed need for it yet) — the same way any other cross-catalog read
 works in Unity Catalog, no special mechanism.
 
-**Consequences.** `bronze` now means two different things depending on
-which catalog it's in, which is a real cost to hold in mind when reading
-a query — `ingestion_dev.bronze.pos_landing` (a volume, raw files) is not
-`sales_dev.bronze` (a schema, domain-curated tables). The alternative —
-one shared `bronze` schema location referenced by every domain's catalog
-directly — was rejected because it reintroduces the exact overlap problem
-this decision exists to fix; giving up a single unambiguous meaning for
-"bronze" is the accepted tradeoff for keeping each domain's data
-genuinely isolated from the others'.
+**Consequences.** `bronze` has one meaning again: `ingestion_<env>.bronze`.
+Domain catalogs only have `silver`/`gold`, and read raw data through the
+explicit grant above. The alternative — one shared `bronze` schema
+location referenced by every domain's catalog directly — was rejected
+because it reintroduces the overlap problem this decision exists to fix.
 
 ---
 

@@ -171,47 +171,17 @@ resource "databricks_grants" "managed_ci" {
   }
 }
 
-# This domain's own bronze -- NOT the same object as the earlier, removed
-# per-domain bronze schema, and not a reintroduction of that bug. The
-# earlier version pointed storage_root at the shared RAW landing container
-# (var.bronze_external_location_url), which is why sales_dev.bronze and
-# marketing_dev.bronze ended up as two UC schema objects registered
-# against the exact same physical files the moment marketing became real
-# -- see modules/databricks/storage/main.tf's own "Ingestion
-# catalog" comment for that whole story. Raw ingestion still lives there,
-# once, at ingestion_<env>.bronze -- unchanged. THIS schema is a second,
-# later stage: data engineers curate/route which raw records belong to
-# which domain (a file might be sales' or marketing's, decided downstream
-# of ingestion, not at landing time), and write the result here. No
-# storage_root, MANAGED like silver/gold below -- this is genuinely
-# domain-owned physical storage (under this catalog's own managed
-# container), populated by a pipeline write, not a second registration
-# against the shared raw container. That's what makes this safe to have
-# per domain where the old one wasn't.
-resource "databricks_schema" "bronze" {
-  catalog_name = databricks_catalog.this.name
-  name         = "bronze"
-  owner        = local.data_governance_group_name
-  comment      = "Bronze layer schema for the ${var.domain} catalog -- domain-curated, populated from ingestion_${var.environment}.bronze, not a second raw-landing registration. See this resource's own comment."
+# No bronze schema here on purpose -- raw bronze lives once, in
+# ingestion_<env>.bronze (modules/databricks/storage), and each domain builds
+# its silver from it (silver can read from bronze tables in another catalog
+# via grants). A per-domain bronze would hold a second copy of raw data that
+# already exists there. A previous version had one; removed.
 
-  # No force_destroy here either -- same reasoning and same now-resolved
-  # trigger as databricks_catalog.this's own force_destroy removal above.
-  # This schema briefly needed it during the same container rename: its
-  # storage_root going from the old per-domain-bronze-points-at-raw-landing
-  # design to today's MANAGED shape forced a schema replace, and the real
-  # sales_dev.bronze this replaced still had 2 real volumes registered
-  # under it at the time (pos_landing/ecommerce_landing, mid-move to the
-  # new ingestion_<env> catalog in that same apply). Those volumes live
-  # there permanently now, not just mid-move -- this schema stays
-  # genuinely empty going forward, so nothing forces a repeat of that
-  # specific failure.
-}
-
-# No storage_root on silver/gold either -- Unity Catalog MANAGED schemas:
+# No storage_root on silver/gold -- Unity Catalog MANAGED schemas:
 # Databricks owns the physical location under the catalog's managed
 # storage root, reachable only through UC-governed reads/writes. Same
-# reasoning as this domain's own bronze schema above -- see ARCHITECTURE.md's
-# Unity Catalog section.
+# reasoning as the schemas below -- see ARCHITECTURE.md's Unity Catalog
+# section.
 resource "databricks_schema" "silver" {
   catalog_name = databricks_catalog.this.name
   name         = "silver"
@@ -293,7 +263,7 @@ resource "databricks_grants" "catalog" {
   # sp-terraform-<env>. Looks like it was copied from the data-engineers
   # group's grant above (which legitimately needs it -- humans/pipelines
   # do create tables) without its own justification. CREATE_SCHEMA stays:
-  # databricks_schema.bronze/silver/gold are real Terraform resources, so
+  # databricks_schema.silver/gold are real Terraform resources, so
   # CI genuinely issues CREATE SCHEMA calls.
   grant {
     principal  = var.ci_service_principal_name # sp-terraform-dev / sp-terraform-prod

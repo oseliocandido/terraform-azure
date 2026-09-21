@@ -181,6 +181,17 @@ ingestion's raw files. `sales_dev.bronze` (already applied, currently
 empty) will show as replaced, not a bare destroy, on the next `dev` plan
 -- safe, since it never held real data.
 
+**Domain-level `bronze` schema removed again (2026-09-21)** -- the
+restoration above didn't hold up. The actual flow is landing volume ->
+`ingestion_<env>.bronze` -> domain silver, so deciding which domain a
+record belongs to happens when that domain builds its silver from the
+shared bronze; a per-domain bronze would only hold a second copy of raw
+data. Databricks' medallion guidance also treats bronze as the single
+source of truth for raw data, with silver built from "one or more bronze
+or silver tables". `modules/databricks/unity_catalog` no longer has a
+`bronze` schema; the empty `sales_dev.bronze` was destroyed in `dev`.
+Domain catalogs now have `silver`/`gold` only.
+
 ## Compute / cluster architecture — not yet specified
 
 **Gap.** Neither [ARCHITECTURE.md](ARCHITECTURE.md) nor

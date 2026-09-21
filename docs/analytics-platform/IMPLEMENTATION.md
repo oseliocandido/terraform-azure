@@ -8,7 +8,7 @@ sourced from the current `hashicorp/azurerm` and `databricks/databricks`
 Terraform provider documentation.
 
 **Status: `dev` is real and applied** — storage, workspace, metastore,
-the `sales` catalog + its domain-owned `bronze`/`silver`/`gold` schemas,
+the `sales` catalog + its `silver`/`gold` schemas,
 the shared `ingestion` catalog (raw landing bronze, source-system landing
 volumes, Auto Loader checkpoint volumes), and the `marketing` catalog
 (catalog/schemas only, no grants yet) all exist in Azure/Databricks as of
@@ -39,8 +39,8 @@ modules/
     │                          #   catalog (raw bronze schema, landing +
     │                          #   checkpoint volumes)
     └── unity_catalog/         # called ONCE PER DOMAIN (sales, marketing, ...):
-                               #   one catalog + domain-owned bronze/silver/gold
-                               #   (all MANAGED) + grants (gated)
+                               #   one catalog + silver/gold
+                               #   (MANAGED) + grants (gated)
 ```
 
 **Why three modules, not one.** An earlier version put everything --
@@ -306,11 +306,10 @@ explicitly; this is what makes the module callable more than once),
 `metastore_id`, `workspace_id`, `storage_credential_name` (from
 `platform_storage`), `catalog_storage_root` (this domain's own
 `managed-<domain>` container), `ci_service_principal_name`,
-`ci_group_name`, `enable_grants`. No `bronze_storage_root` input anymore
--- this domain's own `bronze` schema below is `MANAGED`, populated by a
-downstream pipeline decision (which raw record belongs to which domain),
-not a second registration against the shared raw landing container in
-`platform_storage`.
+`ci_group_name`, `enable_grants`. No `bronze_storage_root` input, and no
+`bronze` schema per domain -- raw bronze lives once in
+`platform_storage`'s `ingestion_<env>` catalog and each domain builds its
+silver from it.
 
 ```hcl
 resource "databricks_catalog" "this" {
@@ -331,16 +330,6 @@ resource "databricks_external_location" "managed" {
   url             = var.catalog_storage_root
   credential_name = var.storage_credential_name
   owner           = local.data_governance_group_name
-}
-
-# This domain's OWN bronze -- MANAGED (no storage_root), distinct from
-# platform_storage's raw ingestion_<env>.bronze. Data engineers curate/
-# route which raw records belong to this domain and write the result
-# here; it isn't a second registration against the raw landing files.
-resource "databricks_schema" "bronze" {
-  catalog_name = databricks_catalog.this.name
-  name         = "bronze"
-  owner        = local.data_governance_group_name
 }
 
 resource "databricks_schema" "silver" {
@@ -627,9 +616,8 @@ loc-analytics-dev-ingestion-managed # External location, ingestion catalog's own
 loc-analytics-dev-sales-managed    # External location, sales catalog's own managed root
 sales_dev / marketing_dev          # Unity Catalog catalog names, per domain ("<domain>_<env>")
 ingestion_dev                      # Unity Catalog catalog name, non-domain (platform_storage)
-bronze / silver / gold             # Unity Catalog schema names (per catalog -- sales_dev.bronze
-                                    #   and ingestion_dev.bronze are BOTH real, different things,
-                                    #   see modules/databricks/unity_catalog's own bronze comment)
+bronze                             # Unity Catalog schema, ingestion_<env> catalog only
+silver / gold                      # Unity Catalog schemas, per domain catalog
 pos_landing / ecommerce_landing    # External volumes, ingestion_dev.bronze (source-system landing)
 pos_landing_checkpoint / ecommerce_landing_checkpoint # Managed volumes, Auto Loader checkpoint state
 grp-sales-stakeholders-dev         # Group: Sales report consumers, dev
