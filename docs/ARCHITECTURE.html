@@ -488,7 +488,7 @@ flowchart TB
     <section id="ci">
       <div class="decision-block">
         <h2><span class="num">2.9</span>CI identity</h2>
-        <p><code>sp-terraform-&lt;env&gt;</code> is <b>not</b> a metastore admin. It holds explicit grants on what it must read or create (catalogs, external locations, the credential), because ownership by another group does not cascade. Metastore-level <code>CREATE_*</code> grants are a one-time admin bootstrap that CI plans ignore. Details are in <a href="IMPLEMENTATION.html#ci">Implementation</a>.</p>
+        <p><code>sp-terraform-&lt;env&gt;</code> is <b>not</b> a metastore admin. It holds explicit grants on what it must read or create (catalogs, external locations, the credential), because ownership by another group does not cascade. Metastore-level <code>CREATE_*</code> grants are a one-time admin bootstrap that CI plans ignore. Details are in <a href="IMPLEMENTATION.html#ci-permission-model">Implementation</a>.</p>
       </div>
     </section>
 
