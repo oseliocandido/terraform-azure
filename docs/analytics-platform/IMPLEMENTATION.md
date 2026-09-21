@@ -83,10 +83,12 @@ Outputs: `resource_group_id`, `resource_group_name`, `storage_account_id`,
 (map source system → container), `managed_container_name` (sales),
 `additional_managed_container_names` (map domain → container).
 
-Storage durability: the account and every container have
-`prevent_destroy = true`. It must be a literal, so it applies to dev as well as
-prod; to deliberately destroy or replace one, remove it in a reviewed change
-first. Soft delete for blobs and containers is 14 days in prod and 7 elsewhere,
+Storage durability: in prod only, the account and every container have
+`prevent_destroy = true`. That argument must be a literal, so each of these
+resources is declared twice: a normal one for non-prod and a `*_protected` one
+for prod, chosen by `count`/`for_each` on `local.is_prod`. Locals pick whichever
+exists, so outputs are unchanged. To deliberately destroy or replace a prod
+resource, remove its `prevent_destroy` in a reviewed change first. Soft delete for blobs and containers is 14 days in prod and 7 elsewhere,
 and prod uses GZRS replication. Blob versioning is off in every environment.
 
 Adding a source system is one entry in `landing_source_systems`; the container,
