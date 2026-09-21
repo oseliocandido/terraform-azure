@@ -33,7 +33,7 @@ provider "azurerm" {
 
 # Workspace-level, not account-level -- host is this environment's own
 # workspace_url, resolvable now that dbw-analytics-dev-neu-01 already
-# exists (stage 1 of the two-stage bootstrap, see IMPLEMENTATION.md's
+# exists (stage 1 of the two-stage bootstrap, see IMPLEMENTATION.html's
 # "Resolved: provider authentication and bootstrap order").
 #
 # auth_type deliberately NOT set here anymore -- an earlier version

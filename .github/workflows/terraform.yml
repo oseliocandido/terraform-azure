@@ -9,10 +9,6 @@ on:
       - ".github/workflows/terraform.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "modules/**"
-      - "environments/**"
-      - ".github/workflows/terraform.yml"
 
 permissions:
   id-token: write       # required for Terraform's azurerm provider to fetch its own OIDC token

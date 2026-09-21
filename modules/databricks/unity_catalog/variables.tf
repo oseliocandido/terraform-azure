@@ -1,6 +1,6 @@
 variable "environment" {
   type        = string
-  description = "Deployment environment (\"dev\" or \"prod\") -- suffixes the catalog's domain-prefixed name (\"sales_dev\"/\"sales_prod\"), per ARCHITECTURE.md's catalog-per-domain-per-environment decision."
+  description = "Deployment environment (\"dev\" or \"prod\") -- suffixes the catalog's domain-prefixed name (\"sales_dev\"/\"sales_prod\"), per ARCHITECTURE.html's catalog-per-domain-per-environment decision."
 
   validation {
     condition     = contains(["dev", "prod"], var.environment)
@@ -10,7 +10,7 @@ variable "environment" {
 
 variable "domain" {
   type        = string
-  description = "Business domain this catalog belongs to (e.g. \"sales\") -- prefixes the catalog's name (\"<domain>_<environment>\"). No default: every call site must choose one explicitly, since this is what makes the module callable more than once (a second domain, e.g. \"marketing\", gets its own catalog instead of colliding with this one's name). See ARCHITECTURE.md's \"Unity Catalog: metastore, catalog, and schema strategy\" decision."
+  description = "Business domain this catalog belongs to (e.g. \"sales\") -- prefixes the catalog's name (\"<domain>_<environment>\"). No default: every call site must choose one explicitly, since this is what makes the module callable more than once (a second domain, e.g. \"marketing\", gets its own catalog instead of colliding with this one's name). See ARCHITECTURE.html's \"Unity Catalog: metastore, catalog, and schema strategy\" decision."
 }
 
 variable "metastore_id" {
@@ -20,7 +20,7 @@ variable "metastore_id" {
 
 variable "workspace_id" {
   type        = string
-  description = "This environment's own workspace ID -- used for the workspace-catalog binding (docs/ARCHITECTURE.md's \"Access control\" section), so this catalog is only visible from its own environment's workspace."
+  description = "This environment's own workspace ID -- used for the workspace-catalog binding (docs/ARCHITECTURE.html's \"Access control\" section), so this catalog is only visible from its own environment's workspace."
 }
 
 variable "storage_credential_name" {

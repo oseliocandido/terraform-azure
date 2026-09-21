@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales Analytics Platform PRD</title>
+
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --bg:#f2f5f3; --surface:#ffffff; --surface-2:#eaeeec; --border:#d5dcd8;
+  --text:#1a2321; --text-dim:#5c6763; --text-faint:#8a938f;
+  --accent:#9c5a2e; --accent-ink:#7a4523; --accent-soft:#f1e2d4;
+  --accent2:#2f6f5e; --accent2-soft:#e0eeea;
+  --bronze:#9c5a2e; --silver:#727f88; --gold:#a3821f;
+  --dev:#2f6f5e; --prod:#8c3b3b;
+  --shadow: 0 1px 2px rgba(20,30,25,.04), 0 8px 24px -12px rgba(20,30,25,.12);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#13181a; --surface:#191f21; --surface-2:#1f2628; --border:#2b3436;
+    --text:#e7ebe8; --text-dim:#a3aca7; --text-faint:#77827e;
+    --accent:#dc9560; --accent-ink:#f0b485; --accent-soft:#33261c;
+    --accent2:#5cae98; --accent2-soft:#1c2c27;
+    --bronze:#c98a55; --silver:#9aa6ac; --gold:#cbab5a;
+    --dev:#5cae98; --prod:#d17c7c;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#13181a; --surface:#191f21; --surface-2:#1f2628; --border:#2b3436;
+  --text:#e7ebe8; --text-dim:#a3aca7; --text-faint:#77827e;
+  --accent:#dc9560; --accent-ink:#f0b485; --accent-soft:#33261c;
+  --accent2:#5cae98; --accent2-soft:#1c2c27;
+  --bronze:#c98a55; --silver:#9aa6ac; --gold:#cbab5a;
+  --dev:#5cae98; --prod:#d17c7c;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+}
+
+*{box-sizing:border-box;}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:'IBM Plex Sans', system-ui, sans-serif;
+  font-size:16px; line-height:1.6;
+  margin:0; padding:0;
+}
+::selection{ background:var(--accent-soft); }
+
+code, .mono{ font-family:'IBM Plex Mono', ui-monospace, monospace; }
+
+a{ color:var(--accent-ink); text-decoration:none; border-bottom:1px solid var(--accent-soft); }
+a:hover{ border-bottom-color:var(--accent-ink); }
+
+h1,h2,h3,h4{ font-weight:700; text-wrap:balance; margin:0; }
+
+.shell{ display:flex; max-width:1180px; margin:0 auto; }
+
+/* top nav between the three docs */
+.docnav{
+  position:sticky; top:0; z-index:20;
+  background:var(--surface); border-bottom:1px solid var(--border);
+}
+.docnav-inner{
+  max-width:1180px; margin:0 auto; padding:12px 20px;
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+}
+.docnav-label{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); margin-right:6px; }
+.docnav a{
+  border:1px solid var(--border); border-bottom:1px solid var(--border);
+  border-radius:999px; padding:5px 13px; font-size:13px; font-weight:500;
+  color:var(--text-dim); background:var(--surface-2);
+}
+.docnav a.current{ background:var(--accent-soft); color:var(--accent-ink); border-color:var(--accent-soft); font-weight:600; }
+.docnav a:hover{ color:var(--text); }
+
+/* sidebar TOC */
+.toc{
+  width:230px; flex-shrink:0; padding:32px 16px 60px 20px;
+  position:sticky; top:53px; align-self:flex-start;
+  max-height:calc(100vh - 53px); overflow-y:auto;
+}
+.toc-title{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); margin-bottom:10px; padding-left:10px;}
+.toc a{
+  display:block; padding:6px 10px; border-radius:7px; border-bottom:none;
+  font-size:13.5px; color:var(--text-dim); line-height:1.4;
+}
+.toc a:hover{ background:var(--surface-2); color:var(--text); }
+
+main{ flex:1; min-width:0; padding:40px 24px 100px; max-width:760px; }
+
+.eyebrow{
+  font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--accent-ink); font-weight:600; margin-bottom:10px;
+}
+.doctitle{ font-size:clamp(28px,4vw,38px); line-height:1.15; margin-bottom:16px; }
+.metarow{
+  display:flex; gap:18px; flex-wrap:wrap; font-size:13.5px; color:var(--text-dim);
+  padding-bottom:22px; border-bottom:1px solid var(--border); margin-bottom:8px;
+}
+.metarow b{ color:var(--text); font-weight:600; }
+
+.scopenote{
+  margin:24px 0 8px; padding:16px 18px; border-radius:var(--radius);
+  background:var(--accent-soft); border:1px solid var(--accent-soft);
+  font-size:14.5px; color:var(--text);
+}
+.scopenote b{ color:var(--accent-ink); }
+
+section{ margin-top:52px; scroll-margin-top:70px; }
+section h2{
+  font-size:22px; display:flex; align-items:baseline; gap:10px; margin-bottom:16px;
+}
+section h2 .num{
+  font-family:'IBM Plex Mono'; font-size:14px; color:var(--text-faint); font-weight:500;
+}
+h3{ font-size:16px; margin:22px 0 10px; color:var(--text); }
+p{ margin:0 0 14px; color:var(--text); }
+p.dim{ color:var(--text-dim); }
+ul, ol{ margin:0 0 14px; padding-left:22px; }
+li{ margin-bottom:6px; }
+
+.cardgrid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:18px 0; }
+@media (max-width:600px){ .cardgrid{ grid-template-columns:1fr; } }
+.card{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px; box-shadow:var(--shadow);
+}
+.card h4{ font-size:14.5px; margin-bottom:6px; color:var(--text); }
+.card p{ font-size:13.5px; color:var(--text-dim); margin:0; }
+
+.stattiles{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:20px 0; }
+@media (max-width:600px){ .stattiles{ grid-template-columns:1fr; } }
+.stattile{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:18px; text-align:left; box-shadow:var(--shadow);
+}
+.stattile .num{ font-family:'IBM Plex Mono'; font-size:26px; font-weight:600; color:var(--accent-ink); font-variant-numeric:tabular-nums; }
+.stattile .label{ font-size:12.5px; color:var(--text-dim); margin-top:4px; }
+
+.bignum{
+  display:flex; align-items:center; gap:20px; margin:20px 0;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:22px; box-shadow:var(--shadow);
+}
+.bignum .figure{ font-family:'IBM Plex Mono'; font-size:44px; font-weight:600; color:var(--accent-ink); line-height:1; }
+.bignum .desc{ font-size:14px; color:var(--text-dim); }
+.bignum .desc b{ color:var(--text); }
+
+.tierpills{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 20px; }
+.pill{
+  font-family:'IBM Plex Mono'; font-size:12px; padding:4px 10px; border-radius:999px;
+  border:1px solid var(--border); color:var(--text-dim); background:var(--surface-2);
+}
+.pill.bronze{ color:var(--bronze); border-color:var(--bronze); background:color-mix(in srgb, var(--bronze) 12%, transparent); }
+.pill.silver{ color:var(--silver); border-color:var(--silver); background:color-mix(in srgb, var(--silver) 12%, transparent); }
+.pill.gold{ color:var(--gold); border-color:var(--gold); background:color-mix(in srgb, var(--gold) 12%, transparent); }
+.pill.dev{ color:var(--dev); border-color:var(--dev); background:color-mix(in srgb, var(--dev) 12%, transparent); }
+.pill.prod{ color:var(--prod); border-color:var(--prod); background:color-mix(in srgb, var(--prod) 12%, transparent); }
+
+.checklist{ list-style:none; padding:0; margin:0 0 14px; }
+.checklist li{
+  position:relative; padding-left:26px; margin-bottom:8px; font-size:14.5px;
+}
+.checklist li::before{
+  content:"✓"; position:absolute; left:0; top:1px; color:var(--accent2);
+  font-weight:700; font-size:13px;
+}
+.checklist.no li::before{ content:"–"; color:var(--text-faint); }
+.checklist.no li{ color:var(--text-dim); }
+
+.twocol{ display:grid; grid-template-columns:1fr 1fr; gap:22px; margin:16px 0; }
+@media (max-width:600px){ .twocol{ grid-template-columns:1fr; } }
+.stakeholder{
+  border:1px solid var(--border); border-radius:var(--radius); padding:18px; background:var(--surface);
+  box-shadow:var(--shadow);
+}
+.stakeholder .role{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent-ink); font-weight:700; margin-bottom:8px; }
+
+table{ width:100%; border-collapse:collapse; margin:16px 0; font-size:13.5px; }
+th,td{ text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); }
+th{ color:var(--text-faint); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; }
+td.num, th.num{ text-align:right; font-family:'IBM Plex Mono'; font-variant-numeric:tabular-nums; }
+tr:last-child td{ border-bottom:none; }
+
+.callout{
+  border-left:3px solid var(--accent); background:var(--surface); border:1px solid var(--border);
+  border-left:3px solid var(--accent); border-radius:0 var(--radius) var(--radius) 0;
+  padding:14px 18px; margin:18px 0; font-size:14px; box-shadow:var(--shadow);
+}
+.callout.teal{ border-left-color:var(--accent2); }
+
+pre.diagram{
+  font-family:'IBM Plex Mono'; font-size:12.5px; background:var(--surface-2);
+  border:1px solid var(--border); border-radius:var(--radius); padding:18px;
+  overflow-x:auto; color:var(--text-dim); line-height:1.5;
+}
+
+.footer{
+  max-width:760px; margin:70px auto 0; padding:24px 24px 60px;
+  border-top:1px solid var(--border); font-size:13px; color:var(--text-faint);
+}
+
+@media (max-width:900px){
+  .toc{ display:none; }
+  main{ max-width:100%; padding:28px 18px 80px; }
+}
+pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:auto; }
+</style>
+</head>
+<body>
+
+<div class="docnav">
+  <div class="docnav-inner">
+    <span class="docnav-label">Sales Analytics Platform</span>
+    <a href="#" class="current" id="nav-prd">1 · Business Requirements</a>
+    <a href="ARCHITECTURE.html" id="nav-arch">2 · Architecture</a>
+    <a href="IMPLEMENTATION.html" id="nav-impl">3 · Implementation</a>
+    <a href="BACKLOG.md">Backlog</a>
+  </div>
+</div>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="toc-title">On this page</div>
+    <a href="#exec">Executive summary</a>
+    <a href="#problem">Business problem</a>
+    <a href="#goals">Goals</a>
+    <a href="#scope">Project scope</a>
+    <a href="#nongoals">Non-goals</a>
+    <a href="#stakeholders">Stakeholders</a>
+    <a href="#data">Data requirements</a>
+    <a href="#retention">Historical retention</a>
+    <a href="#environments">Environments</a>
+    <a href="#security">Security</a>
+    <a href="#cost">Cost &amp; ownership</a>
+    <a href="#constraints">Technology constraints</a>
+    <a href="#boundary">Decision boundary</a>
+    <a href="#backlog">Backlog</a>
+    <a href="#acceptance">Acceptance criteria</a>
+    <a href="#metrics">Success metrics</a>
+    <a href="#outcome">Final outcome</a>
+  </nav>
+
+  <main>
+    <div class="eyebrow">Product Requirements Document</div>
+    <h1 class="doctitle">Retail Sales Analytics Platform</h1>
+    <div class="metarow">
+      <span>Version <b>1.1</b></span>
+      <span>Status <b>In progress &mdash; Dev delivered, Prod pending</b></span>
+      <span>Owner <b>Data Engineering</b></span>
+      <span>Primary consumer <b>Sales</b></span>
+    </div>
+
+    <div class="scopenote">
+      This document contains <b>no</b> Terraform, Azure resource, or
+      CI/CD implementation detail, and <b>no</b> data-pipeline/
+      transformation logic — only what the business needs the
+      infrastructure to be capable of. See
+      <a href="ARCHITECTURE.html" id="link-arch-1">Architecture</a> and
+      <a href="IMPLEMENTATION.html" id="link-impl-1">Implementation</a> for those layers.
+    </div>
+
+    <section id="exec">
+      <h2><span class="num">01</span> Executive summary</h2>
+      <p>The company operates a network of physical retail stores and an
+      online store. Sales transaction data currently exists across two
+      operational systems — the point-of-sale system and the e-commerce
+      platform — with no centralized place to store or analyze it
+      historically.</p>
+      <p>The company requires a centralized analytical platform that
+      provides a consistent foundation for sales reporting and historical
+      analysis. The initial project establishes the <b>cloud infrastructure
+      required to support this analytical platform</b>, using Infrastructure
+      as Code — intentionally focused on the underlying platform rather
+      than implementing production data pipelines.</p>
+      <ul class="checklist">
+        <li>Centralized analytical data storage for sales data</li>
+        <li>Historical analytical data retention</li>
+        <li>Separate Development and Production environments</li>
+        <li>Secure access to analytical resources</li>
+        <li>Reproducible infrastructure</li>
+        <li>Controlled infrastructure changes</li>
+        <li>Future implementation of sales data ingestion and transformation workloads</li>
+      </ul>
+    </section>
+
+    <section id="problem">
+      <h2><span class="num">02</span> Business problem</h2>
+      <p class="dim">Sales data originates from the point-of-sale system
+      (physical stores) and the e-commerce platform (online store) — each
+      with a different schema and update frequency.</p>
+      <div class="cardgrid">
+        <div class="card"><h4>Inconsistent business information</h4><p>Revenue and sales metrics may be calculated differently depending on which system's data is used.</p></div>
+        <div class="card"><h4>Limited historical analysis</h4><p>Both operational systems represent current transaction state; there's no durable, queryable historical record independent of their own retention.</p></div>
+        <div class="card"><h4>Fragmented analytical data</h4><p>Sales reporting depends on combining exports from two separate systems instead of a centralized foundation.</p></div>
+        <div class="card"><h4>Limited scalability</h4><p>Manual extraction and spreadsheet-based analysis don't scale as transaction volume grows.</p></div>
+        <div class="card"><h4>Difficult environment management</h4><p>Reproducible Dev/Prod environments are required; infrastructure shouldn't depend on manual cloud-console configuration.</p></div>
+      </div>
+    </section>
+
+    <section id="goals">
+      <h2><span class="num">03</span> Goals</h2>
+      <p>Establish a cloud-based analytical platform foundation capable of
+      supporting centralized sales storage, historical sales analysis,
+      revenue/performance analysis, store- and channel-level analysis, and
+      future ingestion/transformation workloads.</p>
+      <div class="bignum">
+        <div class="figure">5yr</div>
+        <div class="desc">The one volume-related figure treated as a <b>firm business requirement</b> — historical analytical data retention. See <a href="#retention">§9</a>.</div>
+      </div>
+      <div class="callout">
+        <b>Store count and daily transaction volume are deliberately not
+        stated as targets.</b> No capacity/throughput sizing study has
+        been done yet, and this project doesn't include cluster or
+        compute sizing work. The infrastructure is designed to scale
+        horizontally regardless of the eventual number — publishing an
+        unvalidated figure would let storage tiering, cluster sizing, and
+        partitioning decisions silently anchor on something nobody
+        actually confirmed. A real sizing study gets folded in here as a
+        revision, not treated as a blocker to this phase.
+      </div>
+    </section>
+
+    <section id="scope">
+      <h2><span class="num">04</span> Project scope</h2>
+      <p>Primarily an <b>Infrastructure as Code implementation exercise</b>
+      for a cloud data platform — establishing the foundation the future
+      sales analytics platform needs.</p>
+      <div class="tierpills">
+        <span class="pill">Cloud analytical storage</span>
+        <span class="pill">Databricks infrastructure</span>
+        <span class="pill">Dev / Prod environments</span>
+        <span class="pill">Identity &amp; access management</span>
+        <span class="pill">Secret management</span>
+        <span class="pill">IaC deployment</span>
+        <span class="pill">CI/CD change management</span>
+        <span class="pill">Environment isolation</span>
+        <span class="pill">Cost/ownership metadata</span>
+      </div>
+      <div class="callout">
+        The project does <b>not</b> require implementing the actual
+        production data pipelines. Ingestion/transformation requirements
+        described in this document represent the business capability the
+        infrastructure must support — not a pipeline that must be built
+        as part of this project.
+      </div>
+    </section>
+
+    <section id="nongoals">
+      <h2><span class="num">05</span> Non-goals</h2>
+      <ul class="checklist no">
+        <li>Replace the operational POS system</li>
+        <li>Replace the e-commerce platform</li>
+        <li>Build customer-facing applications</li>
+        <li>Implement machine-learning models</li>
+        <li>Implement real-time fraud detection</li>
+        <li>Implement production ingestion/transformation pipelines</li>
+        <li>Build dashboards or BI applications</li>
+        <li>Become the master system for product, customer, or store data</li>
+        <li>Implement advanced networking architecture</li>
+        <li>Prescribe how historical change within a dataset is modeled</li>
+      </ul>
+      <p class="dim">Networking remains a future architecture/backlog item unless required to provision the initial platform.</p>
+    </section>
+
+    <section id="stakeholders">
+      <h2><span class="num">06</span> Users &amp; stakeholders</h2>
+      <div class="twocol">
+        <div class="stakeholder">
+          <div class="role">Sales</div>
+          <p style="font-size:13px;color:var(--text-dim);margin:0 0 10px;">Two distinct access needs, not one uniform level — this is what later drives separate access tiers at the architecture level:</p>
+          <p style="font-size:13.5px;margin:0 0 4px;"><b>Report consumers</b> — curated, business-ready figures only. Read-only; never see intermediate or raw data.</p>
+          <p style="font-size:13.5px;margin:0 0 10px;"><b>Analysts</b> — everything above, plus the ability to drill a number back toward its inputs. Still read-only.</p>
+          <ul class="checklist"><li>Revenue analysis</li><li>Sales-performance analysis</li><li>Historical revenue trends</li><li>Revenue by store</li><li>Revenue by channel (in-store vs. e-commerce)</li></ul>
+        </div>
+        <div class="stakeholder">
+          <div class="role">Data Engineering</div>
+          <ul class="checklist"><li>Analytical workloads for sales data</li><li>Historical data retention</li><li>Support for future data pipelines</li><li>Isolated environments</li><li>Reproduced via Infrastructure as Code</li><li>Secure access for users and workloads</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2><span class="num">07–08</span> Data requirements &amp; organization</h2>
+      <p>Initial scope is the <b>Sales</b> domain: transactions from POS
+      and e-commerce. A second domain, <b>Marketing</b>, shares the platform
+      with the same access model, so several domains can use it without seeing
+      each other's data. Raw data from each source system is kept <b>once</b>;
+      each domain builds its own refined and business-ready datasets from it.
+      Sales data should be representable independently
+      from either source system's structure — datasets designed around
+      <b>business questions about sales</b>, not either system's schema.</p>
+      <p>The platform must support a logical separation between raw
+      source extracts and business-ready, reportable datasets. This
+      progression — raw, refined, business-ready — is commonly known as
+      <b>medallion architecture</b> (bronze/silver/gold), and this document
+      uses that vocabulary elsewhere: the report-consumer/analyst split
+      above maps onto which of these stages each role can see. The exact
+      storage/organizational implementation — including how many stages,
+      and their concrete names — is an
+      <a href="ARCHITECTURE.html#layering" id="link-arch-2">architecture decision</a>,
+      not fixed by this requirement.</p>
+      <div class="tierpills">
+        <span class="pill bronze">bronze</span><span class="pill silver">silver</span><span class="pill gold">gold</span>
+      </div>
+    </section>
+
+    <section id="retention">
+      <h2><span class="num">09</span> Historical data retention</h2>
+      <div class="bignum">
+        <div class="figure">5yr</div>
+        <div class="desc">Sales analytical data is retained for <b>five years from ingestion</b>. Data older than five years may be deleted. Data does not need to remain queryable at full cost/performance for the entire period — a lower-cost tier is acceptable, provided it isn't deleted before the five-year mark.</div>
+      </div>
+      <p class="dim">Historical data remains available independently from the lifecycle of the POS and e-commerce source systems. See <a href="ARCHITECTURE.html#retention" id="link-arch-3">Architecture — data retention &amp; lifecycle policy</a> for how this is technically enforced.</p>
+    </section>
+
+    <section id="environments">
+      <h2><span class="num">10</span> Environment requirements</h2>
+      <div class="tierpills">
+        <span class="pill dev">DEV</span>
+        <span class="pill prod">PROD</span>
+      </div>
+      <p>Development and Production must be independently managed — a
+      change or failure in Development must not unintentionally affect
+      Production.</p>
+    </section>
+
+    <section id="security">
+      <h2><span class="num">11</span> Security requirements</h2>
+      <ul class="checklist">
+        <li>Users authenticate using the organization's identity platform where supported</li>
+        <li>Workloads use dedicated identities</li>
+        <li>Production data is intended to be written by automated identities, not people</li>
+        <li>Access follows least-privilege principles</li>
+        <li>Production access is more restricted than Development access</li>
+        <li>Credentials are not embedded in source code</li>
+        <li>Secrets that can't be eliminated via identity-based auth are securely managed</li>
+        <li>Development workloads must not accidentally gain unrestricted access to Production</li>
+      </ul>
+    </section>
+
+    <section id="cost">
+      <h2><span class="num">12–13</span> Cost, ownership &amp; reliability</h2>
+      <p>Resources should consistently identify:</p>
+      <div class="tierpills">
+        <span class="pill mono">environment</span><span class="pill mono">workload</span><span class="pill mono">owner</span><span class="pill mono">cost center</span><span class="pill mono">managed by</span>
+      </div>
+      <p class="dim">Each environment has a budget with spend alerts. The platform must make it possible to distinguish Development and Production infrastructure costs, and provide durable, source-controlled infrastructure without unnecessary coupling between environments.</p>
+      <div class="callout teal"><b>Production data is protected against accidental loss.</b> Deleted data stays recoverable for at least 14 days in Production (a shorter period is fine in Development), and an ordinary change cannot destroy Production storage &mdash; destroying it takes a deliberate, reviewed change.</div>
+      <div class="callout teal">
+        <b>Exception, not a loophole.</b> "No manually configured resources
+        that cannot be reproduced" doesn't prohibit a small number of
+        one-time, account-/tenant-level objects Infrastructure as Code
+        fundamentally cannot create for itself (an identity a pipeline
+        authenticates as cannot be created by that same pipeline's own
+        run) — provided each is created through a <i>documented, repeatable
+        procedure</i>, not undocumented manual configuration. This platform
+        already follows that pattern for its App Registrations, and
+        extends the same exception to any account-level Databricks object
+        a future architecture phase introduces.
+      </div>
+    </section>
+
+    <section id="constraints">
+      <h2><span class="num">14</span> Technology constraints</h2>
+      <div class="tierpills">
+        <span class="pill">Microsoft Azure</span>
+        <span class="pill">Azure Databricks</span>
+        <span class="pill">Terraform</span>
+      </div>
+      <p class="dim">Exact provider configuration and resource implementation are determined during architecture and implementation design.</p>
+    </section>
+
+    <section id="boundary">
+      <h2><span class="num">15</span> Architecture decision boundary</h2>
+      <p>This PRD defines what the business and platform require — it
+      intentionally doesn't prescribe the complete technical architecture.</p>
+      <pre class="mermaid">
+flowchart TD
+  A["PRD — this document\nBusiness requirements"] --> B["ARCHITECTURE.md\nAzure / Databricks / Terraform decisions\nin response to this PRD's needs"]
+  B --> C["IMPLEMENTATION.md\nExact module layout, providers,\nCI/CD stages, naming, state"]
+      </pre>
+    </section>
+
+    <section id="backlog">
+      <h2><span class="num">16</span> Backlog / future scope</h2>
+      <div class="cardgrid">
+        <div class="card"><h4>Networking</h4><p>Private endpoints, private connectivity, Databricks network architecture, controlled outbound connectivity — a future architecture phase.</p></div>
+        <div class="card"><h4>Data pipelines</h4><p>Actual ingestion, transformation, orchestration — including how historical change is modeled — is future implementation work.</p></div>
+        <div class="card"><h4>Additional business domains</h4><p>Beyond Sales and Marketing, inventory, product, customer and supplier data are out of scope; a future extension gets its own review.</p></div>
+        <div class="card"><h4>Data quality, monitoring, streaming, ML</h4><p>All future capabilities, not required by this infrastructure phase.</p></div>
+      </div>
+    </section>
+
+    <section id="acceptance">
+      <h2><span class="num">17</span> Acceptance criteria</h2>
+      <div class="twocol">
+        <div class="stakeholder"><div class="role">Infrastructure</div>
+          <ul class="checklist"><li>Dev &amp; Prod provisioned via Terraform</li><li>Reproducible from version-controlled definitions</li><li>Independently managed environments</li><li>Configuration durably stored centrally, not on any one engineer's machine</li><li>Changes reviewable before deployment</li></ul>
+        </div>
+        <div class="stakeholder"><div class="role">Security</div>
+          <ul class="checklist"><li>Organizational identities used where supported</li><li>No unnecessary long-lived credentials</li><li>Production access appropriately restricted</li><li>No hardcoded secrets</li><li>Environment boundaries enforced</li></ul>
+        </div>
+        <div class="stakeholder"><div class="role">Analytical platform foundation</div>
+          <ul class="checklist"><li>Durable analytical storage for sales data</li><li>Databricks provisioned as compute platform</li><li>Five-year retention enforced at infra level</li><li>Production storage protected against accidental deletion</li><li>Capacity for expected volumes validated once compute is sized</li></ul>
+        </div>
+        <div class="stakeholder"><div class="role">Engineering</div>
+          <ul class="checklist"><li>Version-controlled Terraform</li><li>Reusable components separated from env config</li><li>Changes validated through automation</li><li>Drift between definitions and deployed infrastructure detectable on demand</li><li>Production requires appropriate approval</li><li>Resources identifiable by env/workload/owner/cost</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="metrics">
+      <h2><span class="num">18</span> Success metrics</h2>
+      <table>
+        <tr><th>Metric</th><th class="num">Target</th></tr>
+        <tr><td>Production infrastructure managed through Terraform</td><td class="num">100%</td></tr>
+        <tr><td>Development infrastructure managed through Terraform</td><td class="num">100%</td></tr>
+        <tr><td>Production changes performed outside Terraform</td><td class="num">0</td></tr>
+        <tr><td>Production static CI/CD credentials</td><td class="num">0</td></tr>
+        <tr><td>Production secrets committed to source control</td><td class="num">0</td></tr>
+        <tr><td>Independent Dev &amp; Prod infrastructure lifecycle</td><td class="num">100%</td></tr>
+        <tr><td>Infrastructure changes traceable through version control</td><td class="num">100%</td></tr>
+        <tr><td>Required analytical infrastructure reproducible from code</td><td class="num">100%</td></tr>
+        <tr><td>Environments with an on-demand drift check</td><td class="num">100%</td></tr>
+      </table>
+      <p class="dim">Data-pipeline metrics (success rate, data-quality coverage, freshness) are outside this infrastructure project's scope.</p>
+    </section>
+
+    <section id="outcome">
+      <h2><span class="num">19</span> Final business outcome</h2>
+      <p>The project establishes a reproducible cloud foundation for a
+      future sales analytics platform. The immediate objective is
+      <b>not</b> to build the data pipelines — it's to demonstrate the
+      ability to design and provision the underlying cloud infrastructure
+      a production-oriented analytical data platform requires, using
+      Terraform in a secure, reproducible, environment-separated manner.</p>
+      <pre class="mermaid">
+flowchart TD
+  S[Sales] --> P[Analytical Platform]
+  P --> H[Historical Data]
+  P --> R[Reportable Sales Datasets]
+      </pre>
+    </section>
+
+    <div class="footer">
+      Retail Sales Analytics Platform — Business Requirements · Part 1 of 3 ·
+      continue to <a href="ARCHITECTURE.html" id="link-arch-4">Architecture</a> →
+    </div>
+  </main>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+  const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'default', themeVariables: { fontFamily: 'system-ui, -apple-system, Segoe UI, sans-serif' } });
+  await document.fonts.ready;
+  for (const el of document.querySelectorAll('pre.mermaid')) {
+    await mermaid.run({ nodes: [el] });
+  }
+</script>
+</body>
+</html>

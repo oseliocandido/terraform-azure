@@ -27,7 +27,7 @@ locals {
 
 ## -----------------------------------------------------------------------
 ## Resources -- stage 1 of the bootstrap sequence documented in
-## docs/IMPLEMENTATION.md ("Providers and
+## docs/IMPLEMENTATION.html ("Providers and
 ## authentication"). Only azurerm-provider resources
 ## live here: a provider block can't reference this workspace's own
 ## computed workspace_url in the same apply that creates it, so nothing
@@ -84,7 +84,7 @@ resource "azurerm_role_assignment" "access_connector_storage" {
 }
 
 # storage_credential and the 3 external_locations deliberately do NOT live
-# in this module, even though IMPLEMENTATION.md originally spec'd them
+# in this module, even though IMPLEMENTATION.html originally spec'd them
 # here -- they need CREATE_STORAGE_CREDENTIAL/CREATE_EXTERNAL_LOCATION
 # grants on the metastore, and that grant is a root-level resource
 # (environments/dev/main.tf's databricks_grants.metastore_admins). Module

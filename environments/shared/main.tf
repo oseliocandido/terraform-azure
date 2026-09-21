@@ -1,12 +1,12 @@
 # Account-level Unity Catalog metastore -- shared across every environment's
-# workspace in this region (see docs/ARCHITECTURE.md's
+# workspace in this region (see docs/ARCHITECTURE.html's
 # "Unity Catalog: metastore, catalog, and schema strategy" and "Metastore's
 # own Azure resources" decisions). Lives in its own root module, not
 # environments/dev or environments/prod, because it isn't owned by either.
 #
 # Imported, not newly created: Databricks auto-provisioned this metastore
 # the moment the first workspace landed in northeurope, before this module
-# existed -- see IMPLEMENTATION.md's Bootstrap section ("Unity Catalog by
+# existed -- see IMPLEMENTATION.html's Bootstrap section ("Unity Catalog by
 # default"). `terraform import` brought it under management instead of
 # creating a second, conflicting one (Azure only allows one metastore per
 # region). Placeholder values below -- overwritten with the real imported
