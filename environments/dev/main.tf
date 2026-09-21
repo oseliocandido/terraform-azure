@@ -330,7 +330,7 @@ module "unity_catalog_marketing" {
 }
 
 # pos_landing / ecommerce_landing volumes (+ their READ VOLUME grants) and
-# the two checkpoint volumes all moved into module.platform_storage --
+# the checkpoint volumes all moved into module.platform_storage --
 # see that module's own "Ingestion catalog" section for the full
 # reasoning (bronze/landing are source-system-oriented, not domain-owned,
 # same problem the unity_catalog_sales/_marketing split just exposed one
@@ -340,10 +340,8 @@ module "unity_catalog_marketing" {
 # it's genuinely moving to a different catalog), but that's safe: EXTERNAL
 # volumes are registration-only, dropping one never touches the underlying
 # blob files (confirmed against Databricks' own managed-vs-external volume
-# docs). The two checkpoint volumes never existed in applied state (added,
-# planned, never applied, in the same session as this move), so no moved
-# block needed for those -- they're declared fresh inside
-# module.platform_storage instead.
+# docs). The checkpoint volume's own rename/move is handled by a moved
+# block inside module.platform_storage.
 moved {
   from = databricks_volume.pos_landing
   to   = module.platform_storage.databricks_volume.pos_landing

@@ -298,7 +298,7 @@ resource "databricks_grants" "ingestion_catalog" {
   # creation belongs to a future pipeline's own service principal per
   # ARCHITECTURE.md's Terraform/DAB ownership-boundary decision, not
   # sp-terraform-<env>. CREATE_SCHEMA and CREATE_VOLUME both stay --
-  # databricks_schema.bronze and databricks_volume.landing/landing_checkpoint
+  # databricks_schema.bronze and databricks_volume.landing/checkpoints
   # are real Terraform resources here, so CI genuinely issues both kinds of
   # create call.
   grant {
@@ -403,37 +403,43 @@ moved {
   to   = databricks_grants.landing_volume["ecommerce"]
 }
 
-# Auto Loader checkpoint/schema-evolution state, one per source system --
-# deliberately NOT inside the landing volumes themselves. See
-# environments/dev/main.tf's git history for the fuller original reasoning
-# (Databricks' own guidance against nesting checkpoint files under the
-# source/table directory, and the landing volumes being READ-VOLUME-only
-# by design regardless). MANAGED, not EXTERNAL -- no storage_location:
-# Unity Catalog places this under the ingestion catalog's own managed
-# storage root (databricks_external_location.ingestion_managed above)
-# instead. Same for_each source as databricks_volume.landing above --
-# never applied under the old pos_landing_checkpoint/
-# ecommerce_landing_checkpoint labels (see BACKLOG.md), so no moved
-# blocks needed here, unlike everything else in this file.
-resource "databricks_volume" "landing_checkpoint" {
-  for_each = var.landing_storage_roots
-
-  name         = "${each.key}_landing_checkpoint"
+# Auto Loader checkpoint/schema-evolution state -- ONE shared MANAGED volume,
+# with a folder per source system by convention
+# (/Volumes/ingestion_<env>/bronze/checkpoints/<system>/...). Not one volume per
+# source system: nothing needs per-system write grants today, and Lakeflow
+# pipelines manage their own checkpoints anyway. Deliberately NOT the landing
+# volumes: those are read-only by design, and Databricks disallows nesting
+# checkpoint files under the ingested directory.
+#
+# MANAGED, no storage_location: Unity Catalog places it in the nearest managed
+# storage root, which is databricks_schema.bronze's storage_root (the `bronze`
+# container), not the ingestion catalog's root -- a schema's root overrides its
+# catalog's. That container has no blob lifecycle policy, so nothing ages these
+# files out.
+resource "databricks_volume" "checkpoints" {
+  name         = "checkpoints"
   catalog_name = databricks_catalog.ingestion.name
   schema_name  = databricks_schema.bronze.name
   volume_type  = "MANAGED"
   owner        = local.platform_group_name # see databricks_volume.landing
-  comment      = "Auto Loader checkpoint/schema-evolution state for ${each.key}_landing -- separate from that volume itself, see this resource's own comment."
+  comment      = "Auto Loader checkpoint/schema-evolution state, one folder per source system -- separate from the landing volumes, see this resource's own comment."
 }
 
-# No databricks_grants for the checkpoint volumes yet, deliberately --
+# Renames the already-applied pos volume in place. The ecommerce one has no
+# target and is destroyed -- CI is not its owner, so that delete needs a local
+# apply by a member of grp-databricks-platform-<env>.
+moved {
+  from = databricks_volume.landing_checkpoint["pos"]
+  to   = databricks_volume.checkpoints
+}
+
+# No databricks_grants for the checkpoints volume yet, deliberately --
 # unlike databricks_grants.landing_volume above, READ VOLUME isn't the
 # right privilege here (whatever runs the actual Auto Loader stream needs
 # READ VOLUME + WRITE VOLUME, since it owns this state, not just consumes
 # it), and there's no real pipeline identity to grant it to yet: this
 # project doesn't have a dedicated pipeline service principal (see
-# docs/analytics-platform/BACKLOG.md's "Also deferred to that point: a
-# fifth, pipeline-specific SP" note). Granting READ+WRITE VOLUME to
+# docs/analytics-platform/BACKLOG.md). Granting READ+WRITE VOLUME to
 # bronze_consumer_group_name instead, just because it's a group that
 # already exists, would hand broad human access to internal streaming
 # bookkeeping nobody should be hand-editing -- wrong principal, not just a
