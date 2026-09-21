@@ -68,9 +68,8 @@ auto-loaded and must always be passed explicitly with `-var-file`.
 
 ### 2. Azure resource topology
 
-One subscription (Free Trial billing — Azure blocks creating additional
-subscriptions until upgraded to Pay-As-You-Go), three resource groups, one
-shared Terraform backend storage account.
+One subscription (the account tier allows only one), three resource groups, and
+one shared Terraform backend storage account.
 
 ```mermaid
 flowchart TB
@@ -88,16 +87,12 @@ flowchart TB
 
 Each environment's resource group also holds the Databricks workspace and access
 connector; the workspace's own managed resource group is budgeted separately.
-Each resource group holds one budget alert, scoped to that resource group
-(not the subscription),
+Each resource group holds one budget, scoped to that resource group and
 notifying at 20% and 40% of the configured monthly amount.
 
-`stanalyticsprodneu01b` carries a trailing `b`: Azure storage account names
-are globally unique across *every* Azure customer, not just this
-subscription, and `stanalyticsprodneu01` collided with an unrelated
-account — `storage_account_suffix` exists as a narrow escape hatch for
-exactly this, touching only the storage account name, never the resource
-group's.
+`stanalyticsprodneu01b` carries a trailing `b` because storage account names are
+globally unique across all of Azure. `storage_account_suffix` sets it and changes
+only the storage account name, never the resource group's.
 
 ### 3. Git branch flow → CI/CD → Azure
 
@@ -238,7 +233,9 @@ delete at 5 years) applies to `landing-*` only. Bronze holds Delta tables and
 a blob-age policy has no awareness of the Delta log, so it is excluded;
 Delta-native retention for bronze/silver is pipeline work (BACKLOG).
 
-**Durability.** In prod, the storage account and its containers have `prevent_destroy`, and soft delete for blobs and containers is 14 days in prod (7 elsewhere). Prod uses GZRS replication.
+**Durability.** In prod the storage account and its containers have
+`prevent_destroy`, soft delete for blobs and containers is 14 days (7 elsewhere),
+and replication is GZRS.
 
 ### Databricks workspace and storage access
 
@@ -346,12 +343,13 @@ any one pipeline; it is the bundle's if it is specific to one pipeline.
 
 ### CI/CD
 
-All resources live in the existing `environments/dev` and `environments/prod`
-roots, so the existing pipeline applies: `fmt-check` → `plan-dev` → (merge)
-`apply-dev` → `plan-prod` → `apply-prod` behind the `production` approval
-gate. `apply-*` applies the saved plan, so a stale-plan failure is fixed by
-re-running the whole workflow. `environments/shared` (the account-level
-metastore) is applied by hand and has no CI coverage.
+All resources are in the `environments/dev` and `environments/prod` roots and
+deploy through one pipeline: `fmt-check` → `plan-dev` → (merge) `apply-dev` →
+`plan-prod` → `apply-prod` behind the `production` approval gate. `apply-*`
+applies the saved plan, so a stale-plan failure is fixed by re-running the whole
+workflow. `environments/shared` (the account-level metastore) is applied by hand
+and has no CI. A separate manual workflow, `drift-detection`, plans `main` and
+reports any difference between the code and what is deployed; it never applies.
 
 ### Secrets
 
@@ -362,5 +360,5 @@ Databricks-native one, to keep one permission system.
 
 ### Networking
 
-Deferred (PRD §16): no private endpoints, VNet injection, or NSGs. Public
-defaults, matching the existing storage account.
+Deferred (PRD §16): no private endpoints, VNet injection, or NSGs. The workspace
+and storage account use Azure's public defaults.

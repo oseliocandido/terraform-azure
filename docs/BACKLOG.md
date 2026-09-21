@@ -12,8 +12,7 @@ the `production` approval gate.
 - Run the first apply locally as a metastore admin: the metastore grant is
   admin-only and CI plans ignore it.
 - Register the `-prod` groups it references at the Databricks account level
-  (table below). Verify `grp-sales-data-governance-prod` in particular; it was
-  the last unregistered sales group.
+  (table below), in particular `grp-sales-data-governance-prod`.
 - Expect the two-stage workspace apply (`-target` on the workspace, then a
   normal apply) and the manual metastore-grant step.
 - A new domain catalog's first apply may also need an admin: CI loses `MANAGE`
@@ -21,9 +20,9 @@ the `production` approval gate.
 
 ## 2. Register the remaining groups
 
-Groups are created in Entra ID and registered
-at the Databricks account level by hand (Account Console → User management →
-Groups). Terraform only references them by name.
+Groups are created in Entra ID and registered at the Databricks account level by
+hand (Account Console → User management → Groups). Terraform only references them
+by name.
 
 | Group | Status | Needed for |
 |---|---|---|
@@ -52,14 +51,12 @@ out of scope for this repo (PRD §16) and belongs in a Databricks Asset Bundle.
   trigger) reading `<system>_landing` into bronze Delta tables, with state in the
   `checkpoints` volume (one folder per source system), or let Lakeflow pipelines
   manage checkpoints themselves and skip it.
-- **Pipeline service principal:** a dedicated SP, different from
-  `sp-terraform-*`, scoped to the workspace rather than Azure RBAC. Bootstrap
-  it with the same one-time `az` CLI pattern as the Terraform SPs.
-- **Service principals for dev and prod pipelines (to do later).** The dev
-  and prod grants that belong to the pipeline service principals are left for
-  later. For now `bronze_consumer_can_write` (true in dev, false in prod) lets
-  `grp-sales-data-engineers-dev` write to the `checkpoints` volume and create
-  tables in `bronze`, and that stays as is.
+- **Pipeline service principals for dev and prod:** dedicated SPs, separate from
+  `sp-terraform-*`, scoped to the workspace rather than Azure RBAC and created with
+  the same one-time `az` CLI pattern as the Terraform SPs. Their grants in dev and
+  prod are not defined yet. Until then `bronze_consumer_can_write` (true in dev,
+  false in prod) lets `grp-sales-data-engineers-dev` write to the `checkpoints`
+  volume and create tables in `bronze`.
 - **Bronze read access for a second domain:** `bronze_consumer_group_name`
   covers only `grp-sales-data-engineers-<env>`. Add a grant for another
   domain's engineers when it has a real need for raw data.
@@ -118,10 +115,9 @@ lifecycle handling once real volumes exist.
   pipeline SPs exist.
 - **Enable scheduled drift detection.** `.github/workflows/drift-detection.yml`
   runs a refresh-only plan (warning) and a plain plan against `main` (fails on any
-  diff), but it is manual-only.
-  Uncomment its `schedule` to run it weekly. It cannot see drift in resources
-  with `ignore_changes` (the metastore grant), and its prod job is only
-  meaningful after prod's first apply.
+  diff), but it is manual-only. Uncomment its `schedule` to run it weekly. It cannot
+  see drift in resources with `ignore_changes` (the metastore grant), and its prod
+  job is only meaningful after prod's first apply.
 - **Cost visibility (PRD §12).** Tags and per-resource-group budgets exist, but
   budgets only notify. Check whether the metastore's own resource group has a
   budget, and tag compute for DBU cost once compute exists.

@@ -147,8 +147,7 @@ authoritative) is used over `databricks_grant` so Terraform is the single source
 The metastore grant is in each root because `databricks_grants` needs the
 workspace-level provider, which the account-level `shared` root lacks. Dev's and
 prod's copies are identical so they converge. Grants go to the CI **group**, not the
-service principal, so a new CI identity is a membership change. `moved` blocks
-cover the earlier `unity_catalog` → `unity_catalog_sales` rename.
+service principal, so a new CI identity is a membership change.
 
 ## Providers and authentication
 
@@ -216,8 +215,8 @@ instead of creating another. Never wire the pre-staged access connector in the
 workspace's managed resource group to anything: it inherits that workspace's lifecycle
 and cannot be deleted.
 
-**Groups.** Create each `grp-*` group in Entra ID and
-register it in the Databricks account before any grant that references it applies.
+**Groups.** Create each `grp-*` group in Entra ID and register it in the Databricks
+account before any grant that references it applies.
 
 ## Prod bootstrap
 
