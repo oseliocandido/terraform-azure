@@ -9,9 +9,8 @@
 # subscription_id here MUST match whatever identity CI authenticates as
 # (see .github/workflows/terraform.yml's ARM_SUBSCRIPTION_ID) -- dev and
 # prod currently share one subscription, isolated by resource-group-scoped
-# RBAC rather than a subscription boundary (see docs/analytics-platform/
-# ARCHITECTURE.md's "Environment isolation: resource group vs. subscription
-# boundary").
+# RBAC rather than a subscription boundary (see docs/ARCHITECTURE.md's
+# "Environments and isolation" section).
 #
 # azure_tenant_id and databricks_account_id are account-wide constants too
 # (one Databricks account, one metastore per region, shared by every

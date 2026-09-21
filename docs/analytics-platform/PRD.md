@@ -2,528 +2,188 @@
 
 ## Retail Sales Analytics Platform
 
-**Document version:** 1.0
-**Status:** In progress — Development implemented; Production not yet applied
-**Owner:** Data Engineering
-**Primary consumer:** Sales
+**Version:** 1.1 · **Status:** In progress (Development delivered, Production pending) ·
+**Owner:** Data Engineering · **Primary consumer:** Sales
 
-> This is the business-requirements document for the platform built in this
-> repo. Development is implemented; Production is not yet applied. For the
-> architecture decisions this PRD requires, see
-> [ARCHITECTURE.md](../ARCHITECTURE.md); for the concrete Terraform/CI-CD
-> implementation spec, see [IMPLEMENTATION.md](IMPLEMENTATION.md). This
-> document intentionally contains **no** Terraform, Azure resource, or
-> CI/CD implementation detail, and **no** data-pipeline/transformation
-> logic (e.g. how change over time is captured in a dataset) — only what
-> the business needs the infrastructure to be capable of.
+This document states what the business needs. It contains no technology or
+implementation detail; those are in [ARCHITECTURE.md](../ARCHITECTURE.md) and
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ---
 
 # 1. Executive Summary
 
-The company operates a network of physical retail stores and an online store.
+The company sells through physical stores and an online store. Sales data sits
+in two operational systems (point of sale and e-commerce) with no central place
+to store or analyze it over time.
 
-Sales transaction data currently exists across two operational systems —
-the point-of-sale system and the e-commerce platform — with no centralized
-place to store or analyze it historically.
-
-The company requires a centralized analytical platform that provides a
-consistent foundation for sales reporting and historical analysis.
-
-The initial project will establish the **cloud infrastructure required to
-support this analytical platform**, using Infrastructure as Code.
-
-The project is intentionally focused on the **underlying platform and
-infrastructure rather than implementing production data pipelines**.
-
-The resulting platform should provide the infrastructure foundation
-required for:
-
-* Centralized analytical data storage for sales data.
-* Historical analytical data retention.
-* Separate Development and Production environments.
-* Secure access to analytical resources.
-* Reproducible infrastructure.
-* Controlled infrastructure changes.
-* Future implementation of sales data ingestion and transformation workloads.
-
----
+This project delivers the **cloud platform foundation** for sales analytics: a
+central, secure, reproducible place to keep sales data and analyze it
+historically. It delivers the platform, not the data pipelines that will fill it.
 
 # 2. Business Problem
 
-Sales data originates from two systems:
-
-* The point-of-sale system (physical stores).
-* The e-commerce platform (online store).
-
-Each system has a different schema and update frequency.
-
-This makes it difficult to establish a consistent historical view of sales
-performance, because:
-
-### 2.1 Inconsistent business information
-
-Revenue and sales metrics may be calculated differently depending on which
-system's data is used.
-
-### 2.2 Limited historical analysis
-
-Both operational systems represent current transaction state; there is no
-durable, queryable historical record independent of the operational
-systems' own retention.
-
-### 2.3 Fragmented analytical data
-
-Sales reporting depends on combining exports from two separate systems
-instead of a centralized analytical foundation.
-
-### 2.4 Limited scalability
-
-Manual extraction and spreadsheet-based analysis do not scale as
-transaction volume grows.
-
-### 2.5 Difficult environment management
-
-The analytical platform requires reproducible Development and Production
-environments. Infrastructure should not depend on manual configuration
-performed directly in the cloud environment.
-
----
+- **Inconsistent numbers.** Revenue is calculated differently depending on which
+  system is used.
+- **No history.** Both systems show current state only; there is no durable
+  record independent of their own retention.
+- **Fragmented data.** Reporting combines exports from two systems by hand.
+- **Does not scale.** Manual extraction and spreadsheets break as volume grows.
+- **Hard to reproduce.** Environments should not depend on manual cloud setup.
 
 # 3. Goals
 
-The project goal is to establish a cloud-based analytical platform
-foundation capable of supporting:
+Provide a platform that supports:
 
-* Centralized sales data storage.
-* Historical sales analysis.
-* Revenue and sales-performance analysis.
-* Store-level and channel-level (in-store vs. e-commerce) analysis.
-* Future sales data ingestion and transformation workloads.
-* Five years of historical analytical data — see
-  [§9](#9-historical-data-retention), the one volume-related figure this
-  PRD treats as a firm business requirement.
+- centralized storage of sales data;
+- historical, revenue and sales-performance analysis, by store and by channel
+  (in-store vs. online);
+- separate Development and Production environments;
+- five years of retained history (§9), the one volume figure treated as firm.
 
-**Store count and daily transaction volume are deliberately not stated
-as targets here.** No capacity/throughput sizing study has been done yet,
-and this project does not include cluster or compute sizing work (see
-[BACKLOG.md](BACKLOG.md#4-compute-architecture)).
-Publishing an unvalidated number invites design decisions (storage
-tiering, cluster sizing, partitioning) to silently anchor on a figure
-nobody actually confirmed. The infrastructure is designed to scale
-horizontally regardless of the eventual number — Databricks/Unity
-Catalog and ADLS Gen2 don't require a pre-committed volume figure to be
-provisioned — and a real sizing study, once done, gets folded in here as
-a revision, not treated as a blocker to this phase.
-
----
+Store count and transaction volume are deliberately **not** stated as targets:
+no sizing study exists, and an unvalidated number would silently drive design
+choices. Capacity is validated once compute is sized.
 
 # 4. Project Scope
 
-The project is primarily an **Infrastructure as Code implementation
-exercise for a cloud data platform**.
-
-The project will establish the infrastructure foundation required by the
-future sales analytics platform.
-
-The implementation scope includes:
-
-* Cloud analytical storage.
-* Databricks analytical infrastructure.
-* Development and Production environments.
-* Identity and access management required by the platform.
-* Secure secret management where required.
-* Infrastructure deployment through Infrastructure as Code.
-* Reproducible infrastructure configuration.
-* Infrastructure change management through version control and CI/CD.
-* Environment isolation.
-* Cost and resource ownership metadata.
-
-The project does **not** require implementation of the actual production
-data pipelines.
-
-Sales data ingestion and transformation requirements described in this
-document represent the **business capability the infrastructure must be
-capable of supporting**, not a pipeline that must be implemented as part
-of this project.
-
----
+In scope: cloud analytical storage, Databricks as the analytics platform,
+Development and Production environments, identity and access management,
+secret handling, reproducible infrastructure, controlled change through version
+control, environment isolation, and cost/ownership metadata.
 
 # 5. Non-Goals
 
-The first version will not:
-
-* Replace the operational POS system.
-* Replace the e-commerce platform.
-* Build customer-facing applications.
-* Implement machine-learning models.
-* Implement real-time fraud detection.
-* Implement production data ingestion pipelines.
-* Implement production data transformation pipelines.
-* Build dashboards or BI applications.
-* Become the master system for product, customer, or store information.
-* Implement advanced networking architecture.
-* Prescribe how historical change within a dataset is modeled — that is a
-  data-pipeline design decision, made when a pipeline is actually built,
-  not an infrastructure requirement.
-
-Networking will remain a **future architecture/backlog item** unless it
-becomes necessary to provision the initial platform.
-
----
+Not in this project: replacing the POS or e-commerce systems, customer-facing
+applications, machine learning, real-time fraud detection, production ingestion
+or transformation pipelines, dashboards, becoming the master system for product,
+customer or store data, advanced networking, and prescribing how change history
+within a dataset is modeled.
 
 # 6. Users and Stakeholders
 
-## Sales
-
-Two distinct access needs exist within Sales, not one uniform level —
-this distinction is what later drives separate access tiers at the
-architecture level, not just a security-mechanism detail:
-
-* **Report consumers** — need curated, business-ready revenue and
-  performance figures (store-level, channel-level, trend-over-time).
-  Read-only; never need to see intermediate or raw data to do their job.
-* **Analysts** — need everything report consumers need, plus the ability
-  to drill a reported number back toward its more granular inputs when
-  investigating an anomaly or answering an ad hoc question. Still
-  read-only; never modify data.
-
-Both require:
-
-* Revenue analysis.
-* Sales-performance analysis.
-* Historical revenue trends.
-* Revenue by store.
-* Revenue by channel (in-store vs. e-commerce).
-
-## Data Engineering
-
-Requires a platform that can:
-
-* Support analytical workloads for sales data.
-* Support historical data retention.
-* Support future data pipelines.
-* Provide isolated environments.
-* Be reproduced through Infrastructure as Code.
-* Be securely accessed by users and workloads.
-
----
+| Group | Needs | Access |
+|---|---|---|
+| **Report consumers** (Sales) | Curated, business-ready revenue and performance figures | Read-only, business-ready data only |
+| **Analysts** (Sales) | The above, plus drilling a number back toward its inputs | Read-only, refined and business-ready data |
+| **Data Engineering** | Build and run analytical workloads and future pipelines; isolated, reproducible environments | Read and write on their domain's data |
 
 # 7. Business Data Requirements
 
-The analytical platform's initial scope is the **Sales** domain: sales
-transactions from the point-of-sale system and the e-commerce platform. A
-**Marketing** domain has since been added on the same platform, following the
-same access model, so more than one business domain can share the platform
-without sharing each other's data.
+The initial domain is **Sales** (POS and e-commerce transactions). A second
+domain, **Marketing**, shares the platform with the same access model, so several
+business domains can use it without seeing each other's data.
 
-Raw data from each source system is kept once, in one place, and each domain
-builds its own refined and business-ready datasets from it, rather than each
-domain keeping its own copy of the raw data.
-
-The platform should allow sales data to be represented independently from
-the structure of either source system — analytical datasets should be
-designed around **business questions about sales**, not simply reproducing
-either source system's schema.
-
----
+Data is modeled around business questions, not either source system's schema.
+Raw data from each source system is kept **once**, in one place; each domain
+builds its own refined and business-ready datasets from it rather than keeping a
+private copy of the raw data.
 
 # 8. Analytical Data Organization
 
-The platform should support a logical separation between different stages
-of sales data as it moves from raw source extracts toward business-ready,
-reportable datasets. This progression — raw, refined, and business-ready
-stages — is commonly known in the industry as **medallion architecture**
-(bronze/silver/gold), and this document uses that vocabulary elsewhere
-(e.g. [§6](#6-users-and-stakeholders)'s report-consumer/analyst
-distinction maps onto which of these stages each role can see) so a
-reader moving between this document and
-[ARCHITECTURE.md](../ARCHITECTURE.md) isn't working from two different
-vocabularies for the same concept.
-
-The exact storage/organizational implementation of these stages —
-including how many stages, and their concrete names — is an architecture
-decision, not fixed by this requirement — see
-[ARCHITECTURE.md](../ARCHITECTURE.md#unity-catalog-model).
-
-The infrastructure must provide the storage and analytical capabilities
-required to implement this layering when pipelines are built in the future.
-
----
+Data moves through three stages, known as medallion architecture:
+**bronze** (raw), **silver** (refined), **gold** (business-ready). The role
+split in §6 follows it: report consumers see gold only, analysts see silver and
+gold, engineers see all stages.
 
 # 9. Historical Data Retention
 
-The analytical platform should support long-term historical analysis.
-
-**The business requirement is to retain sales analytical data for five
-years from the date it was ingested.** Data older than five years may be
-deleted; data does not need to remain queryable at full cost/performance
-for the entire five years (a lower-cost storage tier is acceptable for
-older data, provided it is not deleted before the five-year mark).
-
-Historical data should remain available independently from the lifecycle
-of the point-of-sale and e-commerce source systems.
-
-The infrastructure should therefore support scalable, durable, and
-cost-tiered analytical storage with an enforced retention period — see
-[ARCHITECTURE.md](../ARCHITECTURE.md#storage) for
-how this is technically enforced.
-
----
+Sales data is retained for **five years from ingestion**, then may be deleted.
+Older data may sit in a cheaper, slower tier if it is not deleted early. History
+stays available independently of the POS and e-commerce systems' own lifecycle.
 
 # 10. Environment Requirements
 
-The platform will initially have two permanent environments:
-
-```text
-DEV
-PROD
-```
-
-Development and Production must be independently managed.
-
-A change or failure in Development must not unintentionally affect
-Production.
-
----
+Two permanent environments, **Development** and **Production**, managed
+independently: a change or failure in Development must not affect Production.
 
 # 11. Security Requirements
 
-The platform must provide controlled access to analytical resources.
-
-Requirements include:
-
-* Users should authenticate using the organization's identity platform
-  where supported.
-* Workloads should use dedicated identities.
-* Access should follow least-privilege principles.
-* Production access should be more restricted than Development access.
-  Production data is intended to be written by dedicated automated
-  identities rather than people; those identities are not yet in place (see
-  [BACKLOG.md](BACKLOG.md)).
-* Credentials should not be embedded in source code.
-* Secrets that cannot be eliminated through identity-based authentication
-  should be securely managed.
-* Development workloads must not accidentally gain unrestricted access to
-  Production resources.
-
-The detailed Azure/Databricks security architecture is defined separately
-— see [ARCHITECTURE.md](../ARCHITECTURE.md).
-
----
+- Users sign in with the organization's identity platform.
+- Workloads use dedicated identities; there are no long-lived credentials in
+  source code.
+- Access is least-privilege, and Production is more restricted than Development.
+  Production data is intended to be written by automated identities rather than
+  people.
+- Secrets that cannot be avoided are stored securely.
+- Development must never gain unrestricted access to Production.
 
 # 12. Cost and Resource Management
 
-The platform should provide sufficient resource metadata to allow
-infrastructure costs and ownership to be identified.
-
-Resources should consistently identify concepts such as:
-
-```text
-environment
-workload
-owner
-cost center
-managed by
-```
-
-The platform should make it possible to distinguish Development and
-Production infrastructure costs.
-
----
+Every resource carries tags for **environment, workload, owner, cost center and
+managed-by**, so Development and Production costs can be told apart, and each
+environment has a budget with spend alerts.
 
 # 13. Reliability Requirements
 
-The infrastructure must support the future sales analytics platform
-without creating unnecessary coupling between environments.
-
-The platform should provide durable analytical storage and infrastructure
-that can be recreated from source-controlled definitions.
-
-Production data must be protected against accidental loss:
-
-* Deleted data must remain recoverable for at least 14 days in Production
-  (a shorter period is acceptable in Development).
-* An ordinary infrastructure change must not be able to destroy Production
-  storage; destroying it requires a deliberate, reviewed change.
-
-The underlying infrastructure should not depend on manually configured
-resources that cannot be reproduced. This does not prohibit a small
-number of one-time, account- or tenant-level objects that Infrastructure
-as Code fundamentally cannot create for itself (an identity a pipeline
-authenticates as cannot be created by that same pipeline's own run) —
-provided each is created through a documented, repeatable procedure
-rather than undocumented manual configuration. This platform already
-follows that pattern for its App Registrations, and extends the same
-exception to any account-level Databricks object a future architecture
-phase introduces (see [ARCHITECTURE.md](../ARCHITECTURE.md) for which
-objects, if any, require this).
-
----
+- Infrastructure can be recreated entirely from source-controlled definitions.
+  A few one-time account-level steps that automation cannot create for itself are
+  acceptable if documented and repeatable.
+- Environments do not depend on each other.
+- **Production data is protected against accidental loss:** deleted data stays
+  recoverable for at least 14 days in Production (a shorter period is fine in
+  Development), and an ordinary change cannot destroy Production storage;
+  destroying it takes a deliberate, reviewed change.
 
 # 14. Technology Constraints
 
-The initial platform will be implemented on **Microsoft Azure**.
+Microsoft Azure, Azure Databricks as the compute platform, and Terraform for
+infrastructure.
 
-The analytical compute platform will use **Azure Databricks**.
+# 15. Requirements Boundary
 
-Infrastructure will be managed using **Terraform**.
-
-The exact provider configuration and resource implementation are
-determined during architecture and implementation design — see
+This document says **what** the business requires. How it is built is decided in
 [ARCHITECTURE.md](../ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
----
+# 16. Future Scope
 
-# 15. Architecture Decision Boundary
-
-This PRD defines **what the business and platform require**. It
-intentionally does not prescribe the complete technical architecture —
-that is the job of [ARCHITECTURE.md](../ARCHITECTURE.md) and, at the
-implementation level, [IMPLEMENTATION.md](IMPLEMENTATION.md).
-
-```text
-                 PRD (this document)
-                        │
-                        ▼
-              Business Requirements
-                        │
-                        ▼
-             ARCHITECTURE.md
-        (Azure / Databricks / Terraform
-              decisions, in response
-               to this PRD's needs)
-                        │
-                        ▼
-             IMPLEMENTATION.md
-       (exact module layout, providers,
-          CI/CD stages, naming, state)
-```
-
----
-
-# 16. Backlog / Future Scope
-
-The following items are intentionally outside the initial implementation
-scope:
-
-### Networking
-
-Detailed network architecture should be addressed in a future architecture
-phase. Potential future requirements include private endpoints, private
-connectivity, Databricks network architecture, network security controls,
-and controlled outbound connectivity.
-
-### Data Pipelines
-
-Actual sales data ingestion, transformation, and orchestration — including
-how historical change within a dataset is modeled — are future
-implementation work, not part of this infrastructure project.
-
-### Additional Business Domains
-
-Beyond Sales and Marketing, inventory, product, customer, and supplier data
-are explicitly out of scope for this phase. If a future phase extends the platform to these
-domains, that extension gets its own PRD/architecture review rather than
-being retrofitted into this one.
-
-### Data Quality, Monitoring, Streaming, Machine Learning
-
-All future capabilities, not required by this infrastructure phase.
-
----
+Later phases, outside this project: detailed networking (private connectivity,
+network controls), data pipelines and orchestration, further domains
+(inventory, product, customer, supplier), and data quality, monitoring,
+streaming and machine learning.
 
 # 17. Acceptance Criteria
 
-The project will be considered successful when:
+**Infrastructure**
+- Development and Production can each be provisioned from version-controlled
+  definitions, are independently managed, and are stored centrally.
+- Changes can be reviewed before deployment, and Production changes need approval.
 
-## Infrastructure
+**Security**
+- Organizational identities are used; no unnecessary long-lived credentials or
+  hard-coded secrets; Production access is restricted; environment boundaries
+  are enforced.
 
-* Development infrastructure can be provisioned using Terraform.
-* Production infrastructure can be provisioned using Terraform.
-* Infrastructure can be reproduced from version-controlled definitions.
-* Development and Production infrastructure are independently managed.
-* Infrastructure configuration is durably stored centrally, not dependent
-  on any single engineer's machine.
-* Infrastructure changes can be reviewed before deployment.
+**Platform foundation**
+- Durable analytical storage for sales data; Azure Databricks available as the
+  compute platform.
+- Five-year retention is enforced at the infrastructure level.
+- Production storage is protected against accidental deletion (§13).
+- Capacity for expected data volumes is validated once compute is sized.
 
-## Security
-
-* Azure resources can use organizational identities where supported.
-* Workloads do not depend on unnecessary long-lived credentials.
-* Production access is appropriately restricted.
-* Secrets are not hardcoded in Terraform source code.
-* Environment boundaries are enforced.
-
-## Analytical Platform Foundation
-
-* The infrastructure provides durable analytical storage for sales data.
-* Azure Databricks can be provisioned and used as the analytical compute
-  platform.
-* The platform enforces the five-year retention requirement at the
-  infrastructure level.
-* Capacity for the expected data volumes is validated once compute is sized;
-  this is deferred (see [§3](#3-goals) and [BACKLOG.md](BACKLOG.md)).
-* Production storage is protected against accidental deletion (§13).
-
-## Engineering
-
-* Terraform configuration is version controlled.
-* Reusable infrastructure components are separated from
-  environment-specific configuration.
-* Infrastructure changes are validated through automation.
-* Differences between the source-controlled definitions and the deployed
-  infrastructure can be detected on demand, without changing anything.
-* Production deployment requires appropriate approval.
-* Resources can be identified by environment, workload, ownership, and
-  cost-related metadata.
-
----
+**Engineering**
+- Reusable components are separate from environment-specific configuration.
+- Changes are validated automatically.
+- Differences between the source-controlled definitions and what is deployed can
+  be detected on demand, without changing anything.
+- Resources are identifiable by environment, workload, owner and cost.
 
 # 18. Success Metrics
 
-| Metric                                                        | Target |
-| ------------------------------------------------------------- | -----: |
-| Production infrastructure managed through Terraform           |   100% |
-| Development infrastructure managed through Terraform          |   100% |
-| Production infrastructure changes performed outside Terraform |      0 |
-| Production static CI/CD credentials                           |      0 |
-| Production secrets committed to source control                |      0 |
-| Independent DEV and PROD infrastructure lifecycle              |   100% |
-| Infrastructure changes traceable through version control      |   100% |
-| Required analytical infrastructure reproducible from code     |   100% |
-| Environments with an on-demand drift check                    |   100% |
+| Metric | Target |
+|---|---:|
+| Development and Production infrastructure managed through Terraform | 100% |
+| Production changes made outside Terraform | 0 |
+| Production static CI/CD credentials | 0 |
+| Production secrets committed to source control | 0 |
+| Infrastructure changes traceable through version control | 100% |
+| Required infrastructure reproducible from code | 100% |
+| Environments with an on-demand drift check | 100% |
 
-Data-pipeline metrics (pipeline success rate, data-quality coverage, data
-freshness) are outside the scope of this infrastructure project.
-
----
+Data-pipeline metrics (success rate, quality, freshness) are out of scope.
 
 # 19. Final Business Outcome
 
-The project will establish a reproducible cloud foundation for a future
-sales analytics platform.
-
-```text
-                      SALES
-                        │
-                        ▼
-              Analytical Platform
-                        │
-              ┌─────────┴─────────┐
-              ▼                   ▼
-          Historical          Reportable
-            Data           Sales Datasets
-```
-
-The immediate objective is **not to build the data pipelines**.
-
-The immediate objective is to demonstrate the ability to design and
-provision the **underlying cloud infrastructure required by a
-production-oriented analytical data platform**, using Terraform in a
-secure, reproducible, environment-separated manner. See
-[ARCHITECTURE.md](../ARCHITECTURE.md) for how that infrastructure is
-reproducible and environment-isolated in practice.
-
-The resulting infrastructure provides the foundation upon which future
-sales data engineering workloads can be implemented.
+A reproducible, secure, environment-separated cloud foundation on which sales
+data engineering can later be built, giving the business one historical,
+reportable view of sales.
