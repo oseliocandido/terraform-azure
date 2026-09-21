@@ -77,8 +77,8 @@ composes them and keeps its own state; `shared` holds the account-level
 metastore. `unity_catalog` is called once per business domain, so adding a domain
 is one more module call. `storage` is called once per environment because the
 storage credential and the raw ingestion layer are shared by every domain.
-The module diagram and every object are in [ARCHITECTURE](docs/ARCHITECTURE.md)
-and [IMPLEMENTATION](docs/IMPLEMENTATION.md).
+The module diagram and every object are in [ARCHITECTURE](docs/ARCHITECTURE.html)
+and [IMPLEMENTATION](docs/IMPLEMENTATION.html).
 
 ## How a change reaches Azure
 
@@ -150,9 +150,9 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 
 | Document | Read it for |
 |---|---|
-| [PRD](docs/PRD.md) | The business requirements |
-| [Architecture](docs/ARCHITECTURE.md) | Repo and pipeline design, the analytics platform design, and the key decisions |
-| [Implementation](docs/IMPLEMENTATION.md) | Every module and object, the CI permission model, bootstrap |
+| [PRD](docs/PRD.html) | The business requirements |
+| [Architecture](docs/ARCHITECTURE.html) | Repo and pipeline design, the analytics platform design, and the key decisions |
+| [Implementation](docs/IMPLEMENTATION.html) | Every module and object, the CI permission model, bootstrap |
 | [Backlog](docs/BACKLOG.md) | Open work and known gaps |
 
 ## Repo layout
@@ -171,9 +171,9 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 │   ├── dev/  prod/           # root modules, own state and tfvars
 │   └── shared/               # account-level metastore, applied by hand
 ├── docs/
-│   ├── PRD.md                # business requirements
-│   ├── ARCHITECTURE.md       # repo/CI-CD design (part 1) and platform design (part 2)
-│   ├── IMPLEMENTATION.md     # every module and object
+│   ├── PRD.html              # business requirements
+│   ├── ARCHITECTURE.html     # repo/CI-CD design (part 1) and platform design (part 2)
+│   ├── IMPLEMENTATION.html   # every module and object
 │   └── BACKLOG.md            # open work
 └── .github/workflows/        # terraform.yml (plan/apply), drift-detection.yml
 ```

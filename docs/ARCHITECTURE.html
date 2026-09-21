@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales Analytics Platform Architecture</title>
+
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --bg:#f2f5f3; --surface:#ffffff; --surface-2:#eaeeec; --border:#d5dcd8;
+  --text:#1a2321; --text-dim:#5c6763; --text-faint:#8a938f;
+  --accent:#9c5a2e; --accent-ink:#7a4523; --accent-soft:#f1e2d4;
+  --accent2:#2f6f5e; --accent2-soft:#e0eeea;
+  --bronze:#9c5a2e; --silver:#727f88; --gold:#a3821f;
+  --dev:#2f6f5e; --prod:#8c3b3b;
+  --ctx:#5c6763; --dec:#2f6f5e; --cons:#9c5a2e;
+  --shadow: 0 1px 2px rgba(20,30,25,.04), 0 8px 24px -12px rgba(20,30,25,.12);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#13181a; --surface:#191f21; --surface-2:#1f2628; --border:#2b3436;
+    --text:#e7ebe8; --text-dim:#a3aca7; --text-faint:#77827e;
+    --accent:#dc9560; --accent-ink:#f0b485; --accent-soft:#33261c;
+    --accent2:#5cae98; --accent2-soft:#1c2c27;
+    --bronze:#c98a55; --silver:#9aa6ac; --gold:#cbab5a;
+    --dev:#5cae98; --prod:#d17c7c;
+    --ctx:#a3aca7; --dec:#5cae98; --cons:#dc9560;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#13181a; --surface:#191f21; --surface-2:#1f2628; --border:#2b3436;
+  --text:#e7ebe8; --text-dim:#a3aca7; --text-faint:#77827e;
+  --accent:#dc9560; --accent-ink:#f0b485; --accent-soft:#33261c;
+  --accent2:#5cae98; --accent2-soft:#1c2c27;
+  --bronze:#c98a55; --silver:#9aa6ac; --gold:#cbab5a;
+  --dev:#5cae98; --prod:#d17c7c;
+  --ctx:#a3aca7; --dec:#5cae98; --cons:#dc9560;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+}
+
+*{box-sizing:border-box;}
+body{ background:var(--bg); color:var(--text); font-family:'IBM Plex Sans', system-ui, sans-serif; font-size:16px; line-height:1.6; margin:0; }
+code, .mono{ font-family:'IBM Plex Mono', ui-monospace, monospace; }
+a{ color:var(--accent-ink); text-decoration:none; border-bottom:1px solid var(--accent-soft); }
+a:hover{ border-bottom-color:var(--accent-ink); }
+h1,h2,h3,h4{ font-weight:700; text-wrap:balance; margin:0; }
+
+.shell{ display:flex; max-width:1180px; margin:0 auto; }
+.docnav{ position:sticky; top:0; z-index:20; background:var(--surface); border-bottom:1px solid var(--border); }
+.docnav-inner{ max-width:1180px; margin:0 auto; padding:12px 20px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.docnav-label{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); margin-right:6px; }
+.docnav a{ border:1px solid var(--border); border-radius:999px; padding:5px 13px; font-size:13px; font-weight:500; color:var(--text-dim); background:var(--surface-2); }
+.docnav a.current{ background:var(--accent-soft); color:var(--accent-ink); border-color:var(--accent-soft); font-weight:600; }
+.docnav a:hover{ color:var(--text); }
+
+.toc{ width:250px; flex-shrink:0; padding:32px 16px 60px 20px; position:sticky; top:53px; align-self:flex-start; max-height:calc(100vh - 53px); overflow-y:auto; }
+.toc-title{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); margin-bottom:10px; padding-left:10px;}
+.toc a{ display:block; padding:6px 10px; border-radius:7px; border-bottom:none; font-size:13px; color:var(--text-dim); line-height:1.35; }
+.toc a:hover{ background:var(--surface-2); color:var(--text); }
+
+main{ flex:1; min-width:0; padding:40px 24px 100px; max-width:780px; }
+
+.eyebrow{ font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--accent-ink); font-weight:600; margin-bottom:10px; }
+.doctitle{ font-size:clamp(28px,4vw,38px); line-height:1.15; margin-bottom:16px; }
+.metarow{ display:flex; gap:18px; flex-wrap:wrap; font-size:13.5px; color:var(--text-dim); padding-bottom:22px; border-bottom:1px solid var(--border); margin-bottom:8px; }
+.metarow b{ color:var(--text); font-weight:600; }
+.scopenote{ margin:24px 0 8px; padding:16px 18px; border-radius:var(--radius); background:var(--accent-soft); border:1px solid var(--accent-soft); font-size:14.5px; color:var(--text); }
+.scopenote b{ color:var(--accent-ink); }
+
+section{ margin-top:52px; scroll-margin-top:70px; }
+.decision-block{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:22px 24px; box-shadow:var(--shadow); margin-bottom:16px; }
+.decision-block h2{ font-size:19px; margin-bottom:16px; }
+.decision-block h2 .num{ font-family:'IBM Plex Mono'; font-size:13px; color:var(--text-faint); font-weight:500; margin-right:8px; }
+
+.cdc{ padding-left:14px; border-left:3px solid var(--border); margin:14px 0; }
+.cdc.ctx{ border-left-color:var(--ctx); }
+.cdc.dec{ border-left-color:var(--dec); }
+.cdc.cons{ border-left-color:var(--cons); }
+.cdc .tag{ font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; margin-bottom:6px; display:block; }
+.cdc.ctx .tag{ color:var(--ctx); }
+.cdc.dec .tag{ color:var(--dec); }
+.cdc.cons .tag{ color:var(--cons); }
+.cdc p{ margin:0 0 8px; font-size:14.5px; color:var(--text); }
+.cdc p:last-child{ margin-bottom:0; }
+.cdc ul{ margin:6px 0 8px; padding-left:20px; font-size:14px; }
+
+pre.code{ font-family:'IBM Plex Mono'; font-size:12.5px; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; overflow-x:auto; color:var(--text); line-height:1.55; margin:10px 0; }
+.codelabel{ font-family:'IBM Plex Mono'; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-faint); margin:14px 0 -4px; }
+
+.hcl-key{ color:var(--accent-ink); }
+.hcl-str{ color:var(--dec); }
+.hcl-cmt{ color:var(--text-faint); font-style:italic; }
+
+table{ width:100%; border-collapse:collapse; margin:14px 0; font-size:13px; }
+th,td{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+th{ color:var(--text-faint); font-weight:600; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; }
+tr:last-child td{ border-bottom:none; }
+td code{ font-size:12px; }
+
+.pill{ font-family:'IBM Plex Mono'; font-size:11.5px; padding:3px 9px; border-radius:999px; border:1px solid var(--border); color:var(--text-dim); background:var(--surface-2); display:inline-block; margin:2px 3px 2px 0; }
+.pill.bronze{ color:var(--bronze); border-color:var(--bronze); background:color-mix(in srgb, var(--bronze) 12%, transparent); }
+.pill.silver{ color:var(--silver); border-color:var(--silver); background:color-mix(in srgb, var(--silver) 12%, transparent); }
+.pill.gold{ color:var(--gold); border-color:var(--gold); background:color-mix(in srgb, var(--gold) 12%, transparent); }
+.pill.dev{ color:var(--dev); border-color:var(--dev); background:color-mix(in srgb, var(--dev) 12%, transparent); }
+.pill.prod{ color:var(--prod); border-color:var(--prod); background:color-mix(in srgb, var(--prod) 12%, transparent); }
+
+.callout{ background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:0 var(--radius) var(--radius) 0; padding:14px 18px; margin:18px 0; font-size:14px; box-shadow:var(--shadow); }
+.footer{ max-width:780px; margin:70px auto 0; padding:24px 24px 60px; border-top:1px solid var(--border); font-size:13px; color:var(--text-faint); display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px;}
+
+@media (max-width:900px){ .toc{ display:none; } main{ max-width:100%; padding:28px 18px 80px; } }
+
+pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; overflow-x:auto; text-align:center; font-family:system-ui, -apple-system, 'Segoe UI', sans-serif; }
+.partlabel{ font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--accent-ink); font-weight:700; margin:48px 0 -28px; scroll-margin-top:70px; }
+.decision-block h3, .decision-block h4{ font-size:15px; margin:18px 0 8px; }
+.decision-block ul, .decision-block ol{ margin:6px 0 14px; padding-left:22px; }
+</style>
+</head>
+<body>
+
+<div class="docnav">
+  <div class="docnav-inner">
+    <span class="docnav-label">Sales Analytics Platform</span>
+    <a href="PRD.html">1 · Business Requirements</a>
+    <a href="#" class="current" id="nav-arch">2 · Architecture</a>
+    <a href="IMPLEMENTATION.html" id="nav-impl">3 · Implementation</a>
+    <a href="BACKLOG.md">Backlog</a>
+  </div>
+</div>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="toc-title">Part 1 &middot; Repository</div>
+    <a href="#p1-module-environment-composition">Module / environment composition</a>
+    <a href="#p1-azure-resource-topology">Azure resource topology</a>
+    <a href="#p1-git-branch-flow-ci-cd-azure">Git branch flow → CI/CD → Azure</a>
+    <a href="#p1-identity-one-oidc-trust-relationship-per-environment">Identity: one OIDC trust relationship per environment</a>
+    <a href="#p1-key-decisions">Key decisions</a>
+    <div class="toc-title" style="margin-top:14px">Part 2 &middot; Platform</div>
+    <a href="#glance">At a glance</a>
+    <a href="#env">Environments &amp; isolation</a>
+    <a href="#storage">Storage</a>
+    <a href="#workspace">Workspace &amp; storage access</a>
+    <a href="#uc">Unity Catalog model</a>
+    <a href="#ingest">Ingestion flow</a>
+    <a href="#access">Access control</a>
+    <a href="#groups">Groups</a>
+    <a href="#ci">CI identity</a>
+    <a href="#boundary">Terraform / bundle boundary</a>
+    <a href="#cicd">CI/CD</a>
+    <a href="#secrets">Secrets &amp; networking</a>
+  </nav>
+
+  <main>
+    <div class="eyebrow">Architecture</div>
+    <h1 class="doctitle">Sales Analytics Platform &mdash; Architecture</h1>
+    <div class="metarow">
+      <span>Providers <b>azurerm &middot; databricks</b></span>
+      <span><span class="pill dev">dev</span> <b>applied, converged</b></span>
+      <span><span class="pill prod">prod</span> <b>coded, not yet applied</b></span>
+    </div>
+
+    <div class="scopenote">
+      <b>Overview only.</b> Part 1 covers how the repo is organized and how a change reaches
+      Azure. Part 2 is the Azure / Databricks / Terraform design that satisfies the
+      <a href="PRD.html">business requirements</a>. Every module and object, and how they are
+      operated, is in <a href="IMPLEMENTATION.html">Implementation</a>. Scope is infrastructure &mdash; what must
+      exist so a pipeline can be built. Schema design, transformations, data quality, and
+      orchestration are pipeline concerns and out of scope.
+    </div>
+
+    <div class="partlabel" id="part1">Part 1 &mdash; Repository, pipeline and identity</div>
+
+    <section id="p1-module-environment-composition">
+      <div class="decision-block">
+        <h2><span class="num">1.1</span>Module / environment composition</h2>
+        <p>Five reusable modules, composed per root. Nothing in <code>modules/</code> holds
+its own state or backend — each root under <code>environments/</code> is what
+actually gets applied. <code>environments/shared</code> is a third root holding the
+account-level Databricks metastore (applied by hand, no CI yet).</p>
+<pre class="mermaid">
+flowchart TB
+    subgraph modules[&quot;modules/ — shared, reusable, stateless&quot;]
+        AG[&quot;analytics&lt;br/&gt;RG + ADLS Gen2 + containers&quot;]
+        BA[&quot;budget_alert&lt;br/&gt;Resource-group-scoped consumption budget&quot;]
+        subgraph dbx[&quot;databricks/&quot;]
+            WS[&quot;workspaces&lt;br/&gt;workspace, access connector, metastore assignment&quot;]
+            ST[&quot;storage (once per env)&lt;br/&gt;credential, external locations, ingestion catalog&quot;]
+            UC[&quot;unity_catalog (once per domain)&lt;br/&gt;catalog, silver/gold, grants&quot;]
+        end
+    end
+
+    subgraph dev[&quot;environments/dev (root module)&quot;]
+        DM[&quot;main.tf&quot;] --&gt;|module block| AG
+        DM --&gt;|module block, resource_group_id| BA
+        DM --&gt; WS
+        DM --&gt; ST
+        DM --&gt;|sales, marketing| UC
+    end
+    subgraph prod[&quot;environments/prod (root module, not yet applied)&quot;]
+        PM[&quot;main.tf&quot;] --&gt;|module block| AG
+        PM --&gt;|module block, resource_group_id| BA
+        PM --&gt; WS
+        PM --&gt; ST
+        PM --&gt;|sales, marketing| UC
+    end
+
+    AG -.output: resource_group_id.-&gt; BA
+    AG -.containers.-&gt; ST
+    WS -.access connector, workspace_id.-&gt; ST
+    ST -.credential name.-&gt; UC
+
+</pre>
+<p>The Databricks/Unity Catalog design (catalog-per-domain, single ingestion
+bronze, workspace-bound catalogs, group-based access) is in
+<a href="#part2">Part 2</a> below, with
+every object described in
+<a href="IMPLEMENTATION.html">Implementation</a>.</p>
+<p>Each root has its own <code>terraform.tfvars</code> (environment-specific values:
+<code>instance</code>, <code>budget_amount</code>, an optional <code>storage_account_suffix</code>) and
+shares environment-independent values via <code>environments/common.tfvars</code>
+(<code>subscription_id</code>, <code>notify_email</code>, <code>workload</code>), which is <strong>not</strong>
+auto-loaded and must always be passed explicitly with <code>-var-file</code>.</p>
+      </div>
+    </section>
+
+    <section id="p1-azure-resource-topology">
+      <div class="decision-block">
+        <h2><span class="num">1.2</span>Azure resource topology</h2>
+        <p>One subscription (the account tier allows only one), three resource groups, and
+one shared Terraform backend storage account.</p>
+<pre class="mermaid">
+flowchart TB
+    subgraph sub[&quot;Subscription (single, shared by all environments)&quot;]
+        rgbackend[&quot;rg-terraform-backend&lt;br/&gt;sttfstateanalyticsneu01 / container tfstate&lt;br/&gt;holds ALL environments&#x27; state files&quot;]
+        rgdev[&quot;rg-analytics-dev-neu-01&lt;br/&gt;stanalyticsdevneu01&quot;]
+        rgprod[&quot;rg-analytics-prod-neu-01&lt;br/&gt;stanalyticsprodneu01b&quot;]
+    end
+
+    spdev[&quot;sp-terraform-dev&lt;br/&gt;Contributor on rgdev only&quot;] --&gt;|scoped to| rgdev
+    spprod[&quot;sp-terraform-prod&lt;br/&gt;Contributor on rgprod only&quot;] --&gt;|scoped to| rgprod
+
+    style rgbackend fill:#2c3e50,stroke:#95a5a6
+
+</pre>
+<p>Each environment's resource group also holds the Databricks workspace and access
+connector; the workspace's own managed resource group is budgeted separately.
+Each resource group holds one budget, scoped to that resource group and
+notifying at 20% and 40% of the configured monthly amount.</p>
+<p><code>stanalyticsprodneu01b</code> carries a trailing <code>b</code> because storage account names are
+globally unique across all of Azure. <code>storage_account_suffix</code> sets it and changes
+only the storage account name, never the resource group's.</p>
+      </div>
+    </section>
+
+    <section id="p1-git-branch-flow-ci-cd-azure">
+      <div class="decision-block">
+        <h2><span class="num">1.3</span>Git branch flow → CI/CD → Azure</h2>
+        <pre class="mermaid">
+flowchart TB
+    FB[&quot;feature/fix branch&quot;] --&gt;|push| PR[&quot;Pull Request opened&quot;]
+    PR --&gt; FMT[&quot;fmt-check&lt;br/&gt;(no Azure creds)&quot;]
+    FMT --&gt; PD[&quot;plan-dev&lt;br/&gt;init -&gt; validate -&gt; plan -&gt; PR comment&quot;]
+    PD --&gt; FR1{&quot;any delete&lt;br/&gt;in plan?&quot;}
+    FR1 --&gt;|yes| WARN1[&quot;::warning:: annotation&lt;br/&gt;+ posted in PR comment&quot;]
+    FR1 --&gt;|no| REVIEW
+    WARN1 --&gt; REVIEW[&quot;human review&quot;]
+    REVIEW --&gt; MERGE[&quot;merge to main&quot;]
+
+    MERGE --&gt; AD[&quot;apply-dev&lt;br/&gt;applies the EXACT plan artifact&lt;br/&gt;from plan-dev, no re-plan&quot;]
+    AD --&gt; PP[&quot;plan-prod&lt;br/&gt;init -&gt; validate -&gt; plan -&gt; job summary&quot;]
+    PP --&gt; FR2{&quot;any delete&lt;br/&gt;in plan?&quot;}
+    FR2 --&gt;|yes| WARN2[&quot;::warning:: annotation&lt;br/&gt;+ job step summary&quot;]
+    FR2 --&gt;|no| GATE
+    WARN2 --&gt; GATE[&quot;production Environment&lt;br/&gt;required-reviewer approval gate&quot;]
+    GATE --&gt;|human approves| AP[&quot;apply-prod&lt;br/&gt;applies the EXACT plan artifact&lt;br/&gt;from plan-prod, no re-plan&quot;]
+
+    AP --&gt; AZURE[(&quot;Azure&quot;)]
+    AD --&gt; AZURE
+
+</pre>
+<p>Key properties (the reasons are under <a href="#p1-key-decisions">Key decisions</a>):</p>
+<ul>
+<li><strong>Plan and apply are decoupled.</strong> <code>apply-dev</code>/<code>apply-prod</code> never run
+  <code>terraform plan</code> themselves — they download the exact <code>tfplan</code> artifact
+  the corresponding <code>plan-*</code> job already produced and uploaded, so what a
+  human reviewed is <em>bit-for-bit</em> what gets applied.</li>
+<li><strong><code>dev</code> deploys automatically on merge; <code>prod</code> waits for a human.</strong> The
+  only gate on <code>prod</code> is the <code>production</code> GitHub Environment's required
+  reviewer — nothing about <code>prod</code>'s secrets or identity is hidden behind
+  that gate, since a <code>client-id</code> isn't secret material.</li>
+</ul>
+      </div>
+    </section>
+
+    <section id="p1-identity-one-oidc-trust-relationship-per-environment">
+      <div class="decision-block">
+        <h2><span class="num">1.4</span>Identity: one OIDC trust relationship per environment</h2>
+        <pre class="mermaid">
+flowchart LR
+    subgraph gha[&quot;GitHub Actions run&quot;]
+        job[&quot;job step: terraform plan/apply&quot;]
+    end
+    job --&gt;|1: request short-lived JWT| ghoidc[&quot;GitHub OIDC token endpoint&lt;br/&gt;(ACTIONS_ID_TOKEN_REQUEST_*)&quot;]
+    ghoidc --&gt;|2: signed GitHub JWT&lt;br/&gt;sub: repo:owner@id/repo@id:ref:...| entra[&quot;Microsoft Entra ID&lt;br/&gt;federated identity credential&quot;]
+    entra --&gt;|3: subject string match&lt;br/&gt;against the SP&#x27;s federated credential| entra
+    entra --&gt;|4: Azure AD access token&lt;br/&gt;for this SP only| job
+    job --&gt;|5: ARM API calls, scoped by RBAC| azure[(&quot;Azure Resource Manager&quot;)]
+
+    style ghoidc fill:#1f2937,stroke:#60a5fa
+    style entra fill:#1f2937,stroke:#60a5fa
+
+</pre>
+<p>The GitHub-issued JWT is <strong>never</strong> sent to Azure directly — it's exchanged
+for a separate Azure AD token, and that exchange only succeeds if the JWT's
+<code>sub</code> claim matches one of the federated credentials configured on that
+specific App Registration. Two App Registrations
+(<code>sp-terraform-dev</code>/<code>-prod</code>), each with its own federated credential
+subject and its own RBAC scope, means a compromised or misconfigured <code>dev</code>
+pipeline run cannot mint a token that authenticates as <code>prod</code>.</p>
+      </div>
+    </section>
+
+    <section id="p1-key-decisions">
+      <div class="decision-block">
+        <h2><span class="num">1.5</span>Key decisions</h2>
+        <div style="overflow-x:auto"><table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One Terraform root per environment, each with its own state, instead of one root with per-environment conditionals</td>
+<td>A <code>dev</code> change cannot surface in a <code>prod</code> plan, and one state file never spans every environment</td>
+</tr>
+<tr>
+<td>One OIDC identity (App Registration and federated credential) per environment</td>
+<td>A bug or leaked credential in the <code>dev</code> pipeline cannot mint a token that acts as <code>prod</code>; no secret is stored anywhere</td>
+</tr>
+<tr>
+<td><code>apply-*</code> applies the saved plan and never re-plans</td>
+<td>What a human reviewed is exactly what is applied, with no window for state or providers to change in between</td>
+</tr>
+<tr>
+<td>The <code>production</code> GitHub Environment is only an approval gate and holds no secrets</td>
+<td>A client ID is not secret. The real boundary is the federated-credential subject match plus RBAC scope, and hiding the ID behind an Environment would only stop <code>plan-prod</code> from running</td>
+</tr>
+<tr>
+<td>Budgets are scoped to the resource group, not the subscription</td>
+<td>One subscription-scoped budget would be a single resource shared by both environments and would need subscription-wide RBAC. A budget per resource group has no shared resource and works with the RG-scoped Contributor role</td>
+</tr>
+<tr>
+<td>Destructive-change detection flags any <code>delete</code> in a plan</td>
+<td>A resource-type swap appears as a separate delete and create, not a paired replace. The warning is informational and never blocks a merge</td>
+</tr>
+</tbody>
+</table></div>
+      </div>
+    </section>
+
+    <div class="partlabel" id="part2">Part 2 &mdash; Analytics platform</div>
+
+    <section id="glance">
+      <div class="decision-block">
+        <h2><span class="num">2.1</span>At a glance</h2>
+        <pre class="mermaid">
+flowchart TB
+  SRC["Source systems: POS, e-commerce"] -->|"Azure RBAC write"| L["landing-‹system› containers"]
+  L -->|"read-only external location, file events on"| V["ingestion_‹env›.bronze ‹system›_landing volumes"]
+  V -.->|"future: Auto Loader"| B["bronze Delta tables in ingestion_‹env›.bronze"]
+  B --> S1["sales_‹env›.silver"]
+  B --> S2["marketing_‹env›.silver"]
+  S1 --> G1["sales_‹env›.gold"]
+  S2 --> G2["marketing_‹env›.gold"]
+        </pre>
+        <p>One Azure resource group per environment holds a premium Databricks
+        workspace, an access connector, and one ADLS Gen2 account. One Unity
+        Catalog metastore per region is shared by <span class="pill dev">dev</span>
+        and <span class="pill prod">prod</span>.</p>
+      </div>
+    </section>
+
+    <section id="env">
+      <div class="decision-block">
+        <h2><span class="num">2.2</span>Environments &amp; isolation</h2>
+        <div class="cdc dec"><span class="tag">Decision</span>
+          <ul>
+            <li>One Azure subscription. Each environment has its own resource group and its own CI service principal with <code>Contributor</code> scoped to that group only.</li>
+            <li>One metastore (account-level, per region) shared by both environments. Data-layer isolation comes from <b>workspace-bound catalogs</b>, not separate metastores.</li>
+            <li>The metastore has its own resource group and storage, outside both environments, so it outlives any single workspace. Databricks' auto-created access connector in a workspace's managed resource group is unused.</li>
+          </ul>
+        </div>
+        <div class="cdc cons"><span class="tag">Consequences</span><p>Resource-group RBAC is narrower than Azure's recommended subscription-per-environment split (the account tier allows one subscription). Dev and prod share billing, policy scope, and quota. Splitting prod into its own subscription later is a backend key and provider change, not a redesign.</p></div>
+      </div>
+    </section>
+
+    <section id="storage">
+      <div class="decision-block">
+        <h2><span class="num">2.3</span>Storage</h2>
+        <p>One ADLS Gen2 account per environment (hierarchical namespace, private containers, AAD-only auth):</p>
+        <table>
+          <tr><th>Container</th><th>Purpose</th></tr>
+          <tr><td><code>landing-&lt;system&gt;</code></td><td>One per source system (<code>pos</code>, <code>ecommerce</code>); source systems write raw files directly via Azure RBAC</td></tr>
+          <tr><td><code>bronze</code></td><td>Storage for the raw <code>ingestion_&lt;env&gt;.bronze</code> schema (Delta)</td></tr>
+          <tr><td><code>managed-&lt;domain&gt;</code></td><td>Storage root of one catalog: <code>managed-sales</code>, <code>managed-marketing</code>, <code>managed-ingestion</code></td></tr>
+        </table>
+        <p><span class="pill silver">silver</span> and <span class="pill gold">gold</span> have no container; they are managed schemas inside their catalog's root. One container per catalog keeps external-location registrations non-overlapping and limits blast radius.</p>
+        <div class="cdc dec"><span class="tag">Retention</span><p>A blob lifecycle policy (cool at 90 days, archive at 1 year, delete at 5 years) applies to <code>landing-*</code> only. Bronze holds Delta tables, and a blob-age policy cannot see the Delta log, so it would risk corrupting them. Delta-native retention for bronze and silver is pipeline work.</p></div>
+        <div class="cdc dec"><span class="tag">Durability</span><p>In prod the storage account and its containers have <code>prevent_destroy</code>, soft delete for blobs and containers is 14 days (7 elsewhere), and replication is GZRS.</p></div>
+      </div>
+    </section>
+
+    <section id="workspace">
+      <div class="decision-block">
+        <h2><span class="num">2.4</span>Workspace &amp; storage access</h2>
+        <ul>
+          <li>One <b>premium</b> workspace per environment (Unity Catalog requires premium), with default public networking.</li>
+          <li>An access connector (managed identity) holds <code>Storage Blob Data Contributor</code> on the storage account and backs a single storage credential per environment, <code>cred-analytics-&lt;env&gt;</code>. No secrets to rotate.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="uc">
+      <div class="decision-block">
+        <h2><span class="num">2.5</span>Unity Catalog model</h2>
+        <ul>
+          <li><b>Catalogs.</b> One per domain per environment (<code>sales_dev</code>, <code>marketing_dev</code>) plus a non-domain <code>ingestion_&lt;env&gt;</code>. Each has its own storage root registered as an external location.</li>
+          <li><b>Schemas.</b> Domain catalogs have <span class="pill silver">silver</span> and <span class="pill gold">gold</span>. <span class="pill bronze">bronze</span> exists once, in <code>ingestion_&lt;env&gt;</code>: it is source-system-oriented raw data, so a per-domain bronze would duplicate it. A domain reads raw data through an explicit grant and builds silver from it.</li>
+          <li><b>External locations.</b> Bronze (file events off), one per landing container (read-only, file events on), and one per catalog root. All use the shared credential.</li>
+          <li><b>Volumes</b> in <code>ingestion_&lt;env&gt;.bronze</code>: an <code>EXTERNAL</code> <code>&lt;system&gt;_landing</code> volume per source system over its landing location, and one shared <code>MANAGED</code> <code>checkpoints</code> volume (a folder per source system) reserved for Auto Loader state. It is stored in the <code>bronze</code> container, because a schema's storage root overrides its catalog's.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="ingest">
+      <div class="decision-block">
+        <h2><span class="num">2.6</span>Ingestion flow</h2>
+        <pre class="code">source system --(Azure RBAC write)--&gt; landing-&lt;system&gt;
+  --&gt; read-only external location (file events on)
+  --&gt; EXTERNAL volume  ingestion_&lt;env&gt;.bronze.&lt;system&gt;_landing
+  --&gt; [future] Auto Loader, checkpoint in checkpoints/&lt;system&gt;
+  --&gt; bronze Delta tables in ingestion_&lt;env&gt;.bronze
+  --&gt; domain silver --&gt; gold</pre>
+        <p>The volumes exist and are group-owned. The Auto Loader job, its pipeline service principal, and grants on the checkpoint volumes are not built yet.</p>
+      </div>
+    </section>
+
+    <section id="access">
+      <div class="decision-block">
+        <h2><span class="num">2.7</span>Access control</h2>
+        <p>Three independent layers are checked on every request:</p>
+        <table>
+          <tr><th>#</th><th>Layer</th><th>What it decides</th></tr>
+          <tr><td>1</td><td><b>Workspace binding</b> (Unity Catalog)</td><td>Catalogs are <code>ISOLATED</code> and bound to one workspace, so a catalog is hidden and unusable from any other workspace, even with grants. Schemas and volumes inherit the binding. The credential and external locations stay <code>OPEN</code> (optional hardening).</td></tr>
+          <tr><td>2</td><td><b>Grants</b> (<code>databricks_grants</code>)</td><td>Authoritative, one resource per securable.</td></tr>
+          <tr><td>3</td><td><b>Azure RBAC</b></td><td>Whether the access connector's identity can reach the bytes.</td></tr>
+        </table>
+        <p>Binding does not affect access that bypasses Unity Catalog and goes straight to storage; only RBAC does.</p>
+      </div>
+    </section>
+
+    <section id="groups">
+      <div class="decision-block">
+        <h2><span class="num">2.8</span>Groups</h2>
+        <p>Groups come from Entra ID, are registered at the Databricks account level, and are referenced by name. Membership is managed outside Terraform. No group spans environments.</p>
+        <table>
+          <tr><th>Group</th><th>Role</th><th>Access</th></tr>
+          <tr><td><code>grp-&lt;domain&gt;-stakeholders-&lt;env&gt;</code></td><td>Report consumers</td><td><span class="pill gold">gold</span> read</td></tr>
+          <tr><td><code>grp-&lt;domain&gt;-analysts-&lt;env&gt;</code></td><td>Ad hoc analysis</td><td><span class="pill silver">silver</span> <span class="pill gold">gold</span> read</td></tr>
+          <tr><td><code>grp-&lt;domain&gt;-data-engineers-&lt;env&gt;</code></td><td>Build and operate the domain's pipelines</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code>, <code>MODIFY</code> on the catalog; read on raw <code>ingestion_&lt;env&gt;</code> (sales only today); in dev also write on the <code>checkpoints</code> volume and <code>CREATE_TABLE</code> on bronze</td></tr>
+          <tr><td><code>grp-&lt;domain&gt;-data-governance-&lt;env&gt;</code></td><td>Owns the domain catalog and schemas</td><td>Ownership only, kept separate from operators</td></tr>
+          <tr><td><code>grp-databricks-platform-&lt;env&gt;</code></td><td>Owns environment-wide infrastructure</td><td>Owner of the credential, bronze/landing/ingestion locations, <code>ingestion_&lt;env&gt;</code> and its volumes</td></tr>
+          <tr><td><code>grp-databricks-ci-&lt;env&gt;</code></td><td>CI identity plumbing</td><td>Workspace membership and metastore <code>CREATE_*</code>; contains <code>sp-terraform-&lt;env&gt;</code></td></tr>
+          <tr><td><code>grp-databricks-account-admins</code></td><td>Account / metastore administration</td><td>Owner of the metastore</td></tr>
+        </table>
+        <p>Every Unity Catalog object is group-owned, never person-owned or owned by the CI identity. Owner is an administrative role, so operators and owners are separate groups (separation of duties).</p>
+        <p><b>Grant scoping.</b> Privileges inherit downward, so engineers and CI get catalog-level grants, while stakeholders and analysts get only <code>USE_CATALOG</code> on the catalog plus schema-level grants on the layers they may see. Engineers use blanket <code>MODIFY</code> because the metastore's privilege version (1.0) does not support fine-grained DML privileges at catalog level.</p>
+      </div>
+    </section>
+
+    <section id="ci">
+      <div class="decision-block">
+        <h2><span class="num">2.9</span>CI identity</h2>
+        <p><code>sp-terraform-&lt;env&gt;</code> is <b>not</b> a metastore admin. It holds explicit grants on what it must read or create (catalogs, external locations, the credential), because ownership by another group does not cascade. Metastore-level <code>CREATE_*</code> grants are a one-time admin bootstrap that CI plans ignore. Details are in <a href="IMPLEMENTATION.html#ci">Implementation</a>.</p>
+      </div>
+    </section>
+
+    <section id="boundary">
+      <div class="decision-block">
+        <h2><span class="num">2.10</span>Terraform / Databricks Asset Bundles boundary</h2>
+        <p>Three surfaces, one owner each:</p>
+        <ul>
+          <li><b>Unity Catalog grants</b> on catalogs, schemas, tables: Terraform only.</li>
+          <li><b>Shared foundational objects</b> (catalogs, schemas, external locations, landing and checkpoint volumes): Terraform only. Pipelines reference them by name and never redeclare them.</li>
+          <li><b>Workspace object permissions</b> (jobs, pipelines): owned by the bundle that deploys them.</li>
+        </ul>
+        <p>The test: an object is Terraform's if it is shared, foundational, and outlives any one pipeline; it is the bundle's if it is specific to one pipeline.</p>
+      </div>
+    </section>
+
+    <section id="cicd">
+      <div class="decision-block">
+        <h2><span class="num">2.11</span>CI/CD</h2>
+        <p>All resources are in the <code>environments/dev</code> and <code>environments/prod</code> roots and deploy through one pipeline: <code>fmt-check</code> &rarr; <code>plan-dev</code> &rarr; (merge) <code>apply-dev</code> &rarr; <code>plan-prod</code> &rarr; <code>apply-prod</code> behind the <code>production</code> approval gate. <code>apply-*</code> applies the saved plan, so a stale-plan failure is fixed by re-running the whole workflow. <code>environments/shared</code> (the account-level metastore) is applied by hand and has no CI. A separate manual workflow, <code>drift-detection</code>, plans <code>main</code> and reports any difference between the code and what is deployed; it never applies.</p>
+      </div>
+    </section>
+
+    <section id="secrets">
+      <div class="decision-block">
+        <h2><span class="num">2.12</span>Secrets &amp; networking</h2>
+        <ul>
+          <li><b>Secrets.</b> Everything is identity-based (OIDC for CI, managed identity for storage, Entra ID for users), so there are no standing secrets. If one becomes unavoidable, it goes in a Key-Vault-backed secret scope to keep one permission system.</li>
+          <li><b>Networking.</b> Deferred: no private endpoints, VNet injection, or NSGs. The workspace and storage account use Azure's public defaults.</li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="footer">
+      <span>&larr; <a href="PRD.html">Business Requirements</a></span>
+      <span>Part 2 of 3</span>
+      <span><a href="IMPLEMENTATION.html" id="link-impl-2">Implementation</a> &rarr;</span>
+    </div>
+  </main>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+  const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'default', themeVariables: { fontFamily: 'system-ui, -apple-system, Segoe UI, sans-serif' } });
+  await document.fonts.ready;
+  for (const el of document.querySelectorAll('pre.mermaid')) {
+    await mermaid.run({ nodes: [el] });
+  }
+</script>
+</body>
+</html>

@@ -40,7 +40,7 @@ resource "databricks_storage_credential" "analytics" {
   # each domain's own grp-<domain>-data-governance-<env> -- administers
   # shared infrastructure (this credential, bronze, source-system landing)
   # the same way a domain's governance group administers that domain's own
-  # catalog/schemas. See docs/ARCHITECTURE.md's Groups section.
+  # catalog/schemas. See docs/ARCHITECTURE.html's Groups section.
   owner = local.platform_group_name
 }
 
@@ -296,7 +296,7 @@ resource "databricks_grants" "ingestion_catalog" {
   # databricks_table/databricks_sql_table resource exists anywhere in this
   # repo, so Terraform itself never issues a CREATE TABLE call. Table
   # creation belongs to a future pipeline's own service principal per
-  # docs/ARCHITECTURE.md's Terraform / Databricks Asset Bundles boundary, not
+  # docs/ARCHITECTURE.html's Terraform / Databricks Asset Bundles boundary, not
   # sp-terraform-<env>. CREATE_SCHEMA and CREATE_VOLUME both stay --
   # databricks_schema.bronze and databricks_volume.landing/checkpoints
   # are real Terraform resources here, so CI genuinely issues both kinds of

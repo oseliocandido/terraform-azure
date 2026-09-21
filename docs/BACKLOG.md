@@ -1,7 +1,7 @@
 # Backlog — Retail Sales Analytics Platform
 
 Open work and known gaps only. What is already built is described in
-[ARCHITECTURE.md](ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
+[ARCHITECTURE.html](ARCHITECTURE.html) and [IMPLEMENTATION.html](IMPLEMENTATION.html).
 Items are ordered roughly by how soon they matter.
 
 ## 1. Apply `prod` for the first time
@@ -71,7 +71,7 @@ The PRD acceptance criterion "supports the expected initial data volumes" is
 deferred with this: it can't be checked until compute is sized against a real
 volume figure.
 
-Decide before adding it to ARCHITECTURE.md:
+Decide before adding it to ARCHITECTURE.html:
 
 - Serverless SQL warehouses (fully managed, always Unity Catalog enforced)
   versus provisioned clusters.
@@ -151,7 +151,7 @@ routine.
 
 ## 9. Networking
 
-No private endpoints, VNet injection, or NSGs (PRD §16, ARCHITECTURE.md
+No private endpoints, VNet injection, or NSGs (PRD §16, ARCHITECTURE.html
 "Networking"). The workspace uses Azure's defaults: public workspace URL
 reachable and Secure Cluster Connectivity (no public IPs on nodes) on, both
 matching the live `dev` workspace. Revisit if a compliance or private

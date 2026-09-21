@@ -3,7 +3,7 @@
 # but that forced grp-<domain>-data-governance-<env> to be a workspace
 # member just to satisfy the lookup, even though it never actually
 # operates in this workspace -- it's a pure ownership/governance group
-# (see docs/ARCHITECTURE.md's Groups section), and setting `owner` is
+# (see docs/ARCHITECTURE.html's Groups section), and setting `owner` is
 # just another field in the same API call CI (which IS a real workspace
 # member) is already making. Traded the plan-time diagnostic for not
 # granting workspace access to a group that has no real business holding
@@ -51,7 +51,7 @@ resource "databricks_catalog" "this" {
   # ("marketing_dev") just by calling this module again with a different
   # domain, no change to this file required. Per-domain-per-env is the
   # shape recommended by Databricks' own functional-workspace-organization
-  # guidance -- see docs/ARCHITECTURE.md's Groups section.
+  # guidance -- see docs/ARCHITECTURE.html's Groups section.
   name         = "${var.domain}_${var.environment}"
   metastore_id = var.metastore_id
   comment      = "${var.domain} analytics catalog — ${var.environment}"
@@ -102,7 +102,7 @@ resource "databricks_catalog" "this" {
   # grant itself or anyone else broader access with nobody else in the
   # loop. grp-sales-data-governance-<env> holds ownership instead,
   # keeping "who can touch the data" and "who can change who can touch
-  # the data" as two different groups. See docs/ARCHITECTURE.md's Groups
+  # the data" as two different groups. See docs/ARCHITECTURE.html's Groups
   # model section.
   owner = local.data_governance_group_name
 }
@@ -110,7 +110,7 @@ resource "databricks_catalog" "this" {
 # Without this, dev.* and prod.* are both queryable from either workspace
 # by default (same metastore, same region) -- nothing but Unity Catalog
 # grants would stand between a dev-scoped identity and prod data. See
-# docs/ARCHITECTURE.md's "Access control" section.
+# docs/ARCHITECTURE.html's "Access control" section.
 resource "databricks_workspace_binding" "this" {
   securable_name = databricks_catalog.this.name
   workspace_id   = var.workspace_id
@@ -180,7 +180,7 @@ resource "databricks_grants" "managed_ci" {
 # No storage_root on silver/gold -- Unity Catalog MANAGED schemas:
 # Databricks owns the physical location under the catalog's managed
 # storage root, reachable only through UC-governed reads/writes. Same
-# reasoning as the schemas below -- see docs/ARCHITECTURE.md's Unity Catalog model
+# reasoning as the schemas below -- see docs/ARCHITECTURE.html's Unity Catalog model
 # section.
 resource "databricks_schema" "silver" {
   catalog_name = databricks_catalog.this.name
@@ -213,7 +213,7 @@ moved {
 
 # databricks_grants (plural, authoritative) chosen deliberately over the
 # newer databricks_grant (singular, additive) -- see
-# IMPLEMENTATION.md's modules/unity_catalog section. Terraform should be
+# IMPLEMENTATION.html's modules/unity_catalog section. Terraform should be
 # the single source of truth for who can access what.
 # Not count-gated any more: CI's own grant (last block below) has to exist
 # even when enable_grants is false -- otherwise a catalog whose business
@@ -262,7 +262,7 @@ resource "databricks_grants" "catalog" {
   # databricks_table/databricks_sql_table resource exists anywhere in this
   # repo, so Terraform itself never issues a CREATE TABLE call; actual
   # table creation belongs to a future pipeline's own service principal
-  # per docs/ARCHITECTURE.md's Terraform / Databricks Asset Bundles boundary, not
+  # per docs/ARCHITECTURE.html's Terraform / Databricks Asset Bundles boundary, not
   # sp-terraform-<env>. Looks like it was copied from the data-engineers
   # group's grant above (which legitimately needs it -- humans/pipelines
   # do create tables) without its own justification. CREATE_SCHEMA stays:
