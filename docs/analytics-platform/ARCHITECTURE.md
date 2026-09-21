@@ -73,7 +73,7 @@ delete at 5 years) applies to `landing-*` only. Bronze holds Delta tables and
 a blob-age policy has no awareness of the Delta log, so it is excluded;
 Delta-native retention for bronze/silver is pipeline work (BACKLOG).
 
-**Durability.** The storage account and its containers have `prevent_destroy`, and soft delete for blobs and containers is 14 days in prod (7 elsewhere). Prod uses GZRS replication.
+**Durability.** In prod, the storage account and its containers have `prevent_destroy`, and soft delete for blobs and containers is 14 days in prod (7 elsewhere). Prod uses GZRS replication.
 
 ## Databricks workspace and storage access
 

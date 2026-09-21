@@ -3,13 +3,13 @@
 ## Retail Sales Analytics Platform
 
 **Document version:** 1.0
-**Status:** Proposed
+**Status:** In progress — Development implemented; Production not yet applied
 **Owner:** Data Engineering
 **Primary consumer:** Sales
 
-> This is the business-requirements document for a future, larger
-> initiative — it does not describe infrastructure already built in this
-> repo. For the architecture decisions this PRD requires, see
+> This is the business-requirements document for the platform built in this
+> repo. Development is implemented; Production is not yet applied. For the
+> architecture decisions this PRD requires, see
 > [ARCHITECTURE.md](ARCHITECTURE.md); for the concrete Terraform/CI-CD
 > implementation spec, see [IMPLEMENTATION.md](IMPLEMENTATION.md). This
 > document intentionally contains **no** Terraform, Azure resource, or
@@ -212,7 +212,14 @@ Requires a platform that can:
 # 7. Business Data Requirements
 
 The analytical platform's initial scope is the **Sales** domain: sales
-transactions from the point-of-sale system and the e-commerce platform.
+transactions from the point-of-sale system and the e-commerce platform. A
+**Marketing** domain has since been added on the same platform, following the
+same access model, so more than one business domain can share the platform
+without sharing each other's data.
+
+Raw data from each source system is kept once, in one place, and each domain
+builds its own refined and business-ready datasets from it, rather than each
+domain keeping its own copy of the raw data.
 
 The platform should allow sales data to be represented independently from
 the structure of either source system — analytical datasets should be
@@ -291,6 +298,9 @@ Requirements include:
 * Workloads should use dedicated identities.
 * Access should follow least-privilege principles.
 * Production access should be more restricted than Development access.
+  Production data is intended to be written by dedicated automated
+  identities rather than people; those identities are not yet in place (see
+  [BACKLOG.md](BACKLOG.md)).
 * Credentials should not be embedded in source code.
 * Secrets that cannot be eliminated through identity-based authentication
   should be securely managed.
@@ -329,6 +339,13 @@ without creating unnecessary coupling between environments.
 
 The platform should provide durable analytical storage and infrastructure
 that can be recreated from source-controlled definitions.
+
+Production data must be protected against accidental loss:
+
+* Deleted data must remain recoverable for at least 14 days in Production
+  (a shorter period is acceptable in Development).
+* An ordinary infrastructure change must not be able to destroy Production
+  storage; destroying it requires a deliberate, reviewed change.
 
 The underlying infrastructure should not depend on manually configured
 resources that cannot be reproduced. This does not prohibit a small
@@ -405,8 +422,8 @@ implementation work, not part of this infrastructure project.
 
 ### Additional Business Domains
 
-Inventory, product, customer, and supplier data are explicitly out of
-scope for this phase. If a future phase extends the platform to these
+Beyond Sales and Marketing, inventory, product, customer, and supplier data
+are explicitly out of scope for this phase. If a future phase extends the platform to these
 domains, that extension gets its own PRD/architecture review rather than
 being retrofitted into this one.
 
@@ -445,7 +462,9 @@ The project will be considered successful when:
   platform.
 * The platform enforces the five-year retention requirement at the
   infrastructure level.
-* The infrastructure can support the expected initial data volumes.
+* Capacity for the expected data volumes is validated once compute is sized;
+  this is deferred (see [§3](#3-goals) and [BACKLOG.md](BACKLOG.md)).
+* Production storage is protected against accidental deletion (§13).
 
 ## Engineering
 
@@ -453,6 +472,8 @@ The project will be considered successful when:
 * Reusable infrastructure components are separated from
   environment-specific configuration.
 * Infrastructure changes are validated through automation.
+* Differences between the source-controlled definitions and the deployed
+  infrastructure can be detected on demand, without changing anything.
 * Production deployment requires appropriate approval.
 * Resources can be identified by environment, workload, ownership, and
   cost-related metadata.
@@ -471,6 +492,7 @@ The project will be considered successful when:
 | Independent DEV and PROD infrastructure lifecycle              |   100% |
 | Infrastructure changes traceable through version control      |   100% |
 | Required analytical infrastructure reproducible from code     |   100% |
+| Environments with an on-demand drift check                    |   100% |
 
 Data-pipeline metrics (pipeline success rate, data-quality coverage, data
 freshness) are outside the scope of this infrastructure project.
