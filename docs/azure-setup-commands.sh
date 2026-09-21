@@ -191,7 +191,7 @@ git remote add origin https://github.com/oseliocandido/terraform-azure.git
 # ---------------------------------------------------------------------------
 # 8. sp-databricks-account-admin: dedicated identity for Databricks
 #    account-level Terraform (metastore, metastore assignment) -- see
-#    docs/analytics-platform/ARCHITECTURE.md "Metastore's own Azure
+#    docs/ARCHITECTURE.md "Metastore's own Azure
 #    resources" and IMPLEMENTATION.md's Bootstrap section. Same
 #    OIDC-federated-credential pattern as sp-terraform-dev/prod above -- no
 #    client secret, ever. No Azure RBAC role assignment: this SP never

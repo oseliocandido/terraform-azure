@@ -9,9 +9,8 @@
 # subscription_id here MUST match whatever identity CI authenticates as
 # (see .github/workflows/terraform.yml's ARM_SUBSCRIPTION_ID) -- dev and
 # prod currently share one subscription, isolated by resource-group-scoped
-# RBAC rather than a subscription boundary (see docs/analytics-platform/
-# ARCHITECTURE.md's "Environment isolation: resource group vs. subscription
-# boundary").
+# RBAC rather than a subscription boundary (see docs/ARCHITECTURE.md's
+# "Environments and isolation" section).
 #
 # azure_tenant_id and databricks_account_id are account-wide constants too
 # (one Databricks account, one metastore per region, shared by every
@@ -31,7 +30,7 @@ azure_tenant_id       = "b49702e3-2804-4841-be78-537ce48521dc"
 databricks_account_id = "6ff6cf67-7a67-49fe-8fa5-9c86897f4493"
 
 # One metastore, shared by every environment's workspace in this region
-# (see environments/shared/ and docs/analytics-platform/ARCHITECTURE.md's
+# (see environments/shared/ and docs/ARCHITECTURE.md's
 # metastore/catalog/schema strategy) -- not environment-specific, so it
 # lives here, not in any one environments/<env>/terraform.tfvars. Re-copy
 # from `terraform output metastore_id` (run from environments/shared) if
