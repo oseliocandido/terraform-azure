@@ -55,17 +55,11 @@ out of scope for this repo (PRD §16) and belongs in a Databricks Asset Bundle.
 - **Pipeline service principal:** a dedicated SP, different from
   `sp-terraform-*`, scoped to the workspace rather than Azure RBAC. Bootstrap
   it with the same one-time `az` CLI pattern as the Terraform SPs.
-- **Replace `bronze_consumer_can_write` with pipeline service principals.**
-  Today the storage module's `bronze_consumer_can_write` flag (true in dev,
-  false in prod) gives the human group `grp-sales-data-engineers-dev`
-  `READ VOLUME`/`WRITE VOLUME` on the `checkpoints` volume and `CREATE_TABLE`
-  on the `bronze` schema, so engineers can run Auto Loader by hand in dev. This
-  is a stopgap and is ignored for now. In prod the pipelines will run as
-  service principals, so before the first production ingestion:
-  - grant those SPs `READ VOLUME` on `<system>_landing`, `READ VOLUME` +
-    `WRITE VOLUME` on `checkpoints`, and `CREATE_TABLE` on `bronze`;
-  - replace the boolean with a grant for the SPs (a new variable or module
-    input), and drop the human write access in dev.
+- **Service principals for dev and prod pipelines (to do later).** The dev
+  and prod grants that belong to the pipeline service principals are left for
+  later. For now `bronze_consumer_can_write` (true in dev, false in prod) lets
+  `grp-sales-data-engineers-dev` write to the `checkpoints` volume and create
+  tables in `bronze`, and that stays as is.
 - **Bronze read access for a second domain:** `bronze_consumer_group_name`
   covers only `grp-sales-data-engineers-<env>`. Add a grant for another
   domain's engineers when it has a real need for raw data.
