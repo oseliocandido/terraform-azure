@@ -69,6 +69,9 @@ No compute resource (cluster, SQL warehouse, or serverless) or workspace-level
 ACL is specified. Unity Catalog grants and compute permissions are separate: a
 user with `SELECT` still needs `CAN_ATTACH_TO` on some compute in the
 workspace. A capacity study is also missing (PRD §3 states no volume target).
+The PRD acceptance criterion "supports the expected initial data volumes" is
+deferred with this: it can't be checked until compute is sized against a real
+volume figure.
 
 Decide before adding it to ARCHITECTURE.md:
 
@@ -107,6 +110,23 @@ lifecycle handling once real volumes exist.
   is applied by hand by a metastore admin and ignored by CI (drift is not
   reported). Running it from a job with an admin identity would remove that
   manual step.
+- **Prod access narrower than dev (PRD §11).** Grants are identical in dev
+  and prod today (engineers get `MODIFY` on the catalog in both). The plan is
+  to keep them the same and have automated service principals do the writes in
+  prod, so no human group needs write access there. Revisit once those
+  pipeline SPs exist.
+- **Enable scheduled drift detection.** `.github/workflows/drift-detection.yml`
+  runs a plan against `main` and fails on any diff, but it is manual-only.
+  Uncomment its `schedule` to run it weekly. It cannot see drift in resources
+  with `ignore_changes` (the metastore grant), and its prod job is only
+  meaningful after prod's first apply.
+- **Cost visibility (PRD §12).** Tags and per-resource-group budgets exist, but
+  budgets only notify. Check whether the metastore's own resource group has a
+  budget, and tag compute for DBU cost once compute exists.
+- **Lint and security scanning.** CI runs `fmt`, `validate`, and `plan` only.
+  Add `tflint` and a scanner such as `checkov` or `trivy config`.
+- **Blob versioning.** Prod has 14-day soft delete on blobs and containers and
+  `prevent_destroy` on storage, but not blob versioning.
 - **Fine-grained DML privileges.** Engineers get blanket `MODIFY` because the
   metastore's privilege version (1.0) rejects `INSERT`/`UPDATE`/`DELETE` at
   catalog level. Revisit if the privilege version is upgraded; it would allow

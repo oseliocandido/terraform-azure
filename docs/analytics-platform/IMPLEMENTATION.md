@@ -83,6 +83,12 @@ Outputs: `resource_group_id`, `resource_group_name`, `storage_account_id`,
 (map source system → container), `managed_container_name` (sales),
 `additional_managed_container_names` (map domain → container).
 
+Storage durability: the account and every container have
+`prevent_destroy = true`. It must be a literal, so it applies to dev as well as
+prod; to deliberately destroy or replace one, remove it in a reviewed change
+first. Soft delete for blobs and containers is 14 days in prod and 7 elsewhere,
+and prod uses GZRS replication.
+
 Adding a source system is one entry in `landing_source_systems`; the container,
 retention prefix, external location, and volumes all follow from it.
 
@@ -463,7 +469,8 @@ is **not** a metastore admin. The modules are shaped by that:
   stale". Re-run the whole workflow (plan then apply), not only the failed job.
 
 The existing `plan-*`/`apply-*` jobs pick up these resources with no workflow
-changes. `environments/shared` has no CI job; if added, it should be gated like
+changes. `drift-detection.yml` is a separate, manual-only workflow that plans
+`main` and fails on any diff; it never applies. `environments/shared` has no CI job; if added, it should be gated like
 `prod`, since a mistake affects every environment's metastore.
 
 ## Naming

@@ -1,0 +1,104 @@
+name: Drift detection
+
+# Manual trigger only for now. To run it on a schedule, uncomment `schedule`.
+# It runs a plain `terraform plan` against main: since main is what was last
+# applied, any diff means something changed outside Terraform (or a PR was
+# merged but not applied). It never applies anything.
+#
+# Blind spot: resources with `ignore_changes` (e.g. the metastore grant in
+# databricks_grants.metastore_admins) are not reported.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to check
+        type: choice
+        options: [dev, prod, both]
+        default: dev
+  # schedule:
+  #   - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.15.8"
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  drift-dev:
+    if: inputs.environment == 'dev' || inputs.environment == 'both'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: environments/dev
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      DATABRICKS_AUTH_TYPE: github-oidc
+      DATABRICKS_HOST: https://adb-7405615984891164.4.azuredatabricks.net/
+      DATABRICKS_CLIENT_ID: 5e93b219-9bc5-4a7b-8956-40d6c3648c1d # sp-terraform-dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init -input=false
+
+      - name: Plan and fail on drift
+        run: |
+          code=0
+          terraform plan -no-color -input=false -detailed-exitcode \
+            -var-file=../common.tfvars -var-file=terraform.tfvars -lock-timeout=5m || code=$?
+          if [ "$code" -eq 2 ]; then
+            echo "### :warning: Drift detected in dev" >> "$GITHUB_STEP_SUMMARY"
+            echo "The plan above is not empty. Review it before the next apply." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          exit "$code"
+
+  # Prod has never been applied, so until it is this reports the whole
+  # configuration as a diff. Its Databricks provider also needs the prod
+  # workspace, so this job only becomes meaningful after the first prod apply.
+  drift-prod:
+    if: inputs.environment == 'prod' || inputs.environment == 'both'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: environments/prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - run: terraform init -input=false
+
+      - name: Plan and fail on drift
+        run: |
+          code=0
+          terraform plan -no-color -input=false -detailed-exitcode \
+            -var-file=../common.tfvars -var-file=terraform.tfvars -lock-timeout=5m || code=$?
+          if [ "$code" -eq 2 ]; then
+            echo "### :warning: Drift detected in prod" >> "$GITHUB_STEP_SUMMARY"
+            echo "The plan above is not empty. Review it before the next apply." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          exit "$code"
