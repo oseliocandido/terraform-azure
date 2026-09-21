@@ -55,10 +55,11 @@ out of scope for this repo (PRD §16) and belongs in a Databricks Asset Bundle.
 - **Pipeline service principal:** a dedicated SP, different from
   `sp-terraform-*`, scoped to the workspace rather than Azure RBAC. Bootstrap
   it with the same one-time `az` CLI pattern as the Terraform SPs.
-- **Checkpoint volume grants:** dev engineers hold `READ VOLUME`/`WRITE VOLUME`
-  on `checkpoints` and `CREATE_TABLE` on the bronze schema, for hand-run
-  experiments only (`bronze_consumer_can_write`). Prod has none. Once the SP
-  exists, grant it those privileges and drop the human write access in dev.
+- **Service principals for dev and prod pipelines (to do later).** The dev
+  and prod grants that belong to the pipeline service principals are left for
+  later. For now `bronze_consumer_can_write` (true in dev, false in prod) lets
+  `grp-sales-data-engineers-dev` write to the `checkpoints` volume and create
+  tables in `bronze`, and that stays as is.
 - **Bronze read access for a second domain:** `bronze_consumer_group_name`
   covers only `grp-sales-data-engineers-<env>`. Add a grant for another
   domain's engineers when it has a real need for raw data.
