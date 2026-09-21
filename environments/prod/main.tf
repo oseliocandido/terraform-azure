@@ -205,7 +205,7 @@ module "unity_catalog_marketing" {
   depends_on = [databricks_grants.metastore_admins, module.platform_storage]
 }
 
-# pos_landing / ecommerce_landing volumes, their grants, and the two
+# pos_landing / ecommerce_landing volumes, their grants, and the
 # checkpoint volumes all moved into module.platform_storage -- see that
 # module's own "Ingestion catalog" section, and environments/dev/main.tf's
 # identical comment (no moved blocks needed here, unlike dev's copy: prod

@@ -14,27 +14,50 @@ specific decisions, see the ADRs in `docs/adr/`.
 
 ## What this deploys
 
-Two modules, reused across every environment:
+Five modules, reused across every environment. The first two are core Azure
+infrastructure; the three under `modules/databricks/` implement the Databricks
+Unity Catalog analytics platform (spec: [docs/analytics-platform/](docs/analytics-platform/)).
 
 - **`modules/analytics`** — a resource group + an ADLS Gen2 storage
-  account (naming derived from `workload`/`environment`/`location`/`instance`)
+  account (naming derived from `workload`/`environment`/`location`/`instance`),
+  with containers: `bronze`, one `landing-<system>` per source system
+  (`pos`, `ecommerce`), and one `managed-<domain>` per Unity Catalog catalog.
+  A lifecycle policy tiers/deletes landing files only (5-year retention).
 - **`modules/budget_alert`** — a resource-group-scoped consumption budget
   with 20%/40% threshold notifications
+- **`modules/databricks/workspaces`** — Databricks workspace (premium),
+  access connector with Storage Blob Data Contributor, metastore assignment
+- **`modules/databricks/storage`** — called once per environment: storage
+  credential, bronze + per-source-system landing external locations, and the
+  non-domain `ingestion_<env>` catalog (the single raw `bronze` schema,
+  `<system>_landing` external volumes, one shared Auto Loader `checkpoints` volume)
+- **`modules/databricks/unity_catalog`** — called once per business domain
+  (`sales`, `marketing`): a `<domain>_<env>` catalog with `silver`/`gold`
+  schemas, its own managed external location, and grants
+
+Data flow: source systems write to `landing-<system>` → read-only external
+location → `ingestion_<env>.bronze` (raw, one place) → each domain's `silver`
+→ `gold`. Catalogs are workspace-bound (`ISOLATED`) so `dev` and `prod` can't
+see each other's data even though they share one metastore.
 
 ```mermaid
 flowchart TB
     subgraph modules["modules/ (shared, reusable, no state of its own)"]
-        AG["analytics_group\nRG + ADLS Gen2 storage account"]
-        BA["budget_alert\nconsumption budget, scoped to that RG"]
+        AG["analytics\nRG + ADLS Gen2 + containers"]
+        BA["budget_alert\nRG-scoped budget"]
+        subgraph dbx["modules/databricks/"]
+            WS["workspaces\nworkspace + access connector"]
+            ST["storage\ncredential, external locations,\ningestion catalog"]
+            UC["unity_catalog\nper-domain catalog + silver/gold"]
+        end
     end
 
-    subgraph dev["environments/dev"]
-        DM["main.tf"] --> AG
-        DM --> BA
-    end
-    subgraph prod["environments/prod"]
-        PM["main.tf"] --> AG
-        PM --> BA
+    subgraph env["environments/dev and environments/prod"]
+        M["main.tf"] --> AG
+        M --> BA
+        M --> WS
+        M --> ST
+        M -->|"once per domain"| UC
     end
 ```
 
@@ -42,8 +65,9 @@ flowchart TB
 
 | Environment | Purpose | Lifecycle | CI identity | RBAC scope |
 |---|---|---|---|---|
-| `dev` | Real, Unity-Catalog-facing dev data platform | Long-lived | `sp-terraform-dev` | Contributor on its own resource group only |
-| `prod` | Real, Unity-Catalog-facing prod data platform | Long-lived | `sp-terraform-prod` | Contributor on its own resource group only |
+| `dev` | Real, Unity-Catalog-facing dev data platform | Long-lived, applied | `sp-terraform-dev` | Contributor on its own resource group only |
+| `prod` | Real, Unity-Catalog-facing prod data platform | Long-lived, coded but **not yet applied** (first apply is an admin bootstrap) | `sp-terraform-prod` | Contributor on its own resource group only |
+| `shared` | Account-level Databricks resources (the one metastore); applied by hand | Long-lived | a human/account admin (no CI yet) | Databricks account admin |
 
 Each environment is a separate Terraform root module — its own state key in
 the shared remote backend (`sttfstateanalyticsneu01` / container `tfstate`),
@@ -71,6 +95,13 @@ terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars
   required-reviewer gate; once approved, it applies the exact `plan-prod`
   artifact.
 
+The CI service principals are **not** Databricks metastore admins, so a few
+things are deliberately admin-only and ignored by CI plans (notably the
+metastore-level `CREATE_*` grants, via `lifecycle { ignore_changes = [grant] }`).
+Because `apply-*` applies a frozen plan, a "Saved plan is stale" failure means
+re-running the whole workflow, not one job. Details:
+[IMPLEMENTATION.md](docs/analytics-platform/IMPLEMENTATION.md#ci-permission-model).
+
 Identity is OIDC-based throughout — Terraform's `azurerm` provider fetches
 its own short-lived Azure AD token directly (via GitHub's auto-injected
 OIDC token endpoint, exchanged through an Entra federated identity
@@ -87,14 +118,20 @@ for why each of these pieces is built the way it is.
 ```text
 code-test/
 ├── modules/
-│   ├── analytics/                # RG + ADLS Gen2 storage account
-│   └── budget_alert/             # RG-scoped consumption budget
+│   ├── analytics/                # RG + ADLS Gen2 storage account + containers
+│   ├── budget_alert/             # RG-scoped consumption budget
+│   └── databricks/
+│       ├── workspaces/           # workspace, access connector, metastore assignment
+│       ├── storage/              # per env: credential, external locations, ingestion catalog
+│       └── unity_catalog/        # per domain: catalog, silver/gold, grants
 ├── environments/                 # real, long-lived, Unity-Catalog-facing
 │   ├── common.tfvars             # shared, environment-independent values
 │   ├── dev/                      # root module -- own state, own tfvars
-│   └── prod/                     # root module -- own state, own tfvars
+│   ├── prod/                     # root module -- own state, own tfvars
+│   └── shared/                   # account-level metastore, applied by hand
 ├── docs/
 │   ├── ARCHITECTURE.md           # diagrams: modules, Azure topology, CI/CD flow, OIDC
+│   ├── analytics-platform/       # PRD, ARCHITECTURE, IMPLEMENTATION, BACKLOG for the Databricks platform
 │   ├── azure-setup-commands.sh   # record of the one-time Azure bootstrap
 │   └── adr/                      # architecture decision records
 │       └── 0002-pipeline-and-identity-architecture.md
@@ -110,6 +147,12 @@ code-test/
   boundary — see `docs/analytics-platform/ARCHITECTURE.md`'s "Environment
   isolation: resource group vs. subscription boundary" for the tradeoff
   this implies.
+- Entra ID groups (`grp-<domain>-*-<env>`, `grp-databricks-*`) and their sync
+  to the Databricks account are managed outside Terraform. `marketing`'s
+  business-group grants stay off (`enable_grants = false`) until those groups
+  are registered; the Auto Loader ingestion job and its pipeline service
+  principal are not built yet (see
+  [BACKLOG.md](docs/analytics-platform/BACKLOG.md)).
 - App registrations / service principals were created via one-time `az` CLI
   commands (recorded in `docs/azure-setup-commands.sh`), not via Terraform —
   this avoids a bootstrap circularity (the identity a pipeline authenticates
