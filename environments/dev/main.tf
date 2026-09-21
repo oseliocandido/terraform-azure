@@ -211,6 +211,17 @@ resource "databricks_grants" "metastore_admins" {
   # the very first read this provider tried to make, so ordering this
   # first removes any doubt.
   depends_on = [databricks_permission_assignment.ci_group, databricks_entitlements.ci_group]
+
+  # CI (sp-terraform-<env>) is not a metastore admin, so it cannot update
+  # metastore grants, and as a non-admin it only sees the grants involving
+  # its own group when it reads them back -- so every CI plan computed a
+  # phantom "add the other environment's group" diff, and apply then failed
+  # with "User is not a metastore admin". This grant is a one-time admin
+  # bootstrap: change it locally as an account/metastore admin.
+  # ignore_changes keeps CI plans clean; creation still sets the grants.
+  lifecycle {
+    ignore_changes = [grant]
+  }
 }
 
 # Environment-scoped, called once (not once per domain) -- storage
