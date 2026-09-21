@@ -120,6 +120,13 @@ resource "databricks_grants" "metastore_admins" {
   }
 
   depends_on = [databricks_permission_assignment.ci_group, databricks_entitlements.ci_group]
+
+  # See environments/dev/main.tf's identical block: CI is not a metastore
+  # admin, so this grant is a one-time admin bootstrap (apply locally as an
+  # admin, including the very first prod apply) and CI plans ignore drift.
+  lifecycle {
+    ignore_changes = [grant]
+  }
 }
 
 # See environments/dev/main.tf's identical block for the full reasoning
