@@ -347,10 +347,16 @@ resource "databricks_grants" "bronze_schema" {
 resource "databricks_volume" "landing" {
   for_each = var.landing_storage_roots
 
-  name             = "${each.key}_landing"
-  catalog_name     = databricks_catalog.ingestion.name
-  schema_name      = databricks_schema.bronze.name
-  volume_type      = "EXTERNAL"
+  name         = "${each.key}_landing"
+  catalog_name = databricks_catalog.ingestion.name
+  schema_name  = databricks_schema.bronze.name
+  volume_type  = "EXTERNAL"
+
+  # Explicit group owner, same as the catalog/schema/external locations in this
+  # file -- otherwise the owner is whichever identity created the volume
+  # (a person's account or CI), which is fragile and left nobody else able to
+  # read the files. Existing volumes are updated in place.
+  owner            = local.platform_group_name
   storage_location = databricks_external_location.landing[each.key].url
   comment          = "Ingestion landing zone for ${each.key} source files -- see docs/analytics-platform/BACKLOG.md#bronze-ingestion-file-driven-triggering-auto-loader--file-events for the future consumer."
 }
@@ -416,6 +422,7 @@ resource "databricks_volume" "landing_checkpoint" {
   catalog_name = databricks_catalog.ingestion.name
   schema_name  = databricks_schema.bronze.name
   volume_type  = "MANAGED"
+  owner        = local.platform_group_name # see databricks_volume.landing
   comment      = "Auto Loader checkpoint/schema-evolution state for ${each.key}_landing -- separate from that volume itself, see this resource's own comment."
 }
 
