@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 · Azure Databricks — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="12">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate</span>
+    <span>Part 11</span><span>·</span><span>~90 min</span><span>·</span><span>Requires Lessons 08, 09, 11</span>
+  </div>
+  <h1>Azure Databricks</h1>
+  <p class="lede">
+    Databricks is the clearest example in this course of a boundary you must understand: <code>azurerm</code>
+    provisions the workspace, and the <code>databricks</code> provider configures everything inside it. Getting
+    that split wrong produces a two-provider chicken-and-egg problem that people fight for days.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain the control plane / compute plane split and what the managed resource group is</li>
+      <li>Provision a VNet-injected workspace with secure cluster connectivity</li>
+      <li>Say precisely which resources belong to <code>azurerm</code> and which to <code>databricks</code></li>
+      <li>Wire Unity Catalog to ADLS Gen2 with an access connector and no secrets</li>
+      <li>Handle the two-provider bootstrapping problem</li>
+      <li>Decide what Terraform should manage inside a workspace, and what it should not</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">VNet injection</span><span class="pill">Unity Catalog</span><span class="pill">Two providers</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="architecture">The architecture you are provisioning</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph CP["Control plane — Databricks' own Azure subscription"]
+        UI["Web application / REST API"]
+        JOBS["Job scheduler"]
+        META["Cluster manager<br/>notebooks, query history"]
+    end
+
+    subgraph YOURS["Your Azure subscription"]
+        subgraph MRG["Managed resource group — Databricks-created, DO NOT EDIT"]
+            VMS["Cluster VMs"]
+            NSGM["Managed NSG"]
+            DBFS[("DBFS root<br/>storage account")]
+            ACC["Managed access connector"]
+        end
+
+        subgraph YOURVNET["Your VNet — VNet injection"]
+            HOST["snet-databricks-host"]
+            CONT["snet-databricks-container"]
+        end
+
+        LAKE[("ADLS Gen2<br/>your data")]
+        KV["Key Vault"]
+    end
+
+    UI -->|"provisions and controls"| VMS
+    VMS --- HOST
+    VMS --- CONT
+    VMS -->|"managed identity via<br/>access connector"| LAKE
+    VMS --> KV
+
+    style CP fill:#efedfd,stroke:#5c4ee5
+    style MRG fill:#fdf3e0,stroke:#a5670a
+    style LAKE fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>
+    Your data and your compute stay in your subscription. The control plane runs in Databricks' subscription
+    and orchestrates them.
+  </figcaption>
+</figure>
+
+<div class="callout callout-important">
+  <div class="callout-title">The managed resource group is not yours to manage</div>
+  <p style="margin-bottom:0">
+    Databricks creates a second resource group in your subscription holding cluster VMs, disks, a managed NSG
+    and the DBFS root storage account. You can see it and you are billed for it, but you must not modify it —
+    Databricks owns its contents and will fight you. In Terraform, never write resources into it and never
+    import anything from it. The only thing you control is its <em>name</em>, via
+    <code>managed_resource_group_name</code>.
+  </p>
+</div>
+
+<h2 id="provider-boundary">Which provider owns what</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    subgraph A["hashicorp/azurerm<br/><i>ARM control plane</i>"]
+        A1["azurerm_databricks_workspace"]
+        A2["azurerm_databricks_access_connector"]
+        A3["azurerm_virtual_network / subnet"]
+        A4["azurerm_role_assignment"]
+        A5["azurerm_storage_account"]
+        A6["azurerm_private_endpoint"]
+    end
+
+    subgraph B["databricks/databricks<br/><i>workspace + account APIs</i>"]
+        B1["databricks_cluster / cluster_policy"]
+        B2["databricks_job / pipeline"]
+        B3["databricks_secret_scope"]
+        B4["databricks_metastore / catalog / schema"]
+        B5["databricks_storage_credential"]
+        B6["databricks_external_location"]
+        B7["databricks_grant / permissions"]
+        B8["databricks_sql_warehouse"]
+        B9["databricks_group / user / service_principal"]
+    end
+
+    A1 -->|"workspace URL + ID<br/>configures the second provider"| B
+
+    style A fill:#e6f2fb,stroke:#0078d4
+    style B fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>
+    The rule: if it has an ARM resource ID, it is <code>azurerm</code>. If it lives behind the workspace's own
+    API, it is <code>databricks</code>.
+  </figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>You want to…</th><th>Provider</th><th>Resource</th></tr></thead>
+  <tbody>
+    <tr><td>Create the workspace</td><td><code>azurerm</code></td><td><code>azurerm_databricks_workspace</code></td></tr>
+    <tr><td>Give it identity-based storage access</td><td><code>azurerm</code></td><td><code>azurerm_databricks_access_connector</code> + <code>azurerm_role_assignment</code></td></tr>
+    <tr><td>Put it in your VNet</td><td><code>azurerm</code></td><td><code>custom_parameters</code> on the workspace</td></tr>
+    <tr><td>Create a Unity Catalog catalog or schema</td><td><code>databricks</code></td><td><code>databricks_catalog</code>, <code>databricks_schema</code></td></tr>
+    <tr><td>Register the lake as an external location</td><td><code>databricks</code></td><td><code>databricks_storage_credential</code> + <code>databricks_external_location</code></td></tr>
+    <tr><td>Define a cluster policy</td><td><code>databricks</code></td><td><code>databricks_cluster_policy</code></td></tr>
+    <tr><td>Create a job</td><td><code>databricks</code></td><td><code>databricks_job</code></td></tr>
+    <tr><td>Grant a group SELECT on a schema</td><td><code>databricks</code></td><td><code>databricks_grants</code></td></tr>
+    <tr><td>Create a Key Vault-backed secret scope</td><td><code>databricks</code></td><td><code>databricks_secret_scope</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="workspace">Provisioning the workspace</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">databricks-workspace.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_databricks_workspace" "this" {
+  name                = "dbw-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  # premium is required for cluster ACLs, table ACLs, Unity Catalog,
+  # IP access lists and private link. Use it for anything real.
+  sku = "premium"
+
+  # Name the managed resource group deliberately, or Azure generates
+  # something like "databricks-rg-dbw-...-abc123".
+  managed_resource_group_name = "rg-${local.suffix}-databricks-managed"
+
+  # Secure cluster connectivity: no public IPs on cluster nodes.
+  # Required when you disable public network access.
+  public_network_access_enabled         = false
+  network_security_group_rules_required = "NoAzureDatabricksRules"
+
+  custom_parameters {
+    no_public_ip = true
+
+    virtual_network_id = azurerm_virtual_network.main.id
+
+    public_subnet_name  = azurerm_subnet.this["databricks_host"].name
+    private_subnet_name = azurerm_subnet.this["databricks_container"].name
+
+    # These MUST reference the NSG association resources, not the subnets.
+    # It is how Terraform learns the associations exist before the
+    # workspace is created — a real ordering dependency.
+    public_subnet_network_security_group_association_id =
+      azurerm_subnet_network_security_group_association.databricks_host.id
+    private_subnet_network_security_group_association_id =
+      azurerm_subnet_network_security_group_association.databricks_container.id
+  }
+
+  tags = local.common_tags
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">“Public” and “private” subnet names are misleading</div>
+  <p style="margin-bottom:0">
+    With <code>no_public_ip = true</code> — secure cluster connectivity — neither subnet has public IPs.
+    Databricks' terminology comes from its original architecture: the <em>public</em> (host) subnet carries the
+    node's primary NIC, and the <em>private</em> (container) subnet carries the container-side NIC. Both are
+    private. Do not read <code>public_subnet_name</code> as “internet-facing”.
+  </p>
+</div>
+
+<h3 id="private-link">Private link for the workspace</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">databricks-privatelink.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_private_dns_zone" "databricks" {
+  name                = "privatelink.azuredatabricks.net"
+  resource_group_name = azurerm_resource_group.analytics.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "databricks" {
+  name                  = "link-databricks"
+  resource_group_name   = azurerm_resource_group.analytics.name
+  private_dns_zone_name = azurerm_private_dns_zone.databricks.name
+  virtual_network_id    = azurerm_virtual_network.main.id
+}
+
+# Front-end + back-end private link for the workspace UI and REST API.
+resource "azurerm_private_endpoint" "databricks_ui" {
+  name                = "pe-dbw-uiapi-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  subnet_id           = azurerm_subnet.this["privatelink"].id
+
+  private_service_connection {
+    name                           = "psc-dbw-uiapi"
+    private_connection_resource_id = azurerm_databricks_workspace.this.id
+    subresource_names              = ["databricks_ui_api"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "pdz-databricks"
+    private_dns_zone_ids = [azurerm_private_dns_zone.databricks.id]
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Two subresources, one zone</div>
+  <p style="margin-bottom:0">
+    Databricks exposes <code>databricks_ui_api</code> (workspace UI and REST API) and
+    <code>browser_authentication</code> (single sign-on browser flow), both resolving through
+    <code>privatelink.azuredatabricks.net</code>. A full private-link deployment needs both, and the
+    <code>browser_authentication</code> endpoint typically lives in the <em>transit</em> VNet rather than the
+    workspace VNet. This is one of the more involved Azure networking setups — build it incrementally and test
+    after each step.
+  </p>
+</div>
+
+<h2 id="unity-catalog">Unity Catalog and lake access</h2>
+
+<p>
+  The access connector from Lesson 08 is the modern, credential-free way for Databricks to reach ADLS. Here is
+  the whole chain.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    AC["azurerm_databricks_access_connector<br/><i>managed identity</i>"]
+    RA["azurerm_role_assignment<br/>Storage Blob Data Contributor<br/>scoped to a container"]
+    SA[("ADLS Gen2 container<br/>abfss://silver@…")]
+    SC["databricks_storage_credential<br/><i>points at the access connector</i>"]
+    EL["databricks_external_location<br/><i>URL + credential</i>"]
+    CAT["databricks_catalog<br/><i>storage_root = the external location</i>"]
+    SCH["databricks_schema"]
+    GR["databricks_grants<br/><i>who may SELECT</i>"]
+
+    AC --> RA --> SA
+    AC --> SC --> EL --> CAT --> SCH --> GR
+    EL -.->|"points at"| SA
+
+    style AC fill:#e6f2fb,stroke:#0078d4
+    style SC fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>
+    The left branch is <code>azurerm</code> (Azure-side permission); the right branch is
+    <code>databricks</code> (Unity Catalog's view of it). Both are needed.
+  </figcaption>
+</figure>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">unity-catalog.tf</span></div>
+<pre><code class="language-hcl"># ---- Azure side (azurerm) ----
+
+resource "azurerm_databricks_access_connector" "unity" {
+  name                = "dbac-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = local.common_tags
+}
+
+resource "azurerm_role_assignment" "unity_lake" {
+  for_each = {
+    raw    = "Storage Blob Data Reader"
+    bronze = "Storage Blob Data Contributor"
+    silver = "Storage Blob Data Contributor"
+    gold   = "Storage Blob Data Contributor"
+  }
+
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/${each.key}"
+  role_definition_name = each.value
+  principal_id         = azurerm_databricks_access_connector.unity.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+# ---- Databricks side (databricks provider) ----
+
+provider "databricks" {
+  alias                       = "workspace"
+  host                        = azurerm_databricks_workspace.this.workspace_url
+  azure_workspace_resource_id = azurerm_databricks_workspace.this.id
+  # Authentication is inherited from the Azure CLI session or the
+  # ARM_* environment variables — no PAT needed.
+}
+
+resource "databricks_storage_credential" "unity" {
+  provider = databricks.workspace
+
+  name = "sc-${local.suffix}"
+
+  azure_managed_identity {
+    access_connector_id = azurerm_databricks_access_connector.unity.id
+  }
+
+  comment = "Managed identity for the analytics data lake."
+}
+
+resource "databricks_external_location" "layers" {
+  provider = databricks.workspace
+  for_each = toset(["bronze", "silver", "gold"])
+
+  name            = "el-${each.value}"
+  url             = "abfss://${each.value}@${azurerm_storage_account.lake.name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.unity.name
+  comment         = "Medallion layer: ${each.value}"
+
+  depends_on = [azurerm_role_assignment.unity_lake]
+}
+
+resource "databricks_catalog" "analytics" {
+  provider = databricks.workspace
+
+  name         = "analytics_${var.environment}"
+  storage_root = databricks_external_location.layers["silver"].url
+  comment      = "Managed by Terraform."
+
+  properties = {
+    purpose = "analytics platform"
+  }
+}
+
+resource "databricks_grants" "analytics_catalog" {
+  provider = databricks.workspace
+
+  catalog = databricks_catalog.analytics.name
+
+  grant {
+    principal  = "sg-data-engineers"
+    privileges = ["USE_CATALOG", "CREATE_SCHEMA"]
+  }
+
+  grant {
+    principal  = "sg-analysts"
+    privileges = ["USE_CATALOG"]
+  }
+}</code></pre>
+</div>
+
+<h2 id="two-providers">The two-provider bootstrapping problem</h2>
+
+<p>
+  The <code>databricks</code> provider needs the workspace's URL to configure itself — but the workspace does
+  not exist until the apply runs. This is provider configuration depending on a resource attribute, which
+  Terraform handles poorly.
+</p>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the error</span></div>
+<pre><code class="language-bash">Error: Invalid provider configuration
+
+Provider "registry.terraform.io/databricks/databricks" requires explicit
+configuration. The host attribute is unknown during plan because it depends
+on a resource that has not been created.
+
+# or, later in the lifecycle:
+
+Error: cannot delete storage credential: Provider configuration is
+unavailable — the workspace this provider points at no longer exists.</code></pre>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>Option A · Two root modules (recommended)</h4>
+    <p>
+      One configuration creates the Azure infrastructure including the workspace. A second, applied afterwards,
+      configures the workspace contents and reads the workspace URL from a data source or an output.
+    </p>
+    <p style="margin-bottom:0">
+      <strong>Pro:</strong> no unknown provider configuration, ever; clean destroy ordering; the two change at
+      very different rates anyway. <strong>Con:</strong> two applies and two pipelines.
+    </p>
+  </div>
+  <div class="card">
+    <h4>Option B · One configuration, careful ordering</h4>
+    <p>
+      Provider configured from the workspace resource, with <code>depends_on</code> on the Databricks-side
+      resources. Works on a first apply because Terraform defers the provider configuration.
+    </p>
+    <p style="margin-bottom:0">
+      <strong>Pro:</strong> one apply. <strong>Con:</strong> <code>terraform destroy</code> frequently breaks —
+      Terraform may destroy the workspace before the objects inside it, then be unable to configure the provider
+      to delete them.
+    </p>
+  </div>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">option A — the second root module</span></div>
+<pre><code class="language-hcl"># Read the workspace created by the platform configuration.
+data "azurerm_databricks_workspace" "this" {
+  name                = "dbw-${local.suffix}"
+  resource_group_name = "rg-${local.suffix}"
+}
+
+provider "databricks" {
+  host                        = data.azurerm_databricks_workspace.this.workspace_url
+  azure_workspace_resource_id = data.azurerm_databricks_workspace.this.id
+}
+
+# Now every databricks_* resource has a provider configured from a
+# data source — known at plan time, no ordering problem.
+resource "databricks_cluster_policy" "standard" {
+  name = "standard-job-cluster"
+
+  definition = jsonencode({
+    "spark_version" : {
+      "type"  : "regex",
+      "pattern" : "1[5-9]\\..*"
+    },
+    "autotermination_minutes" : {
+      "type"      : "range",
+      "maxValue"  : 60,
+      "defaultValue" : 30
+    },
+    "node_type_id" : {
+      "type"   : "allowlist",
+      "values" : ["Standard_D4ads_v5", "Standard_D8ads_v5"]
+    },
+    "custom_tags.cost_center" : {
+      "type"  : "fixed",
+      "value" : var.cost_center
+    }
+  })
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">This is the general rule, not a Databricks quirk</div>
+  <p style="margin-bottom:0">
+    Any time a provider's configuration depends on a resource created in the same configuration, split it into
+    two applies. The same pattern appears with Kubernetes (cluster then manifests), PostgreSQL (server then
+    databases) and Vault. Terraform's documentation is explicit that provider configuration should not depend on
+    values unknown at plan time.
+  </p>
+</div>
+
+<h2 id="secret-scopes">Key Vault-backed secret scopes</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">secret-scope.tf</span></div>
+<pre><code class="language-hcl">resource "databricks_secret_scope" "kv" {
+  name = "analytics-kv"
+
+  keyvault_metadata {
+    resource_id = azurerm_key_vault.main.id
+    dns_name    = azurerm_key_vault.main.vault_uri
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-ok">
+  <div class="callout-title">Why this is the right kind of secret scope</div>
+  <p style="margin-bottom:0">
+    A Key Vault-backed scope is a <em>pointer</em>: notebooks call
+    <code>dbutils.secrets.get("analytics-kv", "source-api-key")</code> and Databricks resolves it from the vault
+    at read time. Terraform stores only the vault's resource ID and URI — no secret values, consistent with
+    Lesson 09. The alternative, a Databricks-backed scope populated with
+    <code>databricks_secret</code> resources, puts every value in Terraform state. Use the Key Vault form.
+  </p>
+</div>
+
+<h2 id="what-to-manage">What Terraform should and should not manage inside a workspace</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>✓ Good fit for Terraform</h4>
+    <ul style="margin-bottom:0">
+      <li><strong>Cluster policies</strong> — governance rules that change rarely and must be reviewed</li>
+      <li><strong>Unity Catalog structure</strong> — metastore, catalogs, schemas, external locations</li>
+      <li><strong>Grants and permissions</strong> — access control belongs in code</li>
+      <li><strong>SQL warehouses</strong> — long-lived, sized deliberately</li>
+      <li><strong>Groups and service principals</strong> — identity structure</li>
+      <li><strong>Secret scopes</strong> — the pointer, not the secrets</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>✗ Poor fit</h4>
+    <ul style="margin-bottom:0">
+      <li><strong>Notebooks</strong> — belong in git, deployed by CI or Repos, not embedded in HCL</li>
+      <li><strong>Jobs that change weekly</strong> — Databricks Asset Bundles are purpose-built for this and owned by the data team</li>
+      <li><strong>Interactive clusters</strong> — created and destroyed by users; Terraform will fight them</li>
+      <li><strong>Tables and views</strong> — that is DDL, owned by dbt or a migration tool</li>
+      <li><strong>Anything autoscaled</strong> — node counts drift constantly</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The dividing line</div>
+  <p style="margin-bottom:0">
+    Terraform should own <strong>the platform</strong> — the guardrails, the access model, the structure. The
+    data team should own <strong>the workloads</strong> — notebooks, jobs, pipelines, tables — through tools
+    designed for them, chiefly Databricks Asset Bundles. Putting job definitions in Terraform means a data
+    scientist changing a schedule needs an infrastructure pull request and an <code>apply</code> against
+    production state. That is friction with no security benefit, and it is a common early mistake.
+  </p>
+</div>
+
+<h2 id="mistakes">Common mistakes</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Managing the injected NSG rules</div>
+  <p style="margin-bottom:0">
+    Databricks writes its own required rules into the NSG on its subnets. Declaring inline
+    <code>security_rule</code> blocks makes every plan propose deleting them. Keep the NSG bare, or add
+    <code>lifecycle { ignore_changes = [security_rule] }</code>.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Passing subnet IDs where association IDs are required</div>
+  <p style="margin-bottom:0">
+    <code>public_subnet_network_security_group_association_id</code> wants the ID of the
+    <code>azurerm_subnet_network_security_group_association</code> resource. It happens to be the same string as
+    the subnet ID, so passing the subnet works — and then the NSG association may not exist when the workspace
+    is created, and the deployment fails with an obscure networking error. Reference the association resource so
+    Terraform builds the correct edge.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Personal access tokens for provider authentication</div>
+  <p style="margin-bottom:0">
+    Old examples authenticate the <code>databricks</code> provider with a PAT stored in a variable. That is a
+    long-lived credential in state and in CI. Use
+    <code>azure_workspace_resource_id</code> with Azure CLI or service principal authentication instead — the
+    provider obtains a short-lived token from Entra ID.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Which provider?</span>
+  </div>
+  <div class="exercise-body">
+    <p>For each, name the provider and the resource:</p>
+    <ol>
+      <li>Create the Databricks workspace itself</li>
+      <li>Grant Databricks read access to the <code>gold</code> container</li>
+      <li>Create a catalog called <code>analytics_prod</code></li>
+      <li>Force all job clusters to auto-terminate after 30 minutes</li>
+      <li>Give the analysts group SELECT on a schema</li>
+      <li>Put the workspace in your own VNet</li>
+      <li>Create a secret scope backed by Key Vault</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><code>azurerm</code> — <code>azurerm_databricks_workspace</code>. It is an ARM resource.</li>
+        <li><code>azurerm</code> — <code>azurerm_role_assignment</code> on the container scope, with the access connector's principal ID. This is Azure RBAC, not a Databricks concept.</li>
+        <li><code>databricks</code> — <code>databricks_catalog</code>. Unity Catalog objects live behind the workspace/account API.</li>
+        <li><code>databricks</code> — <code>databricks_cluster_policy</code>.</li>
+        <li><code>databricks</code> — <code>databricks_grants</code>.</li>
+        <li><code>azurerm</code> — the <code>custom_parameters</code> block on the workspace resource. Networking is ARM.</li>
+        <li><code>databricks</code> — <code>databricks_secret_scope</code> with a <code>keyvault_metadata</code> block. The scope is a workspace object, even though it points at an Azure resource.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        The heuristic that answers all of these: <strong>does it have an ARM resource ID?</strong> If yes,
+        <code>azurerm</code>.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Lake access with no credentials</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      Write the complete chain giving a Databricks workspace read/write on <code>silver</code> and
+      <code>gold</code> and read-only on <code>raw</code>, with no secrets anywhere, and register those
+      locations in Unity Catalog. State which provider each resource uses.
+    </p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution</span></div>
+<pre><code class="language-hcl">locals {
+  lake_access = {
+    raw    = "Storage Blob Data Reader"
+    silver = "Storage Blob Data Contributor"
+    gold   = "Storage Blob Data Contributor"
+  }
+}
+
+# --- azurerm: the identity ---
+resource "azurerm_databricks_access_connector" "unity" {
+  name                = "dbac-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  identity { type = "SystemAssigned" }
+}
+
+# --- azurerm: the Azure-side permission, per container ---
+resource "azurerm_role_assignment" "unity" {
+  for_each = local.lake_access
+
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/${each.key}"
+  role_definition_name = each.value
+  principal_id         = azurerm_databricks_access_connector.unity.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+# --- databricks: Unity Catalog's view of that identity ---
+resource "databricks_storage_credential" "unity" {
+  name = "sc-lake"
+
+  azure_managed_identity {
+    access_connector_id = azurerm_databricks_access_connector.unity.id
+  }
+}
+
+# --- databricks: one external location per container ---
+resource "databricks_external_location" "layers" {
+  for_each = local.lake_access
+
+  name            = "el-${each.key}"
+  url             = "abfss://${each.key}@${azurerm_storage_account.lake.name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.unity.name
+  read_only       = each.value == "Storage Blob Data Reader"
+
+  # The Azure role must exist and be effective before Unity Catalog
+  # validates the location. No data flows, so depends_on is correct here.
+  depends_on = [azurerm_role_assignment.unity]
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Note <code>read_only = each.value == "Storage Blob Data Reader"</code> — the Unity Catalog setting is
+        derived from the Azure role, so the two layers of permission cannot drift apart. Also note that Unity
+        Catalog <em>validates</em> the external location on creation by attempting an access, which is why the
+        <code>depends_on</code> matters and why RBAC propagation delay can make the first apply fail and the
+        second succeed.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Provision a VNet-injected workspace</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write the complete <code>azurerm_databricks_workspace</code> for production: injected into your own VNet, no public IPs on cluster nodes, no public network access, and a deliberately named managed resource group.</p>    <p style="margin-bottom:0">Include the subnets and NSG associations it depends on. One argument here is very commonly passed wrongly &mdash; get it right and say why it matters.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">databricks.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_subnet" "databricks" {
+  for_each = {
+    host      = { netnum = 2 }
+    container = { netnum = 3 }
+  }
+
+  name                 = "snet-databricks-${each.key}-${local.suffix}"
+  resource_group_name  = azurerm_resource_group.network.name
+  virtual_network_name = azurerm_virtual_network.main.name
+
+  # Databricks requires /26 to /24 for these subnets; each node uses 2 IPs.
+  address_prefixes = [cidrsubnet(var.vnet_cidr, 8, each.value.netnum)]
+
+  service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"]
+
+  delegation {
+    name = "databricks"
+    service_delegation {
+      name = "Microsoft.Databricks/workspaces"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/join/action",
+        "Microsoft.Network/virtualNetworks/subnets/action",
+        "Microsoft.Network/virtualNetworks/subnets/prepareNetworkPolicies/action",
+        "Microsoft.Network/virtualNetworks/subnets/unprepareNetworkPolicies/action",
+      ]
+    }
+  }
+}
+
+resource "azurerm_network_security_group" "databricks" {
+  name                = "nsg-databricks-${local.suffix}"
+  resource_group_name = azurerm_resource_group.network.name
+  location            = var.location
+  tags                = local.common_tags
+
+  lifecycle {
+    # Databricks injects its own required rules. Without this, every plan
+    # proposes deleting them and Databricks re-adds them - a permanent diff.
+    ignore_changes = [security_rule]
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "databricks" {
+  for_each = azurerm_subnet.databricks
+
+  subnet_id                 = each.value.id
+  network_security_group_id = azurerm_network_security_group.databricks.id
+}
+
+resource "azurerm_databricks_workspace" "this" {
+  name                = "dbw-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+
+  # premium is required for cluster ACLs, Unity Catalog and private link.
+  sku = "premium"
+
+  # Name it, or Azure invents something like databricks-rg-dbw-xxx-abc123.
+  managed_resource_group_name = "${azurerm_resource_group.analytics.name}-databricks-managed"
+
+  public_network_access_enabled         = false
+  network_security_group_rules_required = "NoAzureDatabricksRules"
+
+  custom_parameters {
+    no_public_ip       = true
+    virtual_network_id = azurerm_virtual_network.main.id
+
+    public_subnet_name  = azurerm_subnet.databricks["host"].name
+    private_subnet_name = azurerm_subnet.databricks["container"].name
+
+    # THE ARGUMENT PEOPLE GET WRONG: these want the ID of the ASSOCIATION
+    # resource, not the subnet. The strings happen to look similar, so
+    # passing the subnet id "works" - and then the workspace can be created
+    # before the NSG association exists, failing with an obscure network error.
+    public_subnet_network_security_group_association_id =
+      azurerm_subnet_network_security_group_association.databricks["host"].id
+    private_subnet_network_security_group_association_id =
+      azurerm_subnet_network_security_group_association.databricks["container"].id
+  }
+
+  tags = local.common_tags
+}</code></pre>
+</div>    <p>Referencing the association resource is what creates the correct dependency edge: Terraform now knows the NSG must be attached to both subnets <em>before</em> the workspace is created. Reference the subnet instead and that ordering guarantee silently disappears.</p>    <p style="margin-bottom:0">On the naming: with <code>no_public_ip = true</code> neither subnet is internet-facing. &ldquo;Public&rdquo; and &ldquo;private&rdquo; are Databricks' historical terms for the host-side and container-side NICs on each node, not a statement about exposure.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write the Unity Catalog root module</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write the <strong>second</strong> root module that configures the workspace's contents: a storage credential backed by the access connector, one external location per medallion layer, a catalog, and grants for two groups.</p>    <p style="margin-bottom:0">It must not suffer the destroy problem from this lesson. Show how its provider is configured and say why that is the whole point.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod-databricks/main.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm    = { source = "hashicorp/azurerm",     version = "~&gt; 5.0" }
+    databricks = { source = "databricks/databricks", version = "~&gt; 1.0" }
+  }
+
+  backend "azurerm" {
+    # Its OWN state, separate from the platform layer.
+    key              = "databricks/prod.terraform.tfstate"
+    use_azuread_auth = true
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+
+# Read the workspace the PLATFORM configuration created. Because this is a
+# data source, the URL is known at plan time - the provider below can always
+# be configured, including during destroy. That is the entire reason this is
+# a separate root module.
+data "azurerm_databricks_workspace" "this" {
+  name                = "dbw-analytics-prod-weu-01"
+  resource_group_name = "rg-analytics-prod-weu-01"
+}
+
+data "azurerm_databricks_access_connector" "unity" {
+  name                = "dbac-analytics-prod-weu-01"
+  resource_group_name = "rg-analytics-prod-weu-01"
+}
+
+data "azurerm_storage_account" "lake" {
+  name                = "stanalyticsprodweu01"
+  resource_group_name = "rg-analytics-prod-weu-01"
+}
+
+provider "databricks" {
+  host                        = data.azurerm_databricks_workspace.this.workspace_url
+  azure_workspace_resource_id = data.azurerm_databricks_workspace.this.id
+  # Auth comes from the Azure CLI session or ARM_* variables. No PAT.
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod-databricks/unity.tf</span></div>
+<pre><code class="language-hcl">locals {
+  layers = toset(["bronze", "silver", "gold"])
+}
+
+resource "databricks_storage_credential" "unity" {
+  name    = "sc-lake"
+  comment = "Managed identity of the access connector. Managed by Terraform."
+
+  azure_managed_identity {
+    access_connector_id = data.azurerm_databricks_access_connector.unity.id
+  }
+}
+
+resource "databricks_external_location" "layers" {
+  for_each = local.layers
+
+  name            = "el-${each.value}"
+  url             = "abfss://${each.value}@${data.azurerm_storage_account.lake.name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.unity.name
+  comment         = "Medallion layer: ${each.value}"
+}
+
+# Raw is registered read-only: the landing zone is immutable by design, and
+# this mirrors the Azure role granted on that container in the platform layer.
+resource "databricks_external_location" "raw" {
+  name            = "el-raw"
+  url             = "abfss://raw@${data.azurerm_storage_account.lake.name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.unity.name
+  read_only       = true
+}
+
+resource "databricks_catalog" "analytics" {
+  name         = "analytics_prod"
+  storage_root = databricks_external_location.layers["silver"].url
+  comment      = "Managed by Terraform."
+}
+
+resource "databricks_schema" "curated" {
+  catalog_name = databricks_catalog.analytics.name
+  name         = "curated"
+  comment      = "Conformed business entities."
+}
+
+resource "databricks_grants" "catalog" {
+  catalog = databricks_catalog.analytics.name
+
+  grant {
+    principal  = "sg-data-engineers"
+    privileges = ["USE_CATALOG", "CREATE_SCHEMA", "USE_SCHEMA"]
+  }
+
+  grant {
+    principal  = "sg-analysts"
+    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT"]
+  }
+}</code></pre>
+</div>    <p><strong>Why the split matters:</strong> if the provider were configured from <code>azurerm_databricks_workspace.this.workspace_url</code> in the same configuration that creates the workspace, <code>terraform destroy</code> could delete the workspace first and then be unable to configure the provider to delete the objects inside it &mdash; leaving orphaned state entries that only <code>terraform state rm</code> can clear.</p>    <p style="margin-bottom:0">Operationally: apply <code>prod</code> then <code>prod-databricks</code>; destroy <code>prod-databricks</code> then <code>prod</code>. The same rule applies to any provider configured from a resource you also create &mdash; Kubernetes, PostgreSQL, Vault.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Destroy fails and leaves orphans</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      A team has one configuration containing the VNet, the workspace, and twelve <code>databricks_*</code>
+      resources, with the provider configured from
+      <code>azurerm_databricks_workspace.this.workspace_url</code>. <code>terraform apply</code> works.
+      <code>terraform destroy</code> fails:
+    </p>
+    <div class="code is-out">
+      <div class="code-head"><span class="fname">error</span></div>
+<pre><code class="language-bash">Error: cannot delete external location: Get "https://adb-1234.5.azuredatabricks.net/api/2.1/...":
+dial tcp: lookup adb-1234.5.azuredatabricks.net: no such host</code></pre>
+    </div>
+    <p>Explain the mechanism, get them unstuck, and give the structural fix.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Mechanism.</strong> During destroy Terraform walks the graph in reverse. The Databricks objects
+        depend on the workspace, so in principle they should be destroyed first — but the <em>provider
+        configuration</em> also depends on the workspace, and Terraform does not model provider configuration
+        as a graph node in the way you would need. In practice the workspace can be destroyed while its objects
+        are still in state; the provider then cannot resolve the workspace URL, so deleting them is impossible.
+        The resources are stuck in state pointing at something that no longer exists.
+      </p>
+      <p><strong>Getting unstuck.</strong> The workspace is gone, so its contents are gone with it. Remove the orphaned entries from state:</p>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">recovery</span></div>
+<pre><code class="language-bash">terraform state list | grep '^databricks_' | while read -r addr; do
+  terraform state rm "$addr"
+done
+
+terraform destroy   # now completes on the remaining Azure resources</code></pre>
+      </div>
+      <p>
+        <code>state rm</code> is safe here precisely because the real objects no longer exist — you are removing
+        bookkeeping for things that are already gone. That is the narrow case where it is the right tool.
+      </p>
+      <p><strong>Structural fix — split into two root modules:</strong></p>
+      <div class="code is-out">
+        <div class="code-head"><span class="fname">layout</span></div>
+<pre class="plain">terraform/
+├── 10-platform/        VNet, storage, Key Vault, workspace, access connector
+│   └── state: platform/prod.tfstate
+└── 20-databricks/      catalogs, external locations, policies, grants
+    └── state: databricks/prod.tfstate
+    └── provider configured from a DATA SOURCE reading the workspace</pre>
+      </div>
+      <p style="margin-bottom:0">
+        Now the Databricks provider is configured from
+        <code>data.azurerm_databricks_workspace</code>, which is known at plan time. Destroying is ordered
+        naturally: tear down <code>20-databricks</code> first, then <code>10-platform</code>. This is the general
+        answer whenever a provider's configuration would otherwise depend on a resource in the same
+        configuration.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>Describe the Azure Databricks architecture.</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Two planes. The control plane runs in Databricks' own Azure subscription and hosts the web application,
+        REST API, job scheduler and cluster manager. The compute plane runs in <em>your</em> subscription: when
+        you start a cluster, Databricks provisions VMs into a managed resource group it creates in your
+        subscription, attached either to a Databricks-managed VNet or, with VNet injection, to subnets you
+        control. Your data never leaves your subscription. The managed resource group is visible and billable to
+        you but owned by Databricks — you must not modify its contents.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you give Databricks access to ADLS Gen2 without credentials?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Create an <code>azurerm_databricks_access_connector</code> with a managed identity, grant that identity a
+        Storage Blob Data role scoped per container, then on the Databricks side create a
+        <code>databricks_storage_credential</code> referencing the access connector and one
+        <code>databricks_external_location</code> per container. Unity Catalog then brokers access. No key, no
+        service principal secret and no mount point with embedded credentials exists anywhere — and because the
+        Azure role is per container, you can express policies like “read raw, write silver and gold”.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is VNet injection and why use it?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Deploying the workspace's compute into subnets in your own virtual network rather than a
+        Databricks-managed one. It matters because it lets cluster nodes reach private endpoints for storage and
+        Key Vault, lets you apply your own NSGs, route tables and egress firewall, and lets you use secure
+        cluster connectivity with no public IPs. It requires two delegated subnets — Databricks calls them the
+        public/host and private/container subnets, though with <code>no_public_ip</code> neither is
+        internet-facing — sized between /26 and /24, with NSG associations referenced from the workspace's
+        <code>custom_parameters</code>.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Which Databricks resources should Terraform manage?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The platform, not the workloads. Terraform should own the workspace, networking, access connector and
+        RBAC, plus the governance layer inside the workspace: cluster policies, Unity Catalog structure, external
+        locations, grants, groups and SQL warehouses. It should not own notebooks, frequently changing jobs,
+        interactive clusters or table DDL — those belong in git with Databricks Asset Bundles or dbt. Putting job
+        definitions in Terraform means a schedule change needs an infrastructure pull request and an apply
+        against production state, which is friction with no security benefit.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why can configuring the Databricks provider be tricky?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because it needs the workspace URL, which is an attribute of a resource that may not exist yet.
+        Terraform requires provider configuration to be resolvable, and a configuration whose provider depends on
+        a resource in the same apply plans awkwardly and often fails on destroy — the workspace can be deleted
+        before the objects inside it, after which the provider cannot be configured to delete them, leaving
+        orphaned state entries. The fix is to split into two root modules: one creating the Azure infrastructure,
+        one configuring the workspace with its provider fed from a data source. That rule generalises to
+        Kubernetes, PostgreSQL and any other provider configured from resources you also create.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you handle secrets that Databricks notebooks need?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A Key Vault-backed secret scope: <code>databricks_secret_scope</code> with a
+        <code>keyvault_metadata</code> block pointing at the vault. Notebooks call
+        <code>dbutils.secrets.get</code> and Databricks resolves the value from Key Vault at read time, so
+        Terraform stores only the vault's resource ID and URI — no secret values in state. The alternative, a
+        Databricks-backed scope populated with <code>databricks_secret</code> resources, writes every value into
+        state and should be avoided. Better still, for Azure-to-Azure access, use the access connector's managed
+        identity so there is no secret to store.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li><code>azurerm</code> owns anything with an ARM resource ID; <code>databricks</code> owns anything behind the workspace API.</li>
+  <li>The managed resource group belongs to Databricks. Name it, then leave it alone.</li>
+  <li>VNet injection needs two delegated subnets and the <strong>NSG association IDs</strong>, not the subnet IDs.</li>
+  <li>Access connector + role assignment + storage credential + external location = lake access with no secrets.</li>
+  <li>Split platform and workspace-contents into two root modules. A provider configured from a resource you create in the same apply will bite you on destroy.</li>
+  <li>Terraform owns guardrails; Asset Bundles and dbt own workloads.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · Key Vault &amp; the secrets-in-state problem — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="09">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate</span>
+    <span>Part 8</span><span>·</span><span>~60 min</span><span>·</span><span>Requires Lesson 08</span>
+  </div>
+  <h1>Key Vault &amp; the secrets-in-state problem</h1>
+  <p class="lede">
+    Key Vault is easy. The hard part is the uncomfortable fact underneath it: <strong>any secret that flows
+    through Terraform is written to state in plaintext</strong> — including secrets you merely <em>read</em>
+    with a data source. This lesson is mostly about designing so that does not happen.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Provision a Key Vault with RBAC authorization, soft delete and purge protection</li>
+      <li>Explain exactly why <code>sensitive = true</code> does not solve the state problem</li>
+      <li>Rank the five patterns for handling secrets, and pick the right one</li>
+      <li>Use ephemeral resources and write-only arguments to keep values out of state entirely</li>
+      <li>Explain why destroying and recreating a Key Vault often fails</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Key Vault</span><span class="pill">State risk</span><span class="pill">Ephemeral values</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="the-problem">The problem, stated plainly</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">this looks responsible and is not</span></div>
+<pre><code class="language-hcl">variable "api_key" {
+  type      = string
+  sensitive = true          # redacted from output…
+}
+
+resource "azurerm_key_vault_secret" "api" {
+  name         = "third-party-api-key"
+  value        = var.api_key   # …and now written to state in plaintext
+  key_vault_id = azurerm_key_vault.main.id
+}</code></pre>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">what is actually in the state file</span></div>
+<pre><code class="language-json">{
+  "type": "azurerm_key_vault_secret",
+  "name": "api",
+  "instances": [{
+    "attributes": {
+      "id": "https://kv-analytics-prod-weu-01.vault.azure.net/secrets/third-party-api-key/a1b2c3",
+      "name": "third-party-api-key",
+      "value": "<the-plaintext-secret-value>",
+      "content_type": "",
+      "...": "..."
+    }
+  }]
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">The consequence, spelled out</div>
+  <p>
+    You have carefully placed a secret in Key Vault, protected by RBAC, audit logging, soft delete and network
+    restrictions. And you have simultaneously placed a plaintext copy in a storage blob whose access controls
+    are almost certainly broader than the vault's — everyone who can run <code>terraform plan</code> can read
+    it.
+  </p>
+  <p style="margin-bottom:0">
+    Worse: <strong>reading is just as bad as writing.</strong> A
+    <code>data "azurerm_key_vault_secret"</code> block caches the retrieved value in state too. There is no way
+    for a secret to pass through Terraform without being persisted, unless you use ephemeral values.
+  </p>
+</div>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    V["<b>Key Vault</b><br/>RBAC · audit log · soft delete<br/>private endpoint · HSM-backed"]
+
+    V -->|"data.azurerm_key_vault_secret<br/><i>reads the value</i>"| TF["Terraform"]
+    TF -->|"azurerm_key_vault_secret<br/><i>writes the value</i>"| V
+
+    TF --> ST[("<b>State file</b><br/>plaintext<br/>no audit of reads<br/>whoever can plan can read")]
+    TF --> PL[("<b>Plan file</b><br/>plaintext<br/>often a CI artefact")]
+    TF --> LOG[("<b>TF_LOG=DEBUG output</b><br/>request bodies<br/>in the CI log")]
+
+    style V fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+    style ST fill:#fdeceb,stroke:#c0392b,stroke-width:2px
+    style PL fill:#fdeceb,stroke:#c0392b
+    style LOG fill:#fdeceb,stroke:#c0392b
+  </div>
+  <figcaption>
+    Three plaintext copies escape the vault's protections. This is the core problem the rest of the lesson
+    solves.
+  </figcaption>
+</figure>
+
+<h2 id="provisioning">Provisioning a Key Vault</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">keyvault.tf</span></div>
+<pre><code class="language-hcl">data "azurerm_client_config" "current" {}
+
+resource "azurerm_key_vault" "main" {
+  name                = "kv-${local.suffix}"   # globally unique, 3-24 chars
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+
+  sku_name = "standard"   # "premium" adds HSM-backed keys
+
+  # --- authorization model: RBAC, not access policies ---
+  rbac_authorization_enabled = true
+
+  # --- deletion protection ---
+  soft_delete_retention_days = 90     # 7-90; deleted vaults are recoverable this long
+  purge_protection_enabled   = true   # cannot be disabled once enabled
+
+  # --- network ---
+  public_network_access_enabled = false
+
+  network_acls {
+    default_action = "Deny"
+    bypass         = "AzureServices"
+    ip_rules       = var.deployment_agent_ip_ranges
+  }
+
+  tags = local.common_tags
+}</code></pre>
+</div>
+
+<div class="callout callout-version">
+  <div class="callout-title">⚠ v4 → v5: <code>rbac_authorization_enabled</code></div>
+  <p style="margin-bottom:0">
+    In v3 and v4 this argument was <code>enable_rbac_authorization</code>. Every older tutorial uses the old
+    name and fails on v5 with <code>An argument named "enable_rbac_authorization" is not expected here</code>.
+    The behaviour is identical; only the name changed.
+  </p>
+</div>
+
+<h3 id="rbac-vs-policies">RBAC vs access policies</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Access policies (legacy)</th><th>Azure RBAC (recommended)</th></tr></thead>
+  <tbody>
+    <tr><td>Where permissions live</td><td>On the vault, as a list of up to 1024 policy entries</td><td>In Azure RBAC, like every other resource</td></tr>
+    <tr><td>Granularity</td><td>Per vault only</td><td>Per vault, or <strong>per individual secret / key / certificate</strong></td></tr>
+    <tr><td>Terraform shape</td><td><code>access_policy</code> blocks, or <code>azurerm_key_vault_access_policy</code></td><td><code>azurerm_role_assignment</code> — the same as everything else</td></tr>
+    <tr><td>Consistency</td><td>A separate mental model from the rest of Azure</td><td>One model, one audit surface, works with PIM and access reviews</td></tr>
+    <tr><td>Common failure</td><td>Managing policies as both inline blocks and separate resources — they fight and produce endless diffs</td><td>Propagation delay after assignment</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Use RBAC for new vaults</div>
+  <p style="margin-bottom:0">
+    Microsoft's own guidance recommends the RBAC model. The one thing to know about migration: switching an
+    existing vault from access policies to RBAC means every consumer must have an equivalent role assignment
+    <em>before</em> you flip the flag, or they break instantly. Flipping it is a one-line change with an
+    outage-shaped blast radius.
+  </p>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">key-vault-rbac.tf</span></div>
+<pre><code class="language-hcl"># Platform team manages secrets
+resource "azurerm_role_assignment" "kv_officer" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azuread_group.platform_team.object_id
+  principal_type       = "Group"
+}
+
+# The ingest function reads ONE secret, not the whole vault
+resource "azurerm_role_assignment" "ingest_reads_one_secret" {
+  scope                = "${azurerm_key_vault.main.id}/secrets/source-api-key"
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+# The storage account's identity, for customer-managed key encryption
+resource "azurerm_role_assignment" "lake_cmk" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_storage_account.lake.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+</div>
+
+<h3 id="soft-delete">Soft delete and purge protection</h3>
+
+<figure class="diagram">
+  <div class="mermaid">
+stateDiagram-v2
+    [*] --> Active: create
+    Active --> SoftDeleted: terraform destroy
+    SoftDeleted --> Active: recover (within retention)
+    SoftDeleted --> Gone: purge<br/><i>BLOCKED if purge_protection_enabled</i>
+    SoftDeleted --> Gone: retention expires
+    Gone --> [*]
+
+    note right of SoftDeleted
+      The NAME is still reserved.
+      Creating a new vault with the
+      same name FAILS until the old
+      one is purged or recovered.
+    end note
+  </div>
+  <figcaption>Why <code>terraform destroy</code> followed by <code>terraform apply</code> often fails.</figcaption>
+</figure>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the error</span></div>
+<pre><code class="language-bash">Error: creating Key Vault "kv-analytics-dev-weu-01": ConflictError:
+Exist soft deleted vault with the same name. You must recover or purge the
+vault before reusing the name.</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">provider features that control this</span></div>
+<pre><code class="language-hcl">provider "azurerm" {
+  features {
+    key_vault {
+      # Recover an existing soft-deleted vault instead of failing.
+      recover_soft_deleted_key_vaults = true
+
+      # Permanently purge on destroy. Convenient in throwaway dev,
+      # DANGEROUS anywhere else — it bypasses Azure's safety net entirely.
+      purge_soft_delete_on_destroy = var.environment == "dev"
+
+      purge_soft_deleted_secrets_on_destroy = var.environment == "dev"
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">purge_protection_enabled cannot be turned off</div>
+  <p style="margin-bottom:0">
+    Once enabled on a vault, it is permanent — Azure will not let you disable it, and neither will Terraform.
+    That means a vault with purge protection cannot be fully removed until its soft-delete retention expires,
+    up to 90 days. Enable it in production, where that is exactly what you want. Think carefully before
+    enabling it in an ephemeral dev environment that is destroyed and rebuilt daily under the same name.
+  </p>
+</div>
+
+<h2 id="patterns">Five patterns for secrets, best to worst</h2>
+
+<h3 id="pattern-1">1 · Have no secret at all — managed identity</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the best pattern is the absent one</span></div>
+<pre><code class="language-hcl"># ✗ The old way: a connection string in app settings
+# app_settings = {
+#   "LakeConnection" = azurerm_storage_account.lake.primary_connection_string
+# }
+
+# ✓ The good way: no credential exists to protect
+resource "azurerm_role_assignment" "func_to_lake" {
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/raw"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_linux_function_app" "ingest" {
+  # ...
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ingest.id]
+  }
+
+  app_settings = {
+    # The app uses DefaultAzureCredential with just an account name.
+    "LAKE_ACCOUNT_NAME"    = azurerm_storage_account.lake.name
+    "AZURE_CLIENT_ID"      = azurerm_user_assigned_identity.ingest.client_id
+  }
+}</code></pre>
+</div>
+
+<p>
+  Nothing sensitive is in the configuration, in state, or in app settings. For everything inside Azure — storage,
+  SQL, Service Bus, Event Hubs, Cosmos DB — this is achievable, and it should be your default. The only
+  remaining secrets are third-party credentials that genuinely have no Entra ID equivalent.
+</p>
+
+<h3 id="pattern-2">2 · Key Vault references — the value never touches Terraform</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">key vault reference in app settings</span></div>
+<pre><code class="language-hcl"># Terraform creates the vault and the RBAC, but never sees the secret value.
+# A human or a rotation job populates it out of band.
+
+data "azurerm_key_vault_secret" "third_party" {
+  # NOTE: this data source WOULD read the value into state.
+  # Shown here only to contrast with the approach below.
+  name         = "third-party-api-key"
+  key_vault_id = azurerm_key_vault.main.id
+}
+
+resource "azurerm_linux_function_app" "ingest" {
+  # ...
+  app_settings = {
+    # A Key Vault reference. The App Service runtime resolves this at
+    # startup using the app's managed identity. Terraform stores only
+    # this URI string — never the secret.
+    "THIRD_PARTY_API_KEY" = "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.main.name};SecretName=third-party-api-key)"
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-ok">
+  <div class="callout-title">Why this is strong</div>
+  <p style="margin-bottom:0">
+    The app setting's value is a <em>pointer</em>, not a secret. Terraform state contains the string
+    <code>@Microsoft.KeyVault(...)</code>. Rotating the secret in Key Vault takes effect without a Terraform
+    apply, and every resolution is logged against the app's identity in the vault's audit log. Build the
+    reference string yourself rather than using the data source — the moment you use
+    <code>data.azurerm_key_vault_secret</code>, the value is in state.
+  </p>
+</div>
+
+<h3 id="pattern-3">3 · Ephemeral resources and write-only arguments</h3>
+
+<p>
+  When Terraform genuinely must handle a value, Terraform 1.10 introduced <strong>ephemeral</strong> values and
+  1.11 added <strong>write-only arguments</strong>. The <code>azurerm</code> provider supports both for Key
+  Vault secrets.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">ephemeral.tf — nothing reaches state</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.11.0"
+}
+
+# 1 · An ephemeral resource READS a secret without persisting it.
+#     Its value can only be used in other ephemeral contexts or
+#     write-only arguments.
+ephemeral "azurerm_key_vault_secret" "source_api_key" {
+  name         = "source-api-key"
+  key_vault_id = azurerm_key_vault.main.id
+}
+
+# 2 · A write-only argument WRITES a value without persisting it.
+#     value_wo is never stored in state or in the plan file.
+#     value_wo_version is the trigger: bump it to push a new value.
+resource "azurerm_key_vault_secret" "replica" {
+  name             = "source-api-key-replica"
+  key_vault_id     = azurerm_key_vault.replica.id
+  value_wo         = ephemeral.azurerm_key_vault_secret.source_api_key.value
+  value_wo_version = 1
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th><code>value</code></th><th><code>value_wo</code></th></tr></thead>
+  <tbody>
+    <tr><td>Stored in state</td><td><strong>Yes, plaintext</strong></td><td>No</td></tr>
+    <tr><td>Stored in the plan file</td><td><strong>Yes</strong></td><td>No</td></tr>
+    <tr><td>Drift detection on the value</td><td>Yes — Terraform notices if it changed in Azure</td><td>No — Terraform cannot compare what it does not store</td></tr>
+    <tr><td>How you push a new value</td><td>Change <code>value</code></td><td>Change the value <em>and</em> increment <code>value_wo_version</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">The trade-off is real</div>
+  <p style="margin-bottom:0">
+    Because Terraform does not store the value, it cannot detect drift in it — if somebody changes the secret
+    in the portal, no plan will notice. That is usually exactly what you want for a secret (rotation should not
+    look like drift), but it is a genuine behaviour change and the reason
+    <code>value_wo_version</code> exists: it gives you an explicit, reviewable trigger for an update.
+  </p>
+</div>
+
+<h3 id="pattern-4">4 · Create the vault in Terraform, populate it elsewhere</h3>
+
+<p>
+  Terraform provisions the vault, its network configuration and its RBAC. A separate, tightly controlled
+  process — a rotation function, a privileged pipeline, or a documented manual step — writes the values.
+  Terraform outputs the <em>secret ID</em>, never the value.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">outputs.tf</span></div>
+<pre><code class="language-hcl">output "api_key_secret_id" {
+  description = "Key Vault secret identifier. Consumers resolve the value themselves."
+  value       = "${azurerm_key_vault.main.id}/secrets/third-party-api-key"
+  # not sensitive — it is a URI, not a secret
+}</code></pre>
+</div>
+
+<h3 id="pattern-5">5 · Accept the risk, and mitigate it</h3>
+
+<p>
+  Sometimes there is no alternative: a provider needs a literal value, or you are generating a password for a
+  resource that has no identity-based option. If you end up here, do all of the following:
+</p>
+
+<ul>
+  <li>Remote backend with encryption at rest and customer-managed keys if your policy requires them (Lesson 10).</li>
+  <li>State container RBAC restricted to the deployment identity and a small break-glass group — <em>not</em> the whole engineering team.</li>
+  <li><code>shared_access_key_enabled = false</code> on the state storage account, so state cannot be read with a leaked key.</li>
+  <li>Plan artefacts treated as secrets: short retention, restricted access, never a public artefact store.</li>
+  <li><code>TF_LOG</code> never set to <code>DEBUG</code> or <code>TRACE</code> in a pipeline that logs publicly.</li>
+  <li>Split the sensitive resources into their own state, so the blast radius of that one state file is small.</li>
+  <li>Generate rather than hardcode, so at least no human ever knew the value:</li>
+</ul>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">generating a password</span></div>
+<pre><code class="language-hcl">resource "random_password" "sql_admin" {
+  length           = 32
+  special          = true
+  override_special = "!#$%&amp;*()-_=+[]{}&lt;&gt;:?"
+}
+
+# Still in state — random_password persists its result by design,
+# because it must produce the same value on the next plan.
+resource "azurerm_key_vault_secret" "sql_admin" {
+  name         = "sql-admin-password"
+  value        = random_password.sql_admin.result
+  key_vault_id = azurerm_key_vault.main.id
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title"><code>random_password</code> does not solve the problem</div>
+  <p style="margin-bottom:0">
+    It is often presented as the secure option. It is not — the generated value is stored in state exactly like
+    any other, because Terraform must reproduce it on the next plan rather than generating a new one. The only
+    thing it improves is that the value was never in a human's clipboard or a git commit. That is worth
+    something, but it is not encryption.
+  </p>
+</div>
+
+<h2 id="networking">Networking a vault</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">private endpoint for Key Vault — full treatment in Lesson 11</span></div>
+<pre><code class="language-hcl">resource "azurerm_private_endpoint" "kv" {
+  name                = "pe-kv-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  subnet_id           = azurerm_subnet.privatelink.id
+
+  private_service_connection {
+    name                           = "psc-kv"
+    private_connection_resource_id = azurerm_key_vault.main.id
+    subresource_names              = ["vault"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "kv-dns"
+    private_dns_zone_ids = [azurerm_private_dns_zone.vault.id]
+  }
+
+  tags = local.common_tags
+}
+
+resource "azurerm_private_dns_zone" "vault" {
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = azurerm_resource_group.analytics.name
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">The chicken-and-egg with <code>public_network_access_enabled = false</code></div>
+  <p style="margin-bottom:0">
+    Disabling public access on a vault means Terraform itself can no longer reach the vault's <em>data plane</em>
+    from a public runner — so creating or reading secrets fails, even though creating the vault succeeded. This
+    is the same control-plane/data-plane split as storage in Lesson 06. Options: run Terraform from a
+    private-network agent, keep the runner's IP in <code>network_acls.ip_rules</code>, or — best — do not have
+    Terraform touch secret values at all.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Where does the secret end up?</span>
+  </div>
+  <div class="exercise-body">
+    <p>For each, say whether the secret's plaintext value ends up in Terraform state:</p>
+    <ol>
+      <li><code>resource "azurerm_key_vault_secret"</code> with <code>value = var.api_key</code></li>
+      <li><code>data "azurerm_key_vault_secret"</code> reading an existing secret</li>
+      <li>An app setting containing <code>"@Microsoft.KeyVault(VaultName=kv-x;SecretName=y)"</code></li>
+      <li><code>resource "random_password"</code></li>
+      <li><code>ephemeral "azurerm_key_vault_secret"</code></li>
+      <li><code>resource "azurerm_key_vault_secret"</code> using <code>value_wo</code></li>
+      <li>A variable declared <code>sensitive = true</code> but never used in any resource</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong>Yes.</strong> Written to state in plaintext.</li>
+        <li><strong>Yes.</strong> Reading is as bad as writing — the data source caches the value in state. This surprises most people.</li>
+        <li><strong>No.</strong> State holds the reference string, which is a pointer. The App Service runtime resolves it with the app's managed identity.</li>
+        <li><strong>Yes.</strong> By design — Terraform must reproduce the same value on the next plan rather than generating a new one.</li>
+        <li><strong>No.</strong> Ephemeral resources are never persisted to state or the plan file.</li>
+        <li><strong>No.</strong> Write-only arguments are not stored. The trade-off is that Terraform cannot detect drift on the value.</li>
+        <li><strong>No</strong> — variables are not themselves stored in state. But the moment it feeds any resource argument, that resource's state entry contains it. Sensitivity is about display, not persistence.</li>
+      </ol>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Design the secret flow</span>
+  </div>
+  <div class="exercise-body">
+    <p>An ingestion Function App must:</p>
+    <ul>
+      <li>Write to the <code>raw</code> container in the data lake.</li>
+      <li>Call a third-party SaaS API that only supports a static API key.</li>
+      <li>Write metadata rows into an Azure SQL database.</li>
+    </ul>
+    <p>Design the credential handling for all three so that as little as possible reaches Terraform state. State which pattern you use for each and why.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>1 · Lake access — Pattern 1, no secret at all.</strong></p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution part 1</span></div>
+<pre><code class="language-hcl">resource "azurerm_role_assignment" "func_raw" {
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/raw"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+      </div>
+      <p>The app uses <code>DefaultAzureCredential</code> with the account name. No credential exists.</p>
+
+      <p><strong>2 · Third-party API key — Pattern 2 plus Pattern 4.</strong></p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution part 2</span></div>
+<pre><code class="language-hcl"># Terraform creates the vault and the RBAC, and grants access to ONE secret.
+resource "azurerm_role_assignment" "func_reads_api_key" {
+  scope                = "${azurerm_key_vault.main.id}/secrets/saas-api-key"
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+# The value is populated out of band. Terraform stores only a pointer.
+resource "azurerm_linux_function_app" "ingest" {
+  # ...
+  app_settings = {
+    "SAAS_API_KEY" = "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.main.name};SecretName=saas-api-key)"
+  }
+}</code></pre>
+      </div>
+      <p>
+        This is the only genuine secret in the design, and Terraform never sees its value. Rotation happens in
+        the vault with no apply.
+      </p>
+
+      <p><strong>3 · Azure SQL — Pattern 1 again.</strong></p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution part 3</span></div>
+<pre><code class="language-hcl">resource "azurerm_mssql_server" "meta" {
+  # ...
+  azuread_administrator {
+    login_username              = data.azuread_group.platform_team.display_name
+    object_id                   = data.azuread_group.platform_team.object_id
+    azuread_authentication_only = true   # no SQL logins exist at all
+  }
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        With <code>azuread_authentication_only = true</code> there is no SQL admin password to store — the
+        password problem is designed out rather than protected. The function connects with its managed identity;
+        a <code>CREATE USER ... FROM EXTERNAL PROVIDER</code> statement grants it database permissions, which is
+        a data-plane operation Terraform is not well suited to and which usually belongs in a migration script.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Keep a generated secret out of state entirely</span>
+  </div>
+  <div class="exercise-body">
+    <p>A legacy system needs a database password Terraform must generate. Write the configuration so the generated value <strong>never</strong> appears in state or in a saved plan file.</p>    <p style="margin-bottom:0">State the Terraform version this requires, and the one real behavioural trade-off you accept.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">secret.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  # ephemeral values: 1.10   write-only arguments: 1.11
+  required_version = "&gt;= 1.11.0"
+}
+
+# An EPHEMERAL resource. Its value exists only during the operation and is
+# never written to state or to the plan file.
+ephemeral "random_password" "sql_admin" {
+  length           = 32
+  special          = true
+  override_special = "!#$%&amp;*()-_=+[]{}"
+}
+
+resource "azurerm_key_vault_secret" "sql_admin" {
+  name         = "sql-admin-password"
+  key_vault_id = azurerm_key_vault.main.id
+
+  # value_wo is WRITE-ONLY: sent to Azure, never persisted by Terraform.
+  value_wo = ephemeral.random_password.sql_admin.result
+
+  # Because the value is not stored, Terraform cannot detect that it changed.
+  # This integer is the explicit, reviewable trigger for a rotation: bump it
+  # and the next apply writes a new secret version.
+  value_wo_version = 1
+
+  content_type = "password"
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">comparison</span></div>
+<pre><code class="language-hcl"># The naive version, for contrast:
+#
+# resource "random_password" "sql_admin" { length = 32 }
+#
+# resource "azurerm_key_vault_secret" "sql_admin" {
+#   value = random_password.sql_admin.result   # &lt;- plaintext in state
+# }
+#
+# random_password persists its result BY DESIGN, because it must reproduce
+# the same value on the next plan rather than generating a new one. So the
+# "generate it instead of hardcoding it" advice does not solve the state
+# problem at all - it only means no human ever saw the value.</code></pre>
+</div>    <p><strong>The trade-off:</strong> because Terraform does not store the value, it cannot detect drift on it. If someone changes the secret in the portal, no plan will notice. For a secret that is usually exactly what you want &mdash; rotation should not look like drift &mdash; but it is a real behavioural change, and it is why <code>value_wo_version</code> exists as an explicit trigger.</p>    <p style="margin-bottom:0">Better still, where the option exists: design the secret away. An Azure SQL server with <code>azuread_authentication_only = true</code> has no password at all, so there is nothing to generate, store, rotate or leak.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Wire an app to a secret without Terraform ever reading it</span>
+  </div>
+  <div class="exercise-body">
+    <p>A Function App needs a third-party API key held in Key Vault. Write the configuration so Terraform grants access and connects the app, but the secret <em>value</em> never enters Terraform &mdash; not even through a data source.</p>    <p style="margin-bottom:0">Include the RBAC, and scope it as tightly as the service allows.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">app-secret.tf</span></div>
+<pre><code class="language-hcl"># Terraform creates the vault and the permissions. A human or a rotation
+# job populates the value out of band - Terraform never sees it.
+
+resource "azurerm_key_vault" "main" {
+  name                       = local.kv_name
+  resource_group_name        = azurerm_resource_group.analytics.name
+  location                   = azurerm_resource_group.analytics.location
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  rbac_authorization_enabled = true          # renamed in azurerm v5
+  purge_protection_enabled   = true
+  soft_delete_retention_days = 90
+}
+
+# Scoped to ONE secret, not the whole vault.
+resource "azurerm_role_assignment" "func_reads_api_key" {
+  scope                = "${azurerm_key_vault.main.id}/secrets/saas-api-key"
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_linux_function_app" "ingest" {
+  # ...
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ingest.id]
+  }
+
+  app_settings = {
+    # Tell the SDK which identity to use.
+    AZURE_CLIENT_ID = azurerm_user_assigned_identity.ingest.client_id
+
+    # A POINTER, not a secret. The App Service runtime resolves this at
+    # startup using the app's managed identity. Terraform state contains
+    # only the literal string below.
+    SAAS_API_KEY = "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.main.name};SecretName=saas-api-key)"
+  }
+}</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">populate.sh</span></div>
+<pre><code class="language-bash"># Out of band, once - and again whenever the key rotates.
+# No terraform apply is needed for a rotation.
+az keyvault secret set \
+  --vault-name "$(terraform output -raw key_vault_name)" \
+  --name saas-api-key \
+  --value "$(read -rsp 'API key: ' k; echo "$k")"
+
+# Verify the app can actually resolve it:
+az webapp config appsettings list \
+  --name "$(terraform output -raw function_app_name)" \
+  --resource-group rg-analytics-prod-weu-01 \
+  --query "[?name=='SAAS_API_KEY']"
+# A healthy reference shows as resolved in the portal's app settings blade.</code></pre>
+</div>    <p>The trap this avoids is subtle: it is tempting to reach for <code>data "azurerm_key_vault_secret"</code> and interpolate the value into the app setting. That <strong>reads the secret into Terraform state in plaintext</strong> &mdash; reading is exactly as exposing as writing. Building the reference string yourself keeps the value out entirely.</p>    <p style="margin-bottom:0">The operational payoff is just as good as the security one: rotating the key is an <code>az keyvault secret set</code> away, with no plan, no apply and no infrastructure pull request.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">The vault that cannot be recreated</span>
+  </div>
+  <div class="exercise-body">
+    <p>A team destroys their dev environment nightly and rebuilds it each morning. Since last Tuesday the morning build fails:</p>
+    <div class="code is-out">
+      <div class="code-head"><span class="fname">error</span></div>
+<pre><code class="language-bash">Error: creating Key Vault "kv-analytics-dev-weu-01": ConflictError:
+Exist soft deleted vault with the same name.</code></pre>
+    </div>
+    <p>Last Tuesday's change was adding <code>purge_protection_enabled = true</code> for a compliance requirement. Explain what happened and give three options with their trade-offs.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Cause.</strong> The nightly destroy soft-deletes the vault. Previously the provider's
+        <code>purge_soft_delete_on_destroy</code> setting could purge it, freeing the name. With
+        <code>purge_protection_enabled = true</code>, purging is <em>impossible</em> — Azure refuses, for
+        anyone, until the soft-delete retention expires. The name stays reserved for up to 90 days, so the
+        morning build cannot create a vault with it.
+      </p>
+      <p>
+        Worse, purge protection cannot be disabled once enabled, so there is no way to undo this on the existing
+        soft-deleted vault.
+      </p>
+      <p><strong>Option A — recover instead of recreating.</strong></p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">option A</span></div>
+<pre><code class="language-hcl">provider "azurerm" {
+  features {
+    key_vault {
+      recover_soft_deleted_key_vaults = true
+    }
+  }
+}</code></pre>
+      </div>
+      <p>
+        The provider recovers the soft-deleted vault rather than failing. Simple, and it works today.
+        Trade-off: the “fresh” environment is not fresh — it comes back with its previous secrets and
+        access configuration, which undermines the point of rebuilding nightly and can mask configuration drift.
+      </p>
+
+      <p><strong>Option B — stop destroying the vault.</strong></p>
+      <p>
+        Move the Key Vault into a separate, long-lived “platform” state that the nightly teardown does not
+        touch, and have the ephemeral environment reference it as a data source. Trade-off: two states to manage,
+        and the environment is no longer fully reproducible from nothing. This is usually the right answer —
+        vaults are not really ephemeral resources, and treating them as such is the actual mistake.
+      </p>
+
+      <p><strong>Option C — unique names per build.</strong></p>
+      <p>
+        Suffix the vault name with a build ID or date so each rebuild uses a new name. Trade-off: soft-deleted
+        vaults accumulate for 90 days each, quietly consuming the subscription's vault quota, and every consumer
+        of the vault name must be dynamic. Rarely worth it.
+      </p>
+
+      <p style="margin-bottom:0">
+        <strong>Recommended:</strong> Option B, with Option A as the immediate unblock. And revisit whether
+        <code>purge_protection_enabled</code> was needed in <em>dev</em> at all — compliance requirements
+        usually apply to environments holding real data. Setting it per environment via a variable is the
+        correct expression of that policy.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>Why shouldn't secrets be stored in Terraform code?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because git history is permanent — removing a committed secret does not remove it from the repository,
+        so remediation means rotating the credential. Repositories are also scanned continuously by automated
+        tooling, and leaked cloud credentials have been exploited within minutes. Beyond git, hardcoding breaks
+        environment portability and makes rotation a code change. Secrets should come from a secret store or the
+        runtime environment.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Does marking a value <code>sensitive</code> keep it out of state?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        No. <code>sensitive</code> only redacts the value from plan and apply output and propagates that marking
+        to derived values. The value is still written to state in plaintext, still present in a saved plan file,
+        still retrievable with <code>terraform output -raw</code>, and still visible in <code>TF_LOG=DEBUG</code>
+        output. It is a display control. For values that must not persist, Terraform 1.10's ephemeral values and
+        1.11's write-only arguments are the actual mechanism.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you manage secrets with Terraform on Azure?</summary>
+    <div class="details-body">
+      <p>
+        In order of preference. First, eliminate the secret: use managed identities and Azure RBAC so that
+        nothing needs a credential — this covers storage, SQL, Service Bus, Event Hubs and most Azure-to-Azure
+        access. Second, where a value must exist, use Key Vault references in app settings so Terraform stores
+        only a pointer and the runtime resolves the value with its own identity. Third, where Terraform must
+        handle a value, use ephemeral resources and write-only arguments such as <code>value_wo</code> so it
+        never reaches state or the plan file.
+      </p>
+      <p style="margin-bottom:0">
+        Fourth, provision the vault and its RBAC with Terraform but populate values out of band, outputting the
+        secret ID rather than the value. Only as a last resort accept the value in state, and then mitigate:
+        encrypted remote backend, tightly scoped state access, plan artefacts treated as secrets, and the
+        sensitive resources isolated in their own small state.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Access policies or RBAC for Key Vault?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        RBAC — it is Microsoft's recommendation and it gives one consistent authorization model across Azure,
+        works with PIM and access reviews, and supports scoping to an individual secret rather than only to the
+        whole vault. Access policies are vault-only, capped at 1024 entries, and a separate mental model. The
+        migration caveat is that switching an existing vault to RBAC breaks every consumer that does not already
+        have an equivalent role assignment, so you grant the roles first and flip the flag afterwards.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What happens when you destroy and recreate a Key Vault?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Destroying soft-deletes it, which keeps the name reserved for the retention period — 7 to 90 days — so
+        creating a new vault with the same name fails with a conflict error. If purge protection is enabled, the
+        soft-deleted vault cannot be purged by anyone, so you must wait out the retention or recover it. The
+        provider's <code>features.key_vault</code> block controls this: <code>recover_soft_deleted_key_vaults</code>
+        recovers instead of failing, and <code>purge_soft_delete_on_destroy</code> purges on destroy, which is
+        acceptable in throwaway dev and dangerous elsewhere.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Is reading a secret with a data source safe?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        No — and this is the part people miss. <code>data "azurerm_key_vault_secret"</code> caches the retrieved
+        value in state, so reading is exactly as exposing as writing. If you need a secret's value inside
+        Terraform without persisting it, use the <code>ephemeral "azurerm_key_vault_secret"</code> form instead;
+        if you only need to point something at the secret, construct the Key Vault reference URI or the secret
+        ID yourself and never read the value at all.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Any secret that flows through Terraform — written <em>or read</em> — is persisted in state in plaintext.</li>
+  <li><code>sensitive = true</code> controls display, not persistence. Ephemeral values and write-only arguments control persistence.</li>
+  <li>The best pattern is having no secret: managed identities plus RBAC.</li>
+  <li>Second best: Key Vault references in app settings, so state holds a pointer and rotation needs no apply.</li>
+  <li>Use <code>rbac_authorization_enabled = true</code> (renamed in v5) and scope roles to individual secrets.</li>
+  <li>Purge protection is permanent and interacts badly with nightly destroy-and-rebuild. Keep vaults out of ephemeral state.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,1100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · Identity, Entra ID &amp; Azure RBAC — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="08">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate</span>
+    <span>Part 7</span><span>·</span><span>~70 min</span><span>·</span><span>Requires Lessons 06, 07</span>
+  </div>
+  <h1>Identity, Entra ID &amp; Azure RBAC</h1>
+  <p class="lede">
+    The goal of this lesson is a data platform with <strong>no credentials anywhere</strong> — no account keys,
+    no connection strings, no passwords in app settings. That is entirely achievable with managed identities
+    and role assignments, and it is the single biggest security improvement available to you.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Distinguish authentication from authorization, and app registration from service principal</li>
+      <li>Choose between a user, a service principal, and a system- or user-assigned managed identity</li>
+      <li>Explain why <code>Contributor</code> does not let you read a blob</li>
+      <li>Write role assignments at the right scope, using the right ID</li>
+      <li>Give Databricks and Functions access to ADLS with no secrets at all</li>
+      <li>Handle RBAC propagation delay and the errors it causes</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Entra ID</span><span class="pill">Managed identity</span><span class="pill">Least privilege</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="authn-authz">Authentication vs authorization</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>Authentication — <em>who are you?</em></h4>
+    <p>
+      Handled by <strong>Microsoft Entra ID</strong> (formerly Azure AD). Produces a signed JWT access token
+      containing the principal's object ID, tenant, and what it is allowed to request tokens for.
+    </p>
+    <p style="margin-bottom:0">
+      Failure looks like: <code>401 Unauthorized</code>, <code>AADSTS700016</code>,
+      <code>invalid_client</code>.
+    </p>
+  </div>
+  <div class="card">
+    <h4>Authorization — <em>what may you do?</em></h4>
+    <p>
+      Handled by <strong>Azure RBAC</strong>, evaluated by Azure Resource Manager (or by the data-plane service)
+      on every request. Looks up role assignments matching the token's principal and the target's scope.
+    </p>
+    <p style="margin-bottom:0">
+      Failure looks like: <code>403 Forbidden</code>,
+      <code>AuthorizationFailed</code>, <code>AuthorizationPermissionMismatch</code>.
+    </p>
+  </div>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Reading the error tells you which system rejected you</div>
+  <p style="margin-bottom:0">
+    A 401 means Entra ID would not issue or accept a token — check credentials, tenant, expiry. A 403 means the
+    token was fine but the principal lacks a role at that scope — check role assignments. Confusing the two
+    sends people rotating credentials when they needed a role assignment, and vice versa.
+  </p>
+</div>
+
+<h2 id="principals">The four kinds of identity</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph T["Microsoft Entra ID tenant"]
+        U["<b>User</b><br/>a human<br/>MFA, conditional access"]
+        G["<b>Group</b><br/>a bag of principals<br/><i>assign roles here, not to people</i>"]
+        AR["<b>App registration</b><br/>the application <i>definition</i><br/>global to the tenant"]
+        SP["<b>Service principal</b><br/>the app's <i>identity in this tenant</i><br/>this is what gets role assignments"]
+        MIS["<b>System-assigned<br/>managed identity</b><br/>1:1 with one Azure resource<br/>created and deleted with it"]
+        MIU["<b>User-assigned<br/>managed identity</b><br/>a standalone Azure resource<br/>attachable to many resources"]
+
+        AR -->|"creates"| SP
+        U --> G
+        SP --> G
+    end
+
+    MIS -.->|"is a special<br/>kind of"| SP
+    MIU -.->|"is a special<br/>kind of"| SP
+
+    style SP fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+    style MIU fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+  </div>
+  <figcaption>
+    Everything that can hold a role assignment is a <strong>security principal</strong>. Managed identities are
+    service principals whose credentials Azure manages for you.
+  </figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Identity</th><th>Credential</th><th>Use it for</th><th>Terraform</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>User</strong></td>
+      <td>Password + MFA</td>
+      <td>Humans doing interactive work. Never for automation.</td>
+      <td><code>data.azuread_user</code></td>
+    </tr>
+    <tr>
+      <td><strong>Group</strong></td>
+      <td>n/a</td>
+      <td><strong>Every human role assignment.</strong> Assign roles to groups; manage membership separately.</td>
+      <td><code>azuread_group</code></td>
+    </tr>
+    <tr>
+      <td><strong>Service principal</strong></td>
+      <td>Client secret or certificate — <em>you</em> manage rotation</td>
+      <td>Automation outside Azure: CI runners, third-party SaaS. Prefer with OIDC federation so there is no secret.</td>
+      <td><code>azuread_application</code> + <code>azuread_service_principal</code></td>
+    </tr>
+    <tr>
+      <td><strong>System-assigned MI</strong></td>
+      <td>None — Azure manages it</td>
+      <td>One resource needing access to another. Lifecycle tied to the resource.</td>
+      <td><code>identity { type = "SystemAssigned" }</code> block on the resource</td>
+    </tr>
+    <tr>
+      <td><strong>User-assigned MI</strong></td>
+      <td>None — Azure manages it</td>
+      <td>Several resources sharing an identity, or when roles must exist <em>before</em> the resource does.</td>
+      <td><code>azurerm_user_assigned_identity</code></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="app-vs-sp">App registration vs service principal</h3>
+
+<p>
+  A distinction that confuses almost everyone, and it appears in Terraform as two separate resources.
+</p>
+
+<ul>
+  <li>The <strong>application object</strong> (app registration) is the global definition: name, redirect URIs, API permissions, federated credentials. It lives in the tenant where it was registered.</li>
+  <li>The <strong>service principal</strong> is the local instance of that application <em>in a tenant</em> — the thing that actually holds role assignments and can sign in.</li>
+</ul>
+
+<p>
+  For a single-tenant app they are one-to-one, so people use the terms interchangeably. The reason it matters
+  in Terraform: <code>azurerm_role_assignment.principal_id</code> needs the <strong>service principal's object
+  ID</strong>, not the application's object ID and not the client ID.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the three IDs, and which one you need</span></div>
+<pre><code class="language-hcl">resource "azuread_application" "ci" {
+  display_name = "sp-terraform-ci-analytics"
+}
+
+resource "azuread_service_principal" "ci" {
+  client_id = azuread_application.ci.client_id
+}
+
+# ✗ WRONG — this is the application object's ID
+# principal_id = azuread_application.ci.object_id
+
+# ✗ WRONG — this is the client ID, used for authentication, not authorization
+# principal_id = azuread_application.ci.client_id
+
+# ✓ RIGHT — the service principal's object ID
+resource "azurerm_role_assignment" "ci_contributor" {
+  scope                = azurerm_resource_group.analytics.id
+  role_definition_name = "Contributor"
+  principal_id         = azuread_service_principal.ci.object_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+</div>
+
+<h2 id="rbac-model">The Azure RBAC model</h2>
+
+<p>Three inputs produce one role assignment. All Azure authorization is this one sentence:</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    P["<b>WHO</b><br/>Security principal<br/>user · group · SP · MI<br/><i>principal_id</i>"]
+    R["<b>WHAT</b><br/>Role definition<br/>a set of allowed<br/>actions and dataActions<br/><i>role_definition_name</i>"]
+    S["<b>WHERE</b><br/>Scope<br/>management group ·<br/>subscription · resource group ·<br/>resource · sub-resource<br/><i>scope</i>"]
+
+    P --> RA["<b>azurerm_role_assignment</b>"]
+    R --> RA
+    S --> RA
+    RA --> E["Effective permission,<br/>inherited by everything<br/>below the scope"]
+
+    style RA fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+  </div>
+  <figcaption>
+    Assignments are <strong>additive and inherited downward</strong>. There is no “deny” in a role assignment —
+    deny is a separate, rarely used feature.
+  </figcaption>
+</figure>
+
+<h3 id="scope">Scope, and why it is your main lever</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">scopes, widest to narrowest</span></div>
+<pre><code class="language-hcl">locals {
+  # Management group — affects every subscription beneath it
+  scope_mg = "/providers/Microsoft.Management/managementGroups/mg-analytics"
+
+  # Subscription
+  scope_sub = "/subscriptions/${var.subscription_id}"
+
+  # Resource group — the most common scope
+  scope_rg = azurerm_resource_group.analytics.id
+
+  # Single resource
+  scope_sa = azurerm_storage_account.lake.id
+
+  # Sub-resource: ONE container. This is the scope you want for data access.
+  scope_container = "${azurerm_storage_account.lake.id}/blobServices/default/containers/silver"
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Container-level scoping is the least-privilege win most teams miss</div>
+  <p style="margin-bottom:0">
+    Granting <code>Storage Blob Data Contributor</code> on the storage account gives read/write to
+    <em>every</em> layer including <code>raw</code>. Scoping the same role to
+    <code>.../containers/silver</code> gives access to exactly that layer. It is the same amount of Terraform
+    and dramatically less blast radius. Do this by default.
+  </p>
+</div>
+
+<h2 id="control-vs-data-roles">Control-plane roles vs data-plane roles</h2>
+
+<p>
+  This is the single most important RBAC concept for a data engineer, and Lesson 06 already showed the error it
+  produces. Here is why it exists.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph CTRL["Control plane · management.azure.com"]
+        C1["Owner"]
+        C2["Contributor"]
+        C3["Reader"]
+        C4["Storage Account Contributor"]
+        CN["These grant <b>actions</b>:<br/>create/configure/delete the account,<br/>read its keys, set its firewall.<br/><br/><b>They grant NO access to the data.</b>"]
+    end
+
+    subgraph DATA["Data plane · acct.blob / acct.dfs.core.windows.net"]
+        D1["Storage Blob Data Owner"]
+        D2["Storage Blob Data Contributor"]
+        D3["Storage Blob Data Reader"]
+        DN["These grant <b>dataActions</b>:<br/>read/write/delete blobs,<br/>manage POSIX ACLs.<br/><br/><b>They grant NO management rights.</b>"]
+    end
+
+    style CTRL fill:#e6f2fb,stroke:#0078d4
+    style DATA fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>
+    Two disjoint permission sets. A role definition may contain <code>actions</code>,
+    <code>dataActions</code>, or both — the built-in ones above deliberately contain only one.
+  </figcaption>
+</figure>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Why Owner can still read your data — and why that is not a defence</div>
+  <p style="margin-bottom:0">
+    An Owner or Contributor cannot read blobs <em>directly</em>, but they <strong>can read the storage account
+    keys</strong> (<code>listKeys</code> is a control-plane action) and use those to access everything. That is
+    the loophole. Setting <code>shared_access_key_enabled = false</code> closes it: with no keys, control-plane
+    roles genuinely cannot reach the data, and access becomes governed purely by data roles. This is the real
+    argument for disabling shared keys.
+  </p>
+</div>
+
+<h3 id="roles-table">Built-in roles a data engineer actually uses</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Role</th><th>Plane</th><th>Grants</th><th>Typical assignee</th></tr></thead>
+  <tbody>
+    <tr><td><code>Storage Blob Data Reader</code></td><td>Data</td><td>Read and list blobs</td><td>Analysts, read-only jobs, BI service principals</td></tr>
+    <tr><td><code>Storage Blob Data Contributor</code></td><td>Data</td><td>Read, write, delete blobs; modify ACLs</td><td>Databricks access connector, ingestion Functions</td></tr>
+    <tr><td><code>Storage Blob Data Owner</code></td><td>Data</td><td>All of the above plus full POSIX ACL and ownership control</td><td>The lake admin group only</td></tr>
+    <tr><td><code>Storage Queue Data Contributor</code></td><td>Data</td><td>Queue message operations</td><td>Event-driven Functions</td></tr>
+    <tr><td><code>Key Vault Secrets User</code></td><td>Data</td><td>Read secret values</td><td>Any application reading a secret</td></tr>
+    <tr><td><code>Key Vault Secrets Officer</code></td><td>Data</td><td>Full secret management</td><td>Platform team, rotation automation</td></tr>
+    <tr><td><code>Key Vault Crypto Service Encryption User</code></td><td>Data</td><td>Wrap/unwrap keys</td><td>A storage account's identity, for customer-managed keys</td></tr>
+    <tr><td><code>Contributor</code></td><td>Control</td><td>Manage everything except access</td><td>The Terraform deployment principal, scoped to a resource group</td></tr>
+    <tr><td><code>User Access Administrator</code></td><td>Control</td><td>Create role assignments</td><td>Only if Terraform must manage RBAC — see below</td></tr>
+    <tr><td><code>Reader</code></td><td>Control</td><td>View resources and configuration</td><td>Auditors, monitoring</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · Owner for the deployment principal</div>
+  <p style="margin-bottom:0">
+    Terraform needs <code>Contributor</code> to create resources, and it needs
+    <code>Microsoft.Authorization/roleAssignments/write</code> to create role assignments — which
+    <code>Contributor</code> deliberately excludes. The lazy fix is granting <code>Owner</code>, which also lets
+    the pipeline grant <em>anything to anyone</em>, including privilege escalation to itself. The correct fix is
+    <code>Contributor</code> plus <code>User Access Administrator</code> (or better, <code>Role Based Access
+    Control Administrator</code>, which is narrower), both scoped to the specific resource groups, and ideally
+    with an ABAC condition limiting which roles it may assign.
+  </p>
+</div>
+
+<h2 id="managed-identities">Managed identities in Terraform</h2>
+
+<h3 id="system-assigned">System-assigned</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">system-assigned identity</span></div>
+<pre><code class="language-hcl">resource "azurerm_linux_function_app" "ingest" {
+  name                = "func-ingest-dev-weu-01"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  service_plan_id     = azurerm_service_plan.functions.id
+
+  # Azure creates a service principal bound to this function app.
+  identity {
+    type = "SystemAssigned"
+  }
+
+  site_config {}
+}
+
+# The principal ID is only known AFTER the app is created.
+resource "azurerm_role_assignment" "ingest_to_lake" {
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/raw"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_linux_function_app.ingest.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Why <code>identity[0]</code></div>
+  <p style="margin-bottom:0">
+    <code>identity</code> is a repeatable block in the schema, so Terraform exposes it as a list even when at
+    most one is allowed. <code>identity[0].principal_id</code> errors if no identity block is configured; use
+    <code>one(azurerm_linux_function_app.ingest.identity)</code> or a splat if it might be absent.
+  </p>
+</div>
+
+<h3 id="user-assigned">User-assigned — usually the better choice</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">user-assigned identity</span></div>
+<pre><code class="language-hcl">resource "azurerm_user_assigned_identity" "ingest" {
+  name                = "id-ingest-dev-weu-01"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  tags                = local.common_tags
+}
+
+# Roles can be assigned BEFORE any compute exists, and stay assigned when
+# the compute is destroyed and recreated.
+resource "azurerm_role_assignment" "ingest_to_raw" {
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/raw"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_role_assignment" "ingest_to_secrets" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_linux_function_app" "ingest" {
+  # ...
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ingest.id]
+  }
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>System-assigned</th><th>User-assigned</th></tr></thead>
+  <tbody>
+    <tr><td>Lifecycle</td><td>Created and destroyed with the resource</td><td>Independent Azure resource</td></tr>
+    <tr><td>Shared across resources</td><td>No — strictly 1:1</td><td>Yes</td></tr>
+    <tr><td>Roles survive resource recreation</td><td><strong>No</strong> — new principal ID, all assignments must be recreated</td><td><strong>Yes</strong></td></tr>
+    <tr><td>Roles can pre-exist the resource</td><td>No — creates a hard ordering dependency</td><td>Yes — assign roles first, attach later</td></tr>
+    <tr><td>Propagation delay exposure</td><td>High: create resource → get principal → assign role → use immediately</td><td>Low: roles are typically minutes or days old by the time compute starts</td></tr>
+    <tr><td>Simplicity</td><td>Fewer resources</td><td>One extra resource per identity</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Recommendation</div>
+  <p style="margin-bottom:0">
+    Use <strong>user-assigned</strong> for anything in a data platform. The decisive reasons are that role
+    assignments survive replacing the compute — a Function App replacement does not silently drop all its
+    permissions — and that you can create identities and grant roles in a separate, earlier apply, which
+    sidesteps propagation-delay failures. Use system-assigned only for single-purpose resources where the
+    identity genuinely has no meaning outside that resource, such as a storage account reaching its own
+    customer-managed key.
+  </p>
+</div>
+
+<h2 id="propagation">RBAC propagation delay</h2>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the intermittent failure</span></div>
+<pre><code class="language-bash">azurerm_role_assignment.ingest_to_raw: Creation complete after 8s
+azurerm_storage_data_lake_gen2_filesystem.raw: Creating...
+
+Error: creating File System "raw": unexpected status 403 with
+AuthorizationPermissionMismatch: This request is not authorized to perform
+this operation using this permission.</code></pre>
+</div>
+
+<p>
+  The role assignment exists. Azure has simply not finished replicating it to the endpoint enforcing it. This
+  is normal and documented — assignments generally take effect within a couple of minutes but can take longer.
+  Options, best first:
+</p>
+
+<ol>
+  <li><strong>Grant the deployment identity its data roles out of band</strong>, once, before the pipeline ever runs. The pipeline then never creates a role it immediately depends on.</li>
+  <li><strong>Split the apply</strong>: one configuration creates identities and role assignments; a later one creates the resources that use them. Natural when environments are split into layers (Lesson 17).</li>
+  <li><strong>Use user-assigned identities</strong>, so the assignment usually pre-dates the compute by a long way.</li>
+  <li><strong>Insert a wait</strong> — pragmatic, ugly, and sometimes the right answer:</li>
+</ol>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the pragmatic wait</span></div>
+<pre><code class="language-hcl">resource "time_sleep" "wait_for_rbac" {
+  depends_on      = [azurerm_role_assignment.deployer_data]
+  create_duration = "60s"
+}
+
+resource "azurerm_storage_data_lake_gen2_filesystem" "raw" {
+  name               = "raw"
+  storage_account_id = azurerm_storage_account.lake.id
+  depends_on         = [time_sleep.wait_for_rbac]
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Why <code>time_sleep</code> is a smell, not a solution</div>
+  <p style="margin-bottom:0">
+    It adds a fixed minute to every apply forever, and 60 seconds is a guess that will occasionally be wrong.
+    It is acceptable as a stopgap in a dev environment. If it is in your production pipeline, the underlying
+    problem — the deployment identity bootstrapping its own permissions — should be fixed instead.
+  </p>
+</div>
+
+<h2 id="custom-roles">Custom roles</h2>
+
+<p>
+  When no built-in role fits, define one. Keep them rare: built-in roles are maintained by Microsoft as APIs
+  evolve, custom ones are maintained by you.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">custom-role.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_role_definition" "lake_layer_reader" {
+  name        = "Data Lake Layer Reader"
+  scope       = azurerm_resource_group.analytics.id
+  description = "Read blobs in the lake and read the account's configuration, but never list keys."
+
+  permissions {
+    actions = [
+      "Microsoft.Storage/storageAccounts/read",
+      "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+    ]
+
+    data_actions = [
+      "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+    ]
+
+    # Explicitly deny key access even if a wildcard action were added later.
+    not_actions = [
+      "Microsoft.Storage/storageAccounts/listkeys/action",
+    ]
+
+    not_data_actions = []
+  }
+
+  assignable_scopes = [azurerm_resource_group.analytics.id]
+}
+
+resource "azurerm_role_assignment" "analyst_gold" {
+  scope              = "${azurerm_storage_account.lake.id}/blobServices/default/containers/gold"
+  role_definition_id = azurerm_role_definition.lake_layer_reader.role_definition_resource_id
+  principal_id       = data.azuread_group.analysts.object_id
+  principal_type     = "Group"
+}</code></pre>
+</div>
+
+<h2 id="groups">Assign roles to groups, not to people</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">groups.tf</span></div>
+<pre><code class="language-hcl">data "azuread_group" "data_engineers" {
+  display_name     = "sg-data-engineers"
+  security_enabled = true
+}
+
+resource "azurerm_role_assignment" "engineers_silver_write" {
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/silver"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azuread_group.data_engineers.object_id
+  principal_type       = "Group"
+}</code></pre>
+</div>
+
+<p>
+  Membership changes then happen in Entra ID — through joiner/mover/leaver processes and access reviews —
+  without a Terraform apply. Assigning roles directly to individual users means every hire and departure is an
+  infrastructure pull request, which is both slow and a guarantee that leavers keep access.
+</p>
+
+<h2 id="scenario-databricks">Scenario: Databricks reads and writes ADLS with no credentials</h2>
+
+<div class="scenario">
+  <div class="scenario-tag">Scenario 2 from the brief</div>
+  <p>
+    <strong>“Databricks needs read/write access to a storage account without storing credentials.”</strong>
+  </p>
+  <p>
+    The modern answer is a <strong>Databricks Access Connector</strong> — an Azure resource that carries a
+    managed identity, which Unity Catalog uses to reach storage. No keys, no service principal secrets, no
+    mount points with embedded credentials.
+  </p>
+</div>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    DBX["Databricks workspace"] -->|"references"| AC["azurerm_databricks_access_connector<br/><b>managed identity</b>"]
+    AC -->|"principal_id"| RA["azurerm_role_assignment<br/>Storage Blob Data Contributor"]
+    RA -->|"scope"| SA[("ADLS Gen2<br/>stanalyticsdevweu01")]
+    DBX -->|"Unity Catalog<br/>external location"| SA
+
+    style AC fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+    style SA fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>No secret exists anywhere in this chain — Azure manages the identity's credentials.</figcaption>
+</figure>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">databricks-access.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_databricks_access_connector" "unity" {
+  name                = "dbac-analytics-dev-weu-01"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = local.common_tags
+}
+
+# One assignment per layer, scoped to that container only.
+locals {
+  databricks_access = {
+    raw    = "Storage Blob Data Reader"
+    bronze = "Storage Blob Data Contributor"
+    silver = "Storage Blob Data Contributor"
+    gold   = "Storage Blob Data Contributor"
+  }
+}
+
+resource "azurerm_role_assignment" "databricks_layers" {
+  for_each = local.databricks_access
+
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/${each.key}"
+  role_definition_name = each.value
+  principal_id         = azurerm_databricks_access_connector.unity.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+</div>
+
+<p>
+  Note what this expresses: Databricks may <em>read</em> the raw landing zone but not modify it — raw is
+  immutable by design — while it has full read/write on the curated layers. That policy is now infrastructure,
+  reviewable in a pull request, rather than a convention people remember. Lesson 12 connects this to Unity
+  Catalog external locations.
+</p>
+
+<h2 id="mistakes">Common mistakes</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Using <code>Contributor</code> and expecting data access</div>
+  <p style="margin-bottom:0">
+    Covered above, but it is worth repeating because it accounts for a large share of Azure Terraform support
+    questions. Management roles and data roles are disjoint.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Forgetting <code>principal_type</code> for freshly created principals</div>
+  <p style="margin-bottom:0">
+    When you create a service principal and assign it a role in the same apply, Entra ID replication can lag and
+    Azure rejects the assignment with
+    <code>PrincipalNotFound</code>. Set <code>principal_type = "ServicePrincipal"</code> and, if needed,
+    <code>skip_service_principal_aad_check = true</code> — that argument exists specifically for this race.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Non-deterministic role assignment names</div>
+  <p style="margin-bottom:0">
+    Role assignments have a GUID name that Terraform generates if you do not supply one. Combined with
+    <code>for_each</code> over an unstable key, this produces churn — assignments destroyed and recreated on
+    every apply, each time causing a brief window with no access. Keep <code>for_each</code> keys stable and
+    derived from static input.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Which role, which scope?</span>
+  </div>
+  <div class="exercise-body">
+    <p>Choose the narrowest role and scope for each:</p>
+    <ol>
+      <li>A Power BI service principal reading curated tables from the <code>gold</code> container.</li>
+      <li>An ingestion Function App writing to <code>raw</code> and reading one Key Vault secret.</li>
+      <li>The Terraform CI principal deploying the whole platform, including role assignments.</li>
+      <li>A data science team needing to read <code>silver</code> and read/write <code>gold</code>.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><code>Storage Blob Data Reader</code> scoped to <code>.../containers/gold</code>. Not the storage account — there is no reason for BI to see raw.</li>
+        <li><code>Storage Blob Data Contributor</code> on <code>.../containers/raw</code>, plus <code>Key Vault Secrets User</code>. Scope the vault role to the individual secret if the vault holds secrets for several applications; otherwise the vault is acceptable.</li>
+        <li><code>Contributor</code> on each target resource group, plus <code>Role Based Access Control Administrator</code> (narrower than User Access Administrator) for the role assignments. Never <code>Owner</code>, and never at subscription scope if resource-group scope will do.</li>
+        <li>Assign to an Entra ID <strong>group</strong>, not to individuals: <code>Storage Blob Data Reader</code> on <code>silver</code> and <code>Storage Blob Data Contributor</code> on <code>gold</code>.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        The pattern in all four: pick the narrowest scope that works, prefer data roles over control roles for
+        data access, and assign to groups wherever humans are involved.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">A per-layer access matrix</span>
+  </div>
+  <div class="exercise-body">
+    <p>Express this access matrix in Terraform, with no repeated resource blocks:</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Identity</th><th>raw</th><th>bronze</th><th>silver</th><th>gold</th></tr></thead>
+      <tbody>
+        <tr><td>Databricks connector</td><td>Reader</td><td>Contributor</td><td>Contributor</td><td>Contributor</td></tr>
+        <tr><td>Ingest function</td><td>Contributor</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>BI service principal</td><td>—</td><td>—</td><td>—</td><td>Reader</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Hint: this is the <code>flatten()</code> cross-product pattern from Lesson 03.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">rbac.tf</span></div>
+<pre><code class="language-hcl">locals {
+  principals = {
+    databricks = azurerm_databricks_access_connector.unity.identity[0].principal_id
+    ingest     = azurerm_user_assigned_identity.ingest.principal_id
+    bi         = azuread_service_principal.powerbi.object_id
+  }
+
+  # The matrix, as data.
+  access_matrix = {
+    databricks = {
+      raw    = "Storage Blob Data Reader"
+      bronze = "Storage Blob Data Contributor"
+      silver = "Storage Blob Data Contributor"
+      gold   = "Storage Blob Data Contributor"
+    }
+    ingest = {
+      raw = "Storage Blob Data Contributor"
+    }
+    bi = {
+      gold = "Storage Blob Data Reader"
+    }
+  }
+
+  # Flatten to one entry per (identity, layer) pair, keyed stably.
+  assignments = {
+    for a in flatten([
+      for who, layers in local.access_matrix : [
+        for layer, role in layers : {
+          who   = who
+          layer = layer
+          role  = role
+        }
+      ]
+    ]) : "${a.who}-${a.layer}" =&gt; a
+  }
+}
+
+resource "azurerm_role_assignment" "lake_access" {
+  for_each = local.assignments
+
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/${each.value.layer}"
+  role_definition_name = each.value.role
+  principal_id         = local.principals[each.value.who]
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Six role assignments from one resource block, and the access policy is now a readable table in code.
+        Adding a layer or an identity is a data change. Note the keys —
+        <code>"databricks-raw"</code>, <code>"ingest-raw"</code> — are stable strings derived from static input,
+        so they are valid <code>for_each</code> keys and the state addresses will not churn.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write a least-privilege custom role</span>
+  </div>
+  <div class="exercise-body">
+    <p>The BI team needs to read blobs in <code>gold</code> and see the storage account's configuration &mdash; but must never be able to read the account keys, which would bypass every data-plane control you have.</p>    <p style="margin-bottom:0">No built-in role fits: <code>Reader</code> grants no data access, and <code>Storage Blob Data Reader</code> grants no configuration visibility. Write the custom role and assign it to a group.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">custom-role.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_role_definition" "lake_layer_reader" {
+  name        = "Data Lake Layer Reader"
+  scope       = azurerm_resource_group.analytics.id
+  description = "Read blobs and account configuration. Cannot list account keys."
+
+  permissions {
+    # Control plane: see the account, not its secrets.
+    actions = [
+      "Microsoft.Storage/storageAccounts/read",
+      "Microsoft.Storage/storageAccounts/blobServices/read",
+      "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+    ]
+
+    # Data plane: read blob content.
+    data_actions = [
+      "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+    ]
+
+    # Belt and braces: even if a wildcard action is added above later,
+    # key access stays denied. not_actions always wins.
+    not_actions = [
+      "Microsoft.Storage/storageAccounts/listkeys/action",
+      "Microsoft.Storage/storageAccounts/listAccountSas/action",
+      "Microsoft.Storage/storageAccounts/listServiceSas/action",
+    ]
+
+    not_data_actions = []
+  }
+
+  assignable_scopes = [azurerm_resource_group.analytics.id]
+}
+
+data "azuread_group" "bi" {
+  display_name     = "sg-bi-analysts"
+  security_enabled = true
+}
+
+resource "azurerm_role_assignment" "bi_gold" {
+  # Scoped to ONE container, not the account.
+  scope = "${azurerm_storage_account.lake.id}/blobServices/default/containers/gold"
+
+  # Custom roles are referenced by role_definition_id, not by name.
+  role_definition_id = azurerm_role_definition.lake_layer_reader.role_definition_resource_id
+
+  principal_id   = data.azuread_group.bi.object_id
+  principal_type = "Group"
+}</code></pre>
+</div>    <p>Three specifics. Custom roles use <code>role_definition_id</code> with the resource's <code>role_definition_resource_id</code> attribute, not <code>role_definition_name</code>. <code>not_actions</code> is a subtraction that always wins over <code>actions</code>, so the key-listing denial survives future edits. And the assignment targets a <strong>group</strong>, so joiners and leavers are handled in Entra ID rather than by a Terraform apply.</p>    <p style="margin-bottom:0">Keep custom roles rare, though. Built-in roles are maintained by Microsoft as APIs evolve; a custom one is yours to update when Azure adds a new data action you should have included.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Grant every identity the right access from one matrix</span>
+  </div>
+  <div class="exercise-body">
+    <p>Express this whole policy with <strong>one</strong> <code>azurerm_role_assignment</code> block. Databricks must be able to read raw but not modify it; ingestion writes raw only; BI reads gold only.</p>    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Identity</th><th>raw</th><th>bronze</th><th>silver</th><th>gold</th></tr></thead>
+      <tbody>
+        <tr><td>Databricks connector</td><td>Reader</td><td>Contributor</td><td>Contributor</td><td>Contributor</td></tr>
+        <tr><td>Ingest identity</td><td>Contributor</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+        <tr><td>BI group</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>Reader</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p style="margin-bottom:0">The BI entry is a group and the other two are service principals, so <code>principal_type</code> must vary too.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">rbac.tf</span></div>
+<pre><code class="language-hcl">locals {
+  # Each principal carries its TYPE as well as its ID.
+  principals = {
+    databricks = {
+      id   = azurerm_databricks_access_connector.unity.identity[0].principal_id
+      type = "ServicePrincipal"
+    }
+    ingest = {
+      id   = azurerm_user_assigned_identity.ingest.principal_id
+      type = "ServicePrincipal"
+    }
+    bi = {
+      id   = data.azuread_group.bi.object_id
+      type = "Group"
+    }
+  }
+
+  # The policy, as readable data.
+  access_matrix = {
+    databricks = {
+      raw    = "Storage Blob Data Reader"        # immutable landing zone
+      bronze = "Storage Blob Data Contributor"
+      silver = "Storage Blob Data Contributor"
+      gold   = "Storage Blob Data Contributor"
+    }
+    ingest = {
+      raw = "Storage Blob Data Contributor"
+    }
+    bi = {
+      gold = "Storage Blob Data Reader"
+    }
+  }
+
+  # Cross-product, flattened and stably keyed.
+  assignments = {
+    for a in flatten([
+      for who, layers in local.access_matrix : [
+        for layer, role in layers : {
+          who = who, layer = layer, role = role
+        }
+      ]
+    ]) : "${a.who}-${a.layer}" =&gt; a
+  }
+}
+
+resource "azurerm_role_assignment" "lake" {
+  for_each = local.assignments
+
+  scope                = azurerm_storage_container.layers[each.value.layer].id
+  role_definition_name = each.value.role
+  principal_id         = local.principals[each.value.who].id
+  principal_type       = local.principals[each.value.who].type
+}</code></pre>
+</div>    <p>Six role assignments from one block, and the access policy is now a table a reviewer can read. Adding a layer or an identity is a data change, not a structural one.</p>    <p style="margin-bottom:0">The keys &mdash; <code>"databricks-raw"</code>, <code>"bi-gold"</code> &mdash; are strings built from static input, so they are known at plan time and stable across runs. That is what stops the state addresses churning and briefly revoking access on every apply.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Three RBAC bugs</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">resource "azuread_application" "etl" {
+  display_name = "sp-etl-pipeline"
+}
+
+resource "azuread_service_principal" "etl" {
+  client_id = azuread_application.etl.client_id
+}
+
+resource "azurerm_role_assignment" "etl_lake" {
+  scope                = azurerm_storage_account.lake.id
+  role_definition_name = "Contributor"
+  principal_id         = azuread_application.etl.object_id
+}
+
+resource "azurerm_storage_data_lake_gen2_filesystem" "bronze" {
+  name               = "bronze"
+  storage_account_id = azurerm_storage_account.lake.id
+}</code></pre>
+    </div>
+    <p>The pipeline reports <code>403 AuthorizationPermissionMismatch</code> when it tries to write data. Find three problems.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>1 · Wrong principal ID.</strong></p>
+      <p>
+        <code>azuread_application.etl.object_id</code> is the <em>application object's</em> ID. Role assignments
+        need the <em>service principal's</em> object ID:
+        <code>principal_id = azuread_service_principal.etl.object_id</code>. Depending on timing this either
+        fails with <code>PrincipalNotFound</code> or silently creates an assignment against an object that never
+        authenticates — which is worse, because it looks correct in the portal.
+      </p>
+
+      <p><strong>2 · Wrong role for the job.</strong></p>
+      <p>
+        <code>Contributor</code> is a control-plane role. It lets the principal manage the storage account but
+        grants no <code>dataActions</code>, so writing blobs is denied — exactly the reported error. It needs
+        <code>Storage Blob Data Contributor</code>. And it should be scoped to the specific container rather
+        than the whole account.
+      </p>
+
+      <p><strong>3 · Missing ordering, and a missing <code>principal_type</code>.</strong></p>
+      <p>
+        The filesystem is a data-plane object, so it requires the role assignment to be effective first — but
+        nothing connects the two resources, so Terraform may create them in parallel. Add
+        <code>depends_on</code>. Separately, because the service principal is created in the same apply, add
+        <code>principal_type = "ServicePrincipal"</code> and consider
+        <code>skip_service_principal_aad_check = true</code> to survive Entra ID replication lag.
+      </p>
+
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">fixed.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_role_assignment" "etl_lake" {
+  scope                            = "${azurerm_storage_account.lake.id}/blobServices/default/containers/bronze"
+  role_definition_name             = "Storage Blob Data Contributor"
+  principal_id                     = azuread_service_principal.etl.object_id
+  principal_type                   = "ServicePrincipal"
+  skip_service_principal_aad_check = true
+}
+
+resource "azurerm_storage_data_lake_gen2_filesystem" "bronze" {
+  name               = "bronze"
+  storage_account_id = azurerm_storage_account.lake.id
+  depends_on         = [azurerm_role_assignment.etl_lake]
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        There is a chicken-and-egg wrinkle worth noticing: the role is scoped to a container that this apply is
+        about to create. In practice you would scope the deployer's role to the storage account, and scope the
+        <em>workload</em> identities to individual containers.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is the difference between authentication and authorization in Azure?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Authentication is Entra ID establishing who a principal is and issuing a token. Authorization is Azure
+        RBAC deciding whether that principal may perform a given action on a given resource, evaluated per
+        request. Practically, a 401 means the token was rejected — a credential or tenant problem. A 403 means
+        the token was fine but no role assignment grants that action at that scope.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is a managed identity, and when would you use user-assigned over system-assigned?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A managed identity is a service principal whose credentials Azure creates, stores and rotates — the
+        resource fetches tokens from the instance metadata endpoint, so no secret exists for anyone to leak.
+        System-assigned is bound 1:1 to a resource and deleted with it. User-assigned is a standalone Azure
+        resource. I default to user-assigned in a data platform for two reasons: role assignments survive
+        replacing the compute, so a Function App recreation does not silently drop every permission; and roles
+        can be granted before the compute exists, which avoids the RBAC propagation race you otherwise hit when
+        creating a resource and immediately using its identity.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why does a Contributor get 403 when reading a blob?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because Azure separates control-plane and data-plane permissions. <code>Contributor</code> grants
+        <code>actions</code> — managing the storage account — but no <code>dataActions</code>, so blob reads are
+        denied. Reading blobs needs a data role such as <code>Storage Blob Data Reader</code>. The subtlety is
+        that Contributor <em>can</em> call <code>listKeys</code> and use an account key to reach the data
+        anyway, which is why disabling shared access keys is what actually makes the separation meaningful.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you give Databricks access to ADLS Gen2?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        With a Databricks Access Connector carrying a managed identity, granted
+        <code>Storage Blob Data Contributor</code> on the relevant containers, and referenced from a Unity
+        Catalog storage credential and external location. No secrets exist anywhere. I would scope per container
+        rather than per account, so for example Databricks reads the raw landing zone but cannot modify it,
+        while having read/write on bronze, silver and gold. The legacy alternatives — account keys in a secret
+        scope, or a service principal with a client secret and DBFS mounts — both put a durable credential
+        somewhere and should be avoided in new work.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What permissions does a Terraform deployment principal need?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>Contributor</code> scoped to the resource groups it manages, which covers creating and configuring
+        resources. If it must also manage role assignments it needs
+        <code>Microsoft.Authorization/roleAssignments/write</code>, which Contributor deliberately excludes — so
+        add <code>Role Based Access Control Administrator</code> rather than granting Owner, since Owner also
+        allows the pipeline to escalate its own privileges. If it creates data-plane objects such as containers,
+        it also needs the corresponding data role — and I would grant that once, out of band, rather than having
+        the pipeline bootstrap its own permissions and hit propagation delays.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Should role assignments go to users or groups?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Groups, essentially always, for anything involving humans. Membership then changes through the identity
+        lifecycle — joiner/mover/leaver, access reviews — without a Terraform apply. Assigning to individuals
+        means every hire and departure becomes an infrastructure pull request, which is slow and, more
+        importantly, reliably forgotten when people leave. Service principals and managed identities are
+        assigned directly, since they represent one workload each.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Your apply fails with 403 immediately after creating a role assignment. What is happening?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Azure RBAC propagation delay — the assignment exists but has not replicated to the endpoint enforcing
+        it, which normally takes up to a couple of minutes. Re-running usually succeeds with no code change. The
+        durable fixes are to grant the deployment identity its data roles out of band before the pipeline runs,
+        to split identity and role creation into an earlier apply, or to use user-assigned identities so
+        assignments long pre-date the compute. A <code>time_sleep</code> resource works but adds fixed latency
+        to every run and is a guess about the delay, so I treat it as a stopgap.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Role assignment = <strong>principal + role definition + scope</strong>. Assignments are additive and inherit downward.</li>
+  <li>Control-plane roles and data-plane roles are disjoint. <code>Contributor</code> does not read blobs.</li>
+  <li>Setting <code>shared_access_key_enabled = false</code> is what makes that separation real, by closing the <code>listKeys</code> loophole.</li>
+  <li>Scope data roles to <strong>containers</strong>, not accounts. Same effort, far less blast radius.</li>
+  <li>Prefer user-assigned managed identities: roles survive resource replacement and can be granted in advance.</li>
+  <li>Use the service principal's object ID — not the application object ID, not the client ID.</li>
+  <li>Assign roles to groups for humans; directly for workload identities.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

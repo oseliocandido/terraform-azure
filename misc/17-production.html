@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>17 · Production Terraform — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="17">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-production">Production</span>
+    <span>Part 18</span><span>·</span><span>~75 min</span><span>·</span><span>Requires Lessons 14, 16</span>
+  </div>
+  <h1>Production Terraform</h1>
+  <p class="lede">
+    There is no single correct repository structure, and anyone who tells you otherwise is selling something.
+    What there is: a set of trade-offs, and one organising principle — <strong>blast radius</strong> — that
+    resolves most of them.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Evaluate repository structures against blast radius, coupling and cognitive load</li>
+      <li>Choose a state isolation strategy and defend it</li>
+      <li>Design naming and tagging conventions that survive contact with reality</li>
+      <li>Run a provider upgrade safely</li>
+      <li>Review someone else's Terraform pull request effectively</li>
+      <li>Scope a deployment identity to least privilege</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Repo structure</span><span class="pill">Blast radius</span><span class="pill">Code review</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="blast-radius">The organising principle</h2>
+
+<div class="callout callout-important">
+  <div class="callout-title">Blast radius</div>
+  <p style="margin-bottom:0">
+    <strong>How much can one mistake destroy?</strong> That question answers most structural decisions.
+    A single state file containing your entire platform means a corrupted state, a bad apply or an
+    over-permissioned pipeline can take everything. Splitting reduces the maximum damage — at the cost of
+    coordination between the pieces. Every structure below is a different point on that trade-off.
+  </p>
+</div>
+
+<h2 id="structures">Four repository structures</h2>
+
+<h3 id="structure-a">A · Flat single root</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">structure</span></div>
+<pre class="plain">terraform/
+├── main.tf
+├── variables.tf
+├── outputs.tf
+├── versions.tf
+└── backend.tf</pre>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>Works when</h4>
+    <ul style="margin-bottom:0">
+      <li>One environment, one team, a proof of concept</li>
+      <li>Under about thirty resources</li>
+      <li>Nothing in it is production</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Breaks when</h4>
+    <ul style="margin-bottom:0">
+      <li>You add a second environment — there is nowhere to put the difference</li>
+      <li>Plans get slow because every resource is refreshed</li>
+      <li>Anyone who can change a tag can destroy production</li>
+    </ul>
+  </div>
+</div>
+
+<h3 id="structure-b">B · One root, per-environment tfvars and backend</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">structure</span></div>
+<pre class="plain">terraform/
+├── main.tf
+├── variables.tf
+├── outputs.tf
+├── versions.tf
+├── backend.tf              partial — key comes from -backend-config
+├── modules/
+│   ├── storage/
+│   └── networking/
+└── env/
+    ├── dev.tfvars      dev.backend.hcl
+    ├── test.tfvars     test.backend.hcl
+    └── prod.tfvars     prod.backend.hcl</pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Pro</th><th>Con</th></tr></thead>
+  <tbody>
+    <tr><td>Zero code duplication — one change reaches every environment</td><td>Prod runs the same code path as dev, so a mistake can reach prod as easily</td></tr>
+    <tr><td>Structural drift between environments is impossible</td><td>Environments <em>cannot</em> differ structurally without conditionals accumulating</td></tr>
+    <tr><td>Small repository, easy to navigate</td><td><strong>Forgetting <code>-reconfigure</code> plans dev's code against prod's state.</strong> This is a real incident, not a theoretical one</td></tr>
+    <tr><td>Fast to add an environment</td><td>One pipeline must be parameterised carefully; approval gates are harder to differentiate</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="structure-c">C · Directory per environment (the common default)</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">structure</span></div>
+<pre class="plain">terraform/
+├── modules/
+│   ├── networking/
+│   ├── storage/
+│   ├── key-vault/
+│   ├── databricks/
+│   └── functions/
+├── environments/
+│   ├── dev/
+│   │   ├── main.tf            calls modules with dev inputs
+│   │   ├── backend.tf         committed, hardcoded — cannot be confused
+│   │   ├── terraform.tfvars
+│   │   └── versions.tf
+│   ├── test/
+│   └── prod/
+├── .github/workflows/
+├── .gitignore
+├── .terraform.lock.hcl        one per environment directory
+└── README.md</pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Pro</th><th>Con</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Backend is committed per directory</strong> — you cannot apply to the wrong state</td><td>The <code>main.tf</code> files are similar; a change must be made in each</td></tr>
+    <tr><td>Environments can legitimately differ — prod has private endpoints, dev does not</td><td>Genuine duplication, which can drift if nobody promotes changes</td></tr>
+    <tr><td>Per-directory permissions and per-environment pipeline approvals are natural</td><td>More files to navigate</td></tr>
+    <tr><td>A reviewer sees exactly what prod has that dev lacks</td><td>Lock files can diverge between environments</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">On the duplication objection</div>
+  <p style="margin-bottom:0">
+    “But dev and prod <code>main.tf</code> are 90% identical!” Yes — and that repetition <em>forces promotion
+    through environments</em>. A change lands in dev, is applied and observed, and is then copied to prod as a
+    separate, reviewed pull request. Many teams consider that a feature rather than a cost. If the duplication
+    genuinely hurts, the answer is a thicker module, not a shared root.
+  </p>
+</div>
+
+<h3 id="structure-d">D · Layered components (large platforms)</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">structure</span></div>
+<pre class="plain">terraform/
+├── modules/
+└── layers/
+    ├── 10-platform/           VNet, DNS zones, Key Vault    · changes monthly
+    │   ├── dev/ test/ prod/
+    ├── 20-data/               ADLS, RBAC, Databricks ws     · changes weekly
+    │   ├── dev/ test/ prod/
+    └── 30-workloads/          Functions, jobs, pipelines    · changes daily
+        ├── dev/ test/ prod/
+
+state layout: platform/prod.tfstate, data/prod.tfstate, workloads/prod.tfstate</pre>
+</div>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    L1["<b>10-platform</b><br/>VNet · private DNS · Key Vault<br/><i>changes monthly · network team</i>"]
+    L2["<b>20-data</b><br/>ADLS · RBAC · Databricks workspace<br/><i>changes weekly · platform team</i>"]
+    L3["<b>30-workloads</b><br/>Functions · jobs · pipelines<br/><i>changes daily · product teams</i>"]
+
+    L1 -->|"subnet IDs, DNS zone IDs<br/>read via DATA SOURCES,<br/>not remote state"| L2
+    L2 -->|"storage account name,<br/>identity IDs"| L3
+
+    style L1 fill:#efedfd,stroke:#5c4ee5
+    style L3 fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>
+    Split where <strong>change frequency</strong> or <strong>ownership</strong> differ. A daily workload deploy
+    should not need to refresh the VNet.
+  </figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Pro</th><th>Con</th></tr></thead>
+  <tbody>
+    <tr><td>Smallest blast radius — a workloads mistake cannot touch the network</td><td>Cross-layer references needed; a full rebuild requires ordering</td></tr>
+    <tr><td>Fast plans; teams do not block each other on the state lock</td><td>Many more pipelines to build and maintain</td></tr>
+    <tr><td>Per-layer deployment identities with genuinely different permissions</td><td>Higher cognitive load — “which layer owns this?” becomes a real question</td></tr>
+    <tr><td>Matches how the org is actually structured</td><td>Over-engineering for a small team</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">How to choose</div>
+  <p style="margin-bottom:0">
+    Start at <strong>C</strong> for anything with a production environment. Move to <strong>D</strong> when you
+    feel a specific pain: plans taking minutes, teams waiting on each other's locks, or a pipeline that needs
+    permissions you are uncomfortable granting. Do not start at D — you will build coordination machinery for
+    problems you do not have. And do not stay at B once real money or real data is involved, because the
+    wrong-state failure mode is severe and depends entirely on human care.
+  </p>
+</div>
+
+<h2 id="state-isolation">State isolation and the identity that goes with it</h2>
+
+<p>
+  Splitting state is only half the benefit. The other half is that each state can have a <strong>different
+  deployment identity with different permissions</strong>.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Layer</th><th>Deployment identity permissions</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>10-platform</code></td>
+      <td><code>Network Contributor</code> on the network resource group, <code>Contributor</code> on the platform resource group, <code>Storage Blob Data Contributor</code> on <em>its own</em> state container.</td>
+    </tr>
+    <tr>
+      <td><code>20-data</code></td>
+      <td><code>Contributor</code> on the data resource group, <code>Role Based Access Control Administrator</code> scoped to that resource group only, <code>Reader</code> on the network resource group so its data sources work.</td>
+    </tr>
+    <tr>
+      <td><code>30-workloads</code></td>
+      <td><code>Contributor</code> on the workloads resource group and nothing else. Cannot touch the lake or the network.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">One identity for everything defeats the split</div>
+  <p style="margin-bottom:0">
+    If all three pipelines use one service principal with Owner on the subscription, you have the coordination
+    cost of split state with none of the safety. The permissions boundary is where the actual protection lives.
+  </p>
+</div>
+
+<h2 id="naming">Naming and tagging</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/naming/ — a shared convention</span></div>
+<pre><code class="language-hcl">locals {
+  # &lt;type&gt;-&lt;workload&gt;-&lt;env&gt;-&lt;region&gt;-&lt;instance&gt;
+  region_short = {
+    westeurope   = "weu"
+    northeurope  = "neu"
+    uksouth      = "uks"
+    eastus       = "eus"
+  }
+
+  suffix = join("-", [
+    var.workload,
+    var.environment,
+    local.region_short[var.location],
+    format("%02d", var.instance),
+  ])
+
+  names = {
+    resource_group  = "rg-${local.suffix}"
+    virtual_network = "vnet-${local.suffix}"
+    key_vault       = substr("kv-${local.suffix}", 0, 24)
+    # no hyphens, lowercase, max 24
+    storage_account = substr(lower(replace("st${local.suffix}", "-", "")), 0, 24)
+    function_app    = substr("func-${local.suffix}", 0, 32)
+    databricks      = "dbw-${local.suffix}"
+  }
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">tagging</span></div>
+<pre><code class="language-hcl">locals {
+  common_tags = {
+    workload         = var.workload
+    environment      = var.environment
+    managed_by       = "terraform"
+    repository       = var.repository_url        # where the code lives
+    terraform_layer  = "20-data"                 # which state owns this
+    cost_center      = var.cost_center
+    data_owner       = var.data_owner            # a team, not a person
+    criticality      = var.criticality           # drives on-call and DR policy
+  }
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Tag</th><th>Why it earns its place</th></tr></thead>
+  <tbody>
+    <tr><td><code>managed_by = "terraform"</code></td><td>Tells an engineer in the portal not to click. Also lets you find unmanaged resources with a policy query.</td></tr>
+    <tr><td><code>repository</code></td><td>Answers “where is the code for this?” — the single most common question during an incident.</td></tr>
+    <tr><td><code>terraform_layer</code></td><td>Answers “which state file owns this?” in a layered setup. Saves genuine time.</td></tr>
+    <tr><td><code>cost_center</code></td><td>Makes Azure Cost Management usable. Retrofitting this is painful.</td></tr>
+    <tr><td><code>data_owner</code></td><td>A team name. Person names go stale within a year.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Tags that cause permanent diffs</div>
+  <p style="margin-bottom:0">
+    Never tag with <code>timestamp()</code>, a build number, or a commit SHA that changes on every run — every
+    plan will then show a change on every resource, and people stop reading plans carefully, which defeats the
+    entire control. If you want deployment traceability, put it in the state or in a separate log, not in a tag
+    on 200 resources.
+  </p>
+</div>
+
+<h2 id="pinning">Version pinning and upgrades</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the three levels of pinning</span></div>
+<pre><code class="language-hcl">terraform {
+  # 1 · CLI — a floor. You want colleagues on newer versions to work.
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source = "hashicorp/azurerm"
+      # 2 · Provider — pessimistic in a root module, a floor in a child module.
+      version = "~&gt; 5.0"
+    }
+  }
+}
+
+module "storage" {
+  # 3 · Module — an immutable tag, never a branch.
+  source = "git::https://github.com/contoso/tf-modules.git//storage?ref=v2.3.0"
+}
+
+# 4 · The lock file provides exactness. Commit it.</code></pre>
+</div>
+
+<h3 id="upgrade-process">Upgrading a provider major version</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">the procedure</span></div>
+<pre><code class="language-bash"># 1 · Read the upgrade guide FIRST. It lists every rename and removal.
+#     registry.terraform.io/providers/hashicorp/azurerm/latest/docs/guides/5.0-upgrade-guide
+
+# 2 · Upgrade in DEV only. Branch, change the constraint, re-resolve.
+git checkout -b chore/azurerm-5
+sed -i 's/~> 4.0/~> 5.0/' environments/dev/versions.tf
+cd environments/dev
+terraform init -upgrade
+
+# 3 · Fix what validate rejects — the renamed arguments.
+terraform validate
+
+# 4 · THE CRITICAL STEP: the plan must be empty.
+terraform plan -out=tfplan
+terraform show -json tfplan | jq '[.resource_changes[]
+  | select(.change.actions != ["no-op"])] | length'
+# → 0.  Anything else means the provider interprets your config
+#        differently, and you must understand exactly why.
+
+# 5 · Apply in dev, let it soak for a few days, then promote to test, then prod.
+#     Commit the updated lock file at each step.</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Step 4 is where the danger is</div>
+  <p style="margin-bottom:0">
+    A major provider release can change a default. If <code>allow_nested_items_to_be_public</code> changes its
+    default from <code>true</code> to <code>false</code>, a configuration that never set it now plans a change.
+    Usually that is a good change — but on some resources a changed default forces replacement, and finding that
+    out in production is the wrong time. A non-empty plan after a provider upgrade must be investigated line by
+    line, never applied on the assumption that the provider knows best.
+  </p>
+</div>
+
+<h2 id="review">Reviewing a Terraform pull request</h2>
+
+<p>
+  Reviewing infrastructure code is different from reviewing application code: the plan matters more than the
+  diff. Here is a checklist that catches most real problems.
+</p>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>The plan — read this first</h4>
+    <ul style="margin-bottom:0">
+      <li>Does the destroy count match the intent stated in the description?</li>
+      <li>Any <code>forces replacement</code>? On what?</li>
+      <li>Anything unexpected being touched?</li>
+      <li>Does the plan match what the diff claims to do?</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Security</h4>
+    <ul style="margin-bottom:0">
+      <li>Any secret literal, or a secret in an output?</li>
+      <li>New role assignments: right scope, or lazily at subscription level?</li>
+      <li><code>public_network_access_enabled</code> newly set to <code>true</code>?</li>
+      <li><code>shared_access_key_enabled</code> newly enabled?</li>
+      <li>Managed identity used, or a connection string?</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Correctness</h4>
+    <ul style="margin-bottom:0">
+      <li>References rather than hardcoded strings?</li>
+      <li><code>for_each</code> rather than <code>count</code> for collections?</li>
+      <li>New variables typed, described and validated?</li>
+      <li><code>depends_on</code> — is it hiding a missing reference?</li>
+      <li>Any <code>ignore_changes</code> — is the reason documented?</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Operability</h4>
+    <ul style="margin-bottom:0">
+      <li>Tags applied consistently?</li>
+      <li>Naming follows the convention?</li>
+      <li><code>prevent_destroy</code> on anything new that holds data?</li>
+      <li>Is this reversible, and how?</li>
+      <li>Does the README need updating?</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Post the plan on the pull request</div>
+  <p style="margin-bottom:0">
+    A pull request without its plan is not reviewable — the diff shows intent, but only the plan shows
+    consequence. A one-line change to a variable default can replace forty resources. Lesson 18 wires this in as
+    an automatic PR comment.
+  </p>
+</div>
+
+<h2 id="documentation">Documentation</h2>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">what a module README needs</span></div>
+<pre class="plain">modules/storage/README.md
+
+# Storage module
+What it creates, and the opinions it enforces (HNS on, TLS 1.2, no public blobs,
+no shared keys) so a reader knows what they cannot override.
+
+## Usage
+A copy-pasteable example that actually works.
+
+## Inputs / Outputs
+Generated — do not hand-maintain:
+    terraform-docs markdown table . > README.md
+
+## Notes
+The non-obvious things: why the lifecycle policy is a separate resource, why
+private DNS zones are NOT created here, what breaks if you set
+allow_shared_key_access = true.</pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">The section that matters most is “Notes”</div>
+  <p style="margin-bottom:0">
+    Inputs and outputs can be generated by <code>terraform-docs</code> and kept current by a pre-commit hook.
+    What cannot be generated is <em>why</em> — why a resource is separate, why an argument is hardcoded, which
+    decision this module is defending. That is what a colleague needs at 2am, and it is the part everyone leaves
+    out.
+  </p>
+</div>
+
+<h2 id="mistakes">Common mistakes</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Workspaces for environments</div>
+  <p style="margin-bottom:0">
+    Covered in Lesson 07 and worth restating here: workspaces share one backend and therefore one set of access
+    controls, so anyone who can apply to dev can apply to prod. They also make structural differences awkward,
+    requiring <code>count</code> hacks keyed on <code>terraform.workspace</code>. Use them for short-lived
+    parallel copies — a per-pull-request preview environment — not for the dev/test/prod axis.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">One giant state</div>
+  <p style="margin-bottom:0">
+    Everything in one file means slow plans, one lock for the whole organisation, and a single corrupted blob
+    that loses the record of your entire platform. Split by environment at minimum.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Owner on the subscription for the pipeline</div>
+  <p style="margin-bottom:0">
+    It works, which is why people do it. It also means the pipeline can grant anything to anyone, including
+    escalating its own privileges — so a compromised repository is a compromised subscription. Scope
+    <code>Contributor</code> to resource groups, add <code>Role Based Access Control Administrator</code> only
+    where role assignments are genuinely managed, and give each layer its own identity.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">No drift detection</div>
+  <p style="margin-bottom:0">
+    Without a scheduled plan, drift accumulates silently until someone runs an unrelated apply and gets a
+    fifty-resource diff they cannot explain. A nightly <code>plan -detailed-exitcode -lock=false</code> that
+    alerts on exit code 2 costs almost nothing and turns a quarterly crisis into a daily notification.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Choose a structure</span>
+  </div>
+  <div class="exercise-body">
+    <p>Pick a structure and justify it in two sentences:</p>
+    <ol>
+      <li>A solo data engineer proving out a lake design in a personal subscription.</li>
+      <li>A four-person team with dev and prod, one Databricks workspace, ~60 resources.</li>
+      <li>A platform team of twelve supporting eight product teams, four environments, three regions, with a separate network team.</li>
+      <li>A regulated bank where the network team must approve every network change and cannot see data resources.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong>A, flat single root.</strong> One environment, nothing at stake, and the ceremony of modules would slow down the actual goal of learning what the design should be.</li>
+        <li><strong>C, directory per environment.</strong> Sixty resources and a production environment justify module extraction and per-environment state; committed backends remove the wrong-state failure mode, which is the one that hurts most at this size.</li>
+        <li><strong>D, layered components.</strong> Twelve people and eight consumers means lock contention and slow plans are real; different teams owning different layers means different deployment identities, which is the actual reason to split.</li>
+        <li><strong>D, mandatorily.</strong> The requirement is a <em>permissions</em> boundary, not a code-organisation preference — the network layer needs its own state, its own pipeline, its own approvers and an identity with no access to data resources. No amount of directory structure achieves that without separate state.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        The pattern: structure follows the <strong>permissions and ownership</strong> boundaries you need, not
+        aesthetics.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Least-privilege deployment identities</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      Define the exact Azure role assignments for three per-layer deployment identities in the layered
+      structure: <code>10-platform</code>, <code>20-data</code>, <code>30-workloads</code>. State the role and
+      the scope for each, and say what each identity must <em>not</em> be able to do.
+    </p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">rbac-bootstrap.sh — run once by an administrator</span></div>
+<pre><code class="language-bash">SUB="/subscriptions/$SUBSCRIPTION_ID"
+TFSTATE_SA="$SUB/resourceGroups/rg-tfstate-prod-weu-01/providers/Microsoft.Storage/storageAccounts/sttfstateprodweu01"
+
+# ---- 10-platform ----
+az role assignment create --assignee "$SP_PLATFORM" --role "Contributor" \
+  --scope "$SUB/resourceGroups/rg-network-prod-weu-01"
+az role assignment create --assignee "$SP_PLATFORM" --role "Storage Blob Data Contributor" \
+  --scope "$TFSTATE_SA/blobServices/default/containers/platform"
+#   NOT: subscription-scope Contributor. NOT: access to the data or workloads containers.
+
+# ---- 20-data ----
+az role assignment create --assignee "$SP_DATA" --role "Contributor" \
+  --scope "$SUB/resourceGroups/rg-analytics-prod-weu-01"
+# It manages RBAC on the lake, so it needs assignment rights — but ONLY here.
+az role assignment create --assignee "$SP_DATA" --role "Role Based Access Control Administrator" \
+  --scope "$SUB/resourceGroups/rg-analytics-prod-weu-01"
+# Read-only on the network, so its data sources resolve.
+az role assignment create --assignee "$SP_DATA" --role "Reader" \
+  --scope "$SUB/resourceGroups/rg-network-prod-weu-01"
+az role assignment create --assignee "$SP_DATA" --role "Storage Blob Data Contributor" \
+  --scope "$TFSTATE_SA/blobServices/default/containers/data"
+#   NOT: Owner. NOT: write access to the network. NOT: User Access Administrator at
+#   subscription scope, which would allow self-escalation.
+
+# ---- 30-workloads ----
+az role assignment create --assignee "$SP_WORKLOADS" --role "Contributor" \
+  --scope "$SUB/resourceGroups/rg-workloads-prod-weu-01"
+az role assignment create --assignee "$SP_WORKLOADS" --role "Reader" \
+  --scope "$SUB/resourceGroups/rg-analytics-prod-weu-01"
+az role assignment create --assignee "$SP_WORKLOADS" --role "Storage Blob Data Contributor" \
+  --scope "$TFSTATE_SA/blobServices/default/containers/workloads"
+#   NOT: any write access to the lake or the network. A workload deploy
+#   must not be able to change a firewall rule or delete a container.</code></pre>
+      </div>
+      <p><strong>What each must not be able to do:</strong></p>
+      <ul>
+        <li><code>10-platform</code>: cannot touch the lake, the workspace or any workload. Cannot create role assignments anywhere.</li>
+        <li><code>20-data</code>: cannot modify the network. Cannot create role assignments outside its own resource group — which is what stops it granting itself Owner.</li>
+        <li><code>30-workloads</code>: cannot modify the lake, the network or any RBAC. It can read what it needs and deploy into its own resource group.</li>
+        <li>None of them can read another layer's state container, so none can read another layer's secrets.</li>
+      </ul>
+      <p style="margin-bottom:0">
+        The state-container scoping is the part most often missed, and it is what makes state splitting a
+        security control rather than just a performance optimisation.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write the naming and tagging module</span>
+  </div>
+  <div class="exercise-body">
+    <p>Every root module in the platform should derive names and tags identically. Write <code>modules/naming</code> that produces both.</p>    <p style="margin-bottom:0">It must enforce Azure's per-resource character rules &mdash; especially the 24-character lowercase alphanumeric limit for storage accounts and 32 for function apps &mdash; so callers cannot produce an invalid name by accident.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/naming/main.tf</span></div>
+<pre><code class="language-hcl">variable "workload" {
+  type = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9]{2,11}$", var.workload))
+    error_message = "workload must be 3-12 lowercase alphanumeric characters starting with a letter."
+  }
+}
+
+variable "environment" {
+  type = string
+
+  validation {
+    condition     = contains(["dev", "test", "staging", "prod"], var.environment)
+    error_message = "environment must be dev, test, staging or prod."
+  }
+}
+
+variable "location" { type = string }
+
+variable "instance" {
+  type    = number
+  default = 1
+}
+
+variable "extra_tags" {
+  type    = map(string)
+  default = {}
+}
+
+locals {
+  region_short = {
+    westeurope  = "weu"
+    northeurope = "neu"
+    uksouth     = "uks"
+    eastus      = "eus"
+  }
+
+  # A missing region fails loudly here rather than producing a name
+  # containing the literal string "null".
+  region = local.region_short[var.location]
+
+  suffix = join("-", [var.workload, var.environment, local.region, format("%02d", var.instance)])
+
+  # For names that allow neither hyphens nor uppercase.
+  compact = lower(replace(local.suffix, "-", ""))
+}
+
+output "suffix" { value = local.suffix }
+
+output "names" {
+  value = {
+    resource_group  = "rg-${local.suffix}"
+    virtual_network = "vnet-${local.suffix}"
+    subnet_prefix   = "snet"
+    nsg_prefix      = "nsg"
+
+    # 3-24 chars, lowercase alphanumeric only, GLOBALLY unique.
+    storage_account = substr("st${local.compact}", 0, 24)
+
+    # 3-24 chars, alphanumerics and hyphens, GLOBALLY unique.
+    key_vault = substr("kv-${local.suffix}", 0, 24)
+
+    # Becomes a hostname; keep under 32 to avoid host ID collisions.
+    function_app = substr("func-${local.suffix}", 0, 32)
+
+    service_plan         = "asp-${local.suffix}"
+    databricks_workspace = "dbw-${local.suffix}"
+    databricks_connector = "dbac-${local.suffix}"
+    user_identity        = "id-${local.suffix}"
+    log_analytics        = "log-${local.suffix}"
+  }
+}
+
+output "tags" {
+  value = merge({
+    workload    = var.workload
+    environment = var.environment
+    managed_by  = "terraform"
+    # NEVER timestamp() or a build number here: every plan would then show
+    # a change on every tagged resource, forever, and people stop reading plans.
+  }, var.extra_tags)
+}</code></pre>
+</div>    <p>The <code>substr()</code> calls are the module's real value. They mean a caller can add a longer workload name without discovering at apply time that their storage account name is 26 characters. The <code>local.region_short[var.location]</code> lookup is deliberate too: an unmapped region errors rather than silently interpolating <code>null</code> into every name.</p>    <p style="margin-bottom:0">This is the borderline case from Lesson 14 &mdash; a module that only computes values. It earns its place because three root modules consume it and it encodes rules that are genuinely easy to get wrong. Used once, it should be a <code>locals</code> block. Be able to argue it either way.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Bootstrap least-privilege identities for three layers</span>
+  </div>
+  <div class="exercise-body">
+    <p>You are splitting into <code>10-platform</code>, <code>20-data</code> and <code>30-workloads</code>, each with its own state. Write the RBAC bootstrap giving each pipeline exactly what it needs.</p>    <p style="margin-bottom:0">For each identity, state explicitly what it must <strong>not</strong> be able to do. The state-container scoping is the part most teams miss.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">bootstrap-rbac.sh</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+SUB="/subscriptions/${SUBSCRIPTION_ID}"
+TFSA="${SUB}/resourceGroups/rg-tfstate-prod-weu-01/providers/Microsoft.Storage/storageAccounts/sttfstateprodweu01"
+CONTAINERS="${TFSA}/blobServices/default/containers"
+
+# ---------------------------------------------------------------- platform
+az role assignment create --assignee "$SP_PLATFORM" \
+  --role "Contributor" --scope "${SUB}/resourceGroups/rg-network-prod-weu-01"
+
+az role assignment create --assignee "$SP_PLATFORM" \
+  --role "Storage Blob Data Contributor" --scope "${CONTAINERS}/platform"
+
+#   MUST NOT: touch the lake, the workspace or any workload.
+#   MUST NOT: create role assignments anywhere.
+#   MUST NOT: read the data or workloads state containers.
+
+# -------------------------------------------------------------------- data
+az role assignment create --assignee "$SP_DATA" \
+  --role "Contributor" --scope "${SUB}/resourceGroups/rg-analytics-prod-weu-01"
+
+# It manages RBAC on the lake, so it needs assignment rights - but ONLY
+# within its own resource group. "Role Based Access Control Administrator"
+# is narrower than "User Access Administrator"; prefer it.
+az role assignment create --assignee "$SP_DATA" \
+  --role "Role Based Access Control Administrator" \
+  --scope "${SUB}/resourceGroups/rg-analytics-prod-weu-01"
+
+# Read-only on the network so its data sources resolve.
+az role assignment create --assignee "$SP_DATA" \
+  --role "Reader" --scope "${SUB}/resourceGroups/rg-network-prod-weu-01"
+
+az role assignment create --assignee "$SP_DATA" \
+  --role "Storage Blob Data Contributor" --scope "${CONTAINERS}/data"
+
+#   MUST NOT: be Owner. MUST NOT: write to the network.
+#   MUST NOT: hold assignment rights at SUBSCRIPTION scope - that would let
+#             it grant itself Owner, which defeats the entire split.
+
+# --------------------------------------------------------------- workloads
+az role assignment create --assignee "$SP_WORKLOADS" \
+  --role "Contributor" --scope "${SUB}/resourceGroups/rg-workloads-prod-weu-01"
+
+az role assignment create --assignee "$SP_WORKLOADS" \
+  --role "Reader" --scope "${SUB}/resourceGroups/rg-analytics-prod-weu-01"
+
+az role assignment create --assignee "$SP_WORKLOADS" \
+  --role "Storage Blob Data Contributor" --scope "${CONTAINERS}/workloads"
+
+#   MUST NOT: write to the lake or the network.
+#   MUST NOT: create any role assignment.
+#   A daily workload deploy cannot change a firewall rule or delete a container.</code></pre>
+</div>    <p>The state-container scoping is what turns state splitting from a performance optimisation into a <strong>security control</strong>. Because state holds every resource attribute in plaintext, a pipeline that can read another layer's state can read that layer's secrets &mdash; so scoping each identity to its own container matters as much as scoping it to its own resource group.</p>    <p style="margin-bottom:0">Two refinements for a stricter environment: put each layer's state in a separate storage <em>account</em>, so even an account-scoped mistake cannot cross layers; and add an ABAC condition to the RBAC Administrator assignment limiting which role definitions it may assign.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Review this pull request</span>
+  </div>
+  <div class="exercise-body">
+    <p>Title: “Add reporting storage account”. Description: “Small change, new container for the BI team.”</p>
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">the diff</span></div>
+<pre><code class="language-hcl">+resource "azurerm_storage_account" "reporting" {
++  name                     = "streportingprod"
++  resource_group_name      = "rg-analytics-prod-weu-01"
++  location                 = "West Europe"
++  account_tier             = "Standard"
++  account_replication_type = "LRS"
++
++  public_network_access_enabled = true
++  shared_access_key_enabled     = true
++}
++
++resource "azurerm_storage_container" "reports" {
++  name                  = "reports"
++  storage_account_id    = azurerm_storage_account.reporting.id
++  container_access_type = "blob"
++}
++
++resource "azurerm_role_assignment" "bi_team" {
++  scope                = "/subscriptions/0000-0000-0000-0000"
++  role_definition_name = "Contributor"
++  principal_id         = "11111111-2222-3333-4444-555555555555"
++}
++
++output "reporting_key" {
++  value = azurerm_storage_account.reporting.primary_access_key
++}
+
+-variable "medallion_layers" {
+-  default = ["raw", "bronze", "silver", "gold"]
++variable "medallion_layers" {
++  default = ["raw", "bronze", "gold"]</code></pre>
+    </div>
+    <p>Write the review.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>Blocking — this deletes production data.</strong></p>
+      <p>
+        <strong>1 · The variable change is not mentioned in the description and is the most dangerous line
+        here.</strong> Removing <code>"silver"</code> from <code>medallion_layers</code> destroys the silver
+        container and everything in it. If those containers use <code>count</code>, it is worse: <code>gold</code>
+        shifts index and is destroyed and recreated too. This has nothing to do with the stated purpose of the
+        PR. Ask whether it was an accidental paste, and require the plan to be posted.
+      </p>
+      <p>
+        <strong>2 · <code>container_access_type = "blob"</code> makes the reports publicly readable</strong> by
+        anyone on the internet with the URL, with no authentication. Must be <code>"private"</code>. It will also
+        fail outright unless <code>allow_nested_items_to_be_public</code> is enabled, which itself would be a
+        serious regression.
+      </p>
+      <p>
+        <strong>3 · <code>Contributor</code> at subscription scope for the BI team.</strong> That grants
+        management of every resource in the subscription. They need
+        <code>Storage Blob Data Reader</code> scoped to <code>.../containers/reports</code>. Also, the
+        <code>principal_id</code> is a hardcoded GUID with no comment — assign to a named Entra ID group read via
+        a data source instead, so joiners and leavers are handled outside Terraform.
+      </p>
+      <p>
+        <strong>4 · The output publishes an account key.</strong> It goes into state, and
+        <code>terraform output -raw reporting_key</code> prints it for anyone who can read state. Remove it
+        entirely; consumers should authenticate with an identity.
+      </p>
+      <p><strong>Non-blocking but should be fixed:</strong></p>
+      <ul>
+        <li><code>public_network_access_enabled = true</code> and <code>shared_access_key_enabled = true</code> contradict the platform's posture. Justify or remove.</li>
+        <li><code>resource_group_name</code> and <code>location</code> are hardcoded strings — use references, and the lowercase region form for consistency.</li>
+        <li>The name has no region or instance component and does not follow the convention.</li>
+        <li>No <code>tags</code>, so this resource will be invisible to cost allocation.</li>
+        <li>No <code>prevent_destroy</code> on a new production storage account.</li>
+      </ul>
+      <div class="callout callout-important" style="margin-top:16px;margin-bottom:0">
+        <div class="callout-title">The meta-lesson</div>
+        <p style="margin-bottom:0">
+          A PR described as “small” contained a change that deletes production data, a public data exposure, a
+          subscription-wide privilege grant and a leaked credential. <strong>Read the whole diff, not the
+          description, and always read the plan.</strong> None of the four would be obvious from the title, and
+          the destroy would have been unmissable in the plan output.
+        </p>
+      </div>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>How would you structure a Terraform repository for a production data platform?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        I would start with shared modules and a directory per environment, each with a committed backend
+        configuration so it is structurally impossible to apply to the wrong state. As the platform grows I would
+        split into layers by change frequency and ownership — networking, data platform, workloads — each with
+        its own state and, critically, its own deployment identity with different permissions. I would decide
+        based on blast radius: how much can one mistake destroy? I would avoid workspaces for environments,
+        because they share a backend and therefore share access control.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What are the trade-offs of separate directories per environment?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The cost is duplication — the root modules are similar and a change must be made in each. The benefits
+        are that the backend is committed per directory so you cannot apply dev's code to prod's state,
+        environments can legitimately differ without conditionals accumulating, permissions and approvals are
+        naturally per environment, and a reviewer can see exactly what prod has that dev lacks. Many teams also
+        treat the duplication as a feature, because it forces changes to be promoted through environments rather
+        than reaching prod the moment they merge.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you upgrade a provider major version safely?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Read the upgrade guide first — it lists every rename and removal. Then upgrade in dev only, on a branch:
+        change the constraint, <code>terraform init -upgrade</code>, fix what <code>validate</code> rejects, and
+        then the critical step: the plan must be <strong>empty</strong>. A major release can change a default, so
+        a non-empty plan means the provider now interprets your configuration differently and you must understand
+        exactly why before proceeding — on some resources a changed default forces replacement. Then apply in
+        dev, let it soak, and promote to test and prod, committing the updated lock file at each step.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What do you look for when reviewing a Terraform pull request?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The plan first, because the diff shows intent and only the plan shows consequence — a one-line variable
+        change can replace forty resources. Specifically: does the destroy count match the description, is
+        anything marked <code>forces replacement</code>, and is anything unexpected being touched. Then security:
+        secrets in code or outputs, role assignment scopes, anything re-enabling public access or shared keys.
+        Then correctness: references rather than hardcoded strings, <code>for_each</code> rather than
+        <code>count</code>, typed and validated variables, and whether any <code>depends_on</code> is hiding a
+        missing reference. And I would insist the plan is posted on the PR automatically.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What permissions should a Terraform pipeline have?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The least that lets it do its job, scoped to resource groups rather than the subscription.
+        <code>Contributor</code> on the resource groups it manages; <code>Role Based Access Control
+        Administrator</code> only where it genuinely manages role assignments, and scoped to those resource
+        groups so it cannot escalate its own privileges; <code>Reader</code> on resource groups it only reads
+        from via data sources; and <code>Storage Blob Data Contributor</code> on <em>its own</em> state container
+        only, so one layer's pipeline cannot read another layer's state and therefore another layer's secrets.
+        Never Owner at subscription scope — that means a compromised repository is a compromised subscription.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you handle drift in production?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Detect it deliberately with a scheduled plan using <code>-detailed-exitcode</code> and
+        <code>-lock=false</code>, alerting on exit code 2. Then investigate rather than react: what changed, and
+        who changed it — the Azure activity log answers the second question, which usually explains the first.
+        The response depends on cause: adopt an emergency fix into configuration and reconcile with
+        <code>apply -refresh-only</code>; revert unauthorised changes after checking that reverting is not itself
+        destructive; add <code>ignore_changes</code> where a system like Azure Policy legitimately owns an
+        attribute; and treat two configurations managing one resource as a design bug to resolve.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Blast radius answers most structural questions. Structure follows permissions and ownership boundaries.</li>
+  <li>Directory per environment for anything with production; layers when you feel a specific pain, not before.</li>
+  <li>Splitting state only pays off if each state has its own deployment identity with different permissions.</li>
+  <li>Pin at four levels: CLI floor, provider constraint, module tag, lock file.</li>
+  <li>A provider upgrade is safe when the plan is empty. Investigate anything else.</li>
+  <li>Review the plan, not just the diff — and never tag with values that change every run.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

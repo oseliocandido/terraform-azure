@@ -1,0 +1,1040 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>16 · Reading plans, state surgery, import &amp; brownfield — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="16">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate → Production</span>
+    <span>Parts 16–17</span><span>·</span><span>~85 min</span><span>·</span><span>Requires Lessons 10, 15</span>
+  </div>
+  <h1>Reading plans, state surgery, import &amp; brownfield</h1>
+  <p class="lede">
+    Reading a plan carefully is the highest-value skill in this course — it is the last checkpoint before
+    production changes. This lesson goes through plan output line by line, then covers the state operations you
+    reach for when reality and state disagree, including adopting infrastructure that already exists.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Read every symbol and annotation in plan output and say what it means</li>
+      <li>Parse plan JSON to enforce policy automatically</li>
+      <li>Use <code>state list / show / mv / rm</code> and know the risk of each</li>
+      <li>Choose correctly between <code>moved</code>, <code>import</code> and <code>removed</code> blocks</li>
+      <li>Adopt an existing Azure resource into Terraform without recreating it</li>
+      <li>Investigate drift methodically instead of guessing</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Plan output</span><span class="pill">import</span><span class="pill">Brownfield</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="plan-anatomy">Plan output, line by line</h2>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">a realistic plan</span></div>
+<pre><code class="language-bash">Terraform used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  + create
+  ~ update in-place
+-/+ destroy and then create replacement
+  - destroy
+
+Terraform will perform the following actions:
+
+  # azurerm_storage_container.layers["platinum"] will be created
+  + resource "azurerm_storage_container" "layers" {
+      + container_access_type = "private"
+      + id                    = (known after apply)
+      + name                  = "platinum"
+      + storage_account_id    = "/subscriptions/.../stanalyticsprodweu01"
+    }
+
+  # azurerm_storage_account.lake will be updated in-place
+  ~ resource "azurerm_storage_account" "lake" {
+        id                       = "/subscriptions/.../stanalyticsprodweu01"
+        name                     = "stanalyticsprodweu01"
+      ~ account_replication_type = "LRS" -&gt; "GZRS"
+      ~ tags                     = {
+          + "cost_center" = "DATA-01"
+          ~ "environment" = "development" -&gt; "production"
+          - "temp"        = "true" -&gt; null
+        }
+        # (28 unchanged attributes hidden)
+    }
+
+  # azurerm_linux_function_app.ingest must be replaced
+-/+ resource "azurerm_linux_function_app" "ingest" {
+      ~ default_hostname = "func-ingest-prod-weu-01.azurewebsites.net" -&gt; (known after apply)
+      ~ id               = "/subscriptions/.../func-ingest-prod-weu-01" -&gt; (known after apply)
+      ~ name             = "func-ingest-prod-weu-01" -&gt; "func-ingest-prod-weu-02" # forces replacement
+        # (14 unchanged attributes hidden)
+
+      ~ site_config {
+            # (9 unchanged attributes hidden)
+        }
+    }
+
+  # azurerm_storage_container.layers["scratch"] will be destroyed
+  # (because azurerm_storage_container.layers["scratch"] is not in configuration)
+  - resource "azurerm_storage_container" "layers" {
+      - name = "scratch" -&gt; null
+    }
+
+Plan: 2 to add, 1 to change, 2 to destroy.
+
+Changes to Outputs:
+  ~ lake_dfs_endpoint = "https://stanalyticsprodweu01.dfs.core.windows.net/"</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>What you see</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td><code># … will be created</code></td><td>New resource. Nothing exists yet, so every attribute shows <code>+</code>.</td></tr>
+    <tr><td><code>(known after apply)</code></td><td>Terraform cannot compute this until Azure responds. Usually IDs and endpoints. Also a visible dependency edge.</td></tr>
+    <tr><td><code>~ old -&gt; new</code></td><td>An in-place update. The resource keeps its identity and data.</td></tr>
+    <tr><td><code>- "temp" = "true" -&gt; null</code></td><td>An element removed from a map — here a tag being deleted.</td></tr>
+    <tr><td><code># (28 unchanged attributes hidden)</code></td><td>Noise suppression. Use <code>terraform show</code> on a saved plan when you want everything.</td></tr>
+    <tr><td><strong><code># forces replacement</code></strong></td><td><strong>Read every plan for this.</strong> It names the exact argument that made an in-place update impossible.</td></tr>
+    <tr><td><code>(because … is not in configuration)</code></td><td>Terraform explains <em>why</em> a destroy is planned. Extremely useful — most destroys are a removed block or an index shift.</td></tr>
+    <tr><td><code>Changes to Outputs</code></td><td>Outputs changing. Harmless in itself, but a signal that something downstream may be affected.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">How to read a plan in thirty seconds</div>
+  <ol style="margin-bottom:0">
+    <li>Read the <strong>summary line first</strong>. Does the destroy count match what you intended?</li>
+    <li>Search for <code>forces replacement</code>. Every occurrence is a potential data-loss event.</li>
+    <li>Read every <code>- resource</code> block and the “because” explanation next to it.</li>
+    <li>Only then read the <code>~</code> updates — they are almost always the safe part.</li>
+  </ol>
+</div>
+
+<h3 id="plan-json">Parsing plans as JSON</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">machine-readable plan analysis</span></div>
+<pre><code class="language-bash">terraform plan -out=tfplan
+terraform show -json tfplan &gt; plan.json
+
+# everything being destroyed or replaced
+jq -r '.resource_changes[]
+       | select(.change.actions | index("delete"))
+       | "\(.change.actions | join(",")): \(.address)"' plan.json
+
+# just replacements, with the reason
+jq -r '.resource_changes[]
+       | select(.change.actions == ["delete","create"] or .change.actions == ["create","delete"])
+       | "\(.address) — replaced because: \(.change.replace_paths // [] | flatten | join(", "))"' plan.json
+
+# a counts summary
+jq -r '[.resource_changes[].change.actions | join(",")] | group_by(.)
+       | map({action: .[0], count: length}) | .[] | "\(.count)\t\(.action)"' plan.json</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">the CI gate this enables</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+terraform show -json tfplan &gt; plan.json
+
+DESTROYS=$(jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length' plan.json)
+
+if [ "$DESTROYS" -gt 0 ] &amp;&amp; [ "${ALLOW_DESTROY:-false}" != "true" ]; then
+  echo "::error::Plan destroys $DESTROYS resource(s). Set ALLOW_DESTROY=true to override."
+  jq -r '.resource_changes[] | select(.change.actions | index("delete")) | "  - " + .address' plan.json
+  exit 1
+fi</code></pre>
+</div>
+
+<h2 id="state-commands">State surgery</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Command</th><th>Effect</th><th>Risk</th><th>Prefer instead</th></tr></thead>
+  <tbody>
+    <tr><td><code>state list [filter]</code></td><td>List addresses</td><td>None</td><td>—</td></tr>
+    <tr><td><code>state show ADDR</code></td><td>Print one resource's attributes</td><td>Prints sensitive values to your terminal and shell history</td><td>—</td></tr>
+    <tr><td><code>state pull</code></td><td>Print raw state JSON</td><td>The output is a secret</td><td>—</td></tr>
+    <tr><td><code>state mv OLD NEW</code></td><td>Rename an address</td><td>Immediate, unreviewed state mutation</td><td>A <code>moved</code> block</td></tr>
+    <tr><td><code>state rm ADDR</code></td><td>Forget a resource; Azure keeps it</td><td>Creates an orphan that nothing manages</td><td>A <code>removed</code> block</td></tr>
+    <tr><td><code>import ADDR ID</code></td><td>Adopt an existing resource</td><td>Wrong ID silently binds the wrong thing</td><td>An <code>import</code> block</td></tr>
+    <tr><td><code>state push</code></td><td>Overwrite remote state</td><td><strong>Extreme.</strong> Can destroy the record of your entire platform</td><td>Restore a blob version</td></tr>
+    <tr><td><code>force-unlock ID</code></td><td>Break a lock</td><td>Corrupts state if the holder is alive</td><td>Wait, or <code>-lock-timeout</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Prefer configuration blocks over CLI state commands</div>
+  <p style="margin-bottom:0">
+    <code>moved</code>, <code>import</code> and <code>removed</code> blocks all do in a <em>reviewable, planned,
+    version-controlled</em> way what <code>state mv</code>, <code>state import</code> and <code>state rm</code>
+    do immediately and invisibly. A colleague can see a <code>moved</code> block in a pull request; nobody can
+    see that you ran <code>terraform state mv</code> on your laptop last Tuesday. Reach for the CLI only when
+    recovering from something the blocks cannot express.
+  </p>
+</div>
+
+<h3 id="config-blocks">The three refactoring blocks</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">moved — rename an address, change nothing in Azure</span></div>
+<pre><code class="language-hcl">moved {
+  from = azurerm_storage_account.lake
+  to   = module.lake.azurerm_storage_account.this
+}
+
+moved {
+  from = azurerm_storage_container.layers[0]
+  to   = azurerm_storage_container.layers["raw"]
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">import — adopt an existing resource</span></div>
+<pre><code class="language-hcl">import {
+  to = azurerm_storage_account.lake
+  id = "/subscriptions/0000.../resourceGroups/rg-analytics-prod-weu-01/providers/Microsoft.Storage/storageAccounts/stanalyticsprodweu01"
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">removed — stop managing WITHOUT destroying</span></div>
+<pre><code class="language-hcl"># Delete the resource block, then add this. Terraform 1.7+
+removed {
+  from = azurerm_storage_account.legacy
+
+  lifecycle {
+    destroy = false      # forget it, do not delete it
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Why <code>removed</code> matters</div>
+  <p style="margin-bottom:0">
+    Before it existed, handing a resource to another team meant running <code>terraform state rm</code> —
+    unreviewable, and easy to forget to do before merging the deletion, at which point the next apply
+    <em>destroys</em> it. A <code>removed</code> block with <code>destroy = false</code> makes “stop managing
+    this” an explicit, reviewed change that shows up in the plan.
+  </p>
+</div>
+
+<h2 id="brownfield">Brownfield: adopting existing infrastructure</h2>
+
+<div class="scenario">
+  <div class="scenario-tag">Scenario 1 from the brief</div>
+  <p>
+    <strong>“An Azure Storage Account already exists and the company wants to start managing it with
+    Terraform.”</strong>
+  </p>
+  <p>
+    It was created in the portal two years ago, holds 12 TB, and is used by three teams. Getting this wrong
+    means either destroying it or ending up with configuration that permanently disagrees with reality.
+  </p>
+</div>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    S1["<b>1 · Find the resource ID</b><br/>az resource show / the portal's JSON view"]
+    S2["<b>2 · Write an import block</b><br/>with a placeholder resource block"]
+    S3["<b>3 · Generate the configuration</b><br/>terraform plan -generate-config-out"]
+    S4["<b>4 · Review and clean up</b><br/>the generated HCL is verbose and literal"]
+    S5["<b>5 · Iterate until the plan is EMPTY</b><br/>this is the whole game"]
+    S6["<b>6 · Apply</b><br/>the import is recorded in state"]
+    S7["<b>7 · Delete the import block</b><br/>and now refactor safely"]
+
+    S1 --> S2 --> S3 --> S4 --> S5
+    S5 -->|"plan is not empty"| S4
+    S5 -->|"0 to add, 0 to change, 0 to destroy"| S6 --> S7
+
+    style S5 fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+  </div>
+  <figcaption>
+    Step 5 is the safety property. Until the plan is empty, applying would modify a resource three teams
+    depend on.
+  </figcaption>
+</figure>
+
+<h3 id="step1">Step 1 — find the resource ID</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">az storage account show \
+  --name stlegacydata001 \
+  --resource-group rg-legacy-data \
+  --query id -o tsv
+
+# /subscriptions/0000.../resourceGroups/rg-legacy-data/providers/Microsoft.Storage/storageAccounts/stlegacydata001
+
+# Capture the full current configuration for reference — you will need it.
+az storage account show --name stlegacydata001 --resource-group rg-legacy-data &gt; current.json</code></pre>
+</div>
+
+<h3 id="step2">Steps 2–3 — import block and config generation</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">import.tf</span></div>
+<pre><code class="language-hcl">import {
+  to = azurerm_storage_account.legacy
+  id = "/subscriptions/0000.../resourceGroups/rg-legacy-data/providers/Microsoft.Storage/storageAccounts/stlegacydata001"
+}</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">generate the HCL</span></div>
+<pre><code class="language-bash">terraform plan -generate-config-out=generated.tf</code></pre>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">generated.tf (abridged)</span></div>
+<pre><code class="language-hcl"># __generated__ by Terraform
+# Please review these resources and move them into your main configuration files.
+
+resource "azurerm_storage_account" "legacy" {
+  access_tier                       = "Hot"
+  account_kind                      = "StorageV2"
+  account_replication_type          = "GRS"
+  account_tier                      = "Standard"
+  allow_nested_items_to_be_public   = true
+  https_traffic_only_enabled        = true
+  is_hns_enabled                    = true
+  location                          = "westeurope"
+  min_tls_version                   = "TLS1_2"
+  name                              = "stlegacydata001"
+  public_network_access_enabled     = true
+  resource_group_name               = "rg-legacy-data"
+  shared_access_key_enabled         = true
+  tags = {
+    createdby = "manual"
+  }
+  blob_properties {
+    versioning_enabled = false
+    # ...
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Generated configuration is a starting point, not an answer</div>
+  <p style="margin-bottom:0">
+    It is exhaustive, entirely literal (no variables or references), and it faithfully reproduces bad settings —
+    note <code>allow_nested_items_to_be_public = true</code> and <code>shared_access_key_enabled = true</code>
+    above. Your job is to review it, decide which settings should change, and change them
+    <strong>deliberately in a later commit</strong>. Do not mix the import with the improvements.
+  </p>
+</div>
+
+<h3 id="step5">Step 5 — iterate to an empty plan</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">a typical first attempt</span></div>
+<pre><code class="language-bash">Terraform will perform the following actions:
+
+  # azurerm_storage_account.legacy will be imported
+  # and then updated in-place
+  ~ resource "azurerm_storage_account" "legacy" {
+        id                              = "/subscriptions/.../stlegacydata001"
+      ~ allow_nested_items_to_be_public = true -&gt; false
+      ~ shared_access_key_enabled       = true -&gt; false
+      ~ tags                            = {
+          - "createdby" = "manual" -&gt; null
+        }
+    }
+
+Plan: 1 to import, 0 to add, 1 to change, 0 to destroy.</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">That plan is not safe to apply</div>
+  <p style="margin-bottom:0">
+    <code>shared_access_key_enabled = true -&gt; false</code> would instantly break every consumer still using an
+    account key — and three teams use this account. The import step must be <strong>purely additive</strong>:
+    change nothing. Make the configuration match reality exactly, apply the import, then improve the settings in
+    a separate, communicated, scheduled change.
+  </p>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">what you are aiming for</span></div>
+<pre><code class="language-bash">  # azurerm_storage_account.legacy will be imported
+    resource "azurerm_storage_account" "legacy" {
+        id = "/subscriptions/.../stlegacydata001"
+        # (no changes)
+    }
+
+Plan: 1 to import, 0 to add, 0 to change, 0 to destroy.</code></pre>
+</div>
+
+<h3 id="child-resources">Importing child resources</h3>
+
+<p>
+  The account is only the beginning — its containers, lifecycle policy and role assignments each need importing
+  too, each with its own ID format.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">imports.tf</span></div>
+<pre><code class="language-hcl">locals {
+  sa_id = "/subscriptions/0000.../resourceGroups/rg-legacy-data/providers/Microsoft.Storage/storageAccounts/stlegacydata001"
+}
+
+import {
+  to = azurerm_storage_account.legacy
+  id = local.sa_id
+}
+
+# Containers use the resource-manager ID form.
+import {
+  for_each = toset(["raw", "curated", "archive"])
+
+  to = azurerm_storage_container.legacy[each.value]
+  id = "${local.sa_id}/blobServices/default/containers/${each.value}"
+}
+
+# The management policy's ID is the account ID plus a fixed suffix.
+import {
+  to = azurerm_storage_management_policy.legacy
+  id = "${local.sa_id}/managementPolicies/default"
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Finding an ID format</div>
+  <p style="margin-bottom:0">
+    Every resource's registry documentation page ends with an <strong>Import</strong> section showing the exact
+    ID format. Read it — the formats are not always guessable, and role assignments in particular use a form
+    with the scope followed by the assignment GUID. When stuck, create one example of the resource with
+    Terraform in a sandbox and read its <code>id</code> from state.
+  </p>
+</div>
+
+<h3 id="import-cli">The old CLI form</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">terraform import — still occasionally useful</span></div>
+<pre><code class="language-bash">terraform import azurerm_storage_account.legacy "/subscriptions/.../stlegacydata001"</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th><code>import</code> block</th><th><code>terraform import</code> CLI</th></tr></thead>
+  <tbody>
+    <tr><td>Previewable in a plan</td><td>Yes</td><td>No — it writes state immediately</td></tr>
+    <tr><td>Reviewable in a pull request</td><td>Yes</td><td>No</td></tr>
+    <tr><td>Runs in CI</td><td>Yes</td><td>Awkward</td></tr>
+    <tr><td>Can generate configuration</td><td>Yes, with <code>-generate-config-out</code></td><td>No</td></tr>
+    <tr><td>Supports <code>for_each</code></td><td>Yes (1.7+)</td><td>No — one command per resource</td></tr>
+    <tr><td>Undo</td><td>Delete the block before applying</td><td><code>terraform state rm</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="drift-investigation">Investigating drift methodically</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">a diagnostic sequence</span></div>
+<pre><code class="language-bash"># 1 · What changed outside Terraform, without proposing to revert it?
+terraform plan -refresh-only
+
+# 2 · What does state currently believe?
+terraform state show azurerm_storage_account.lake
+
+# 3 · What does Azure actually say?
+az storage account show --name stanalyticsprodweu01 \
+  --resource-group rg-analytics-prod-weu-01
+
+# 4 · WHO changed it and when? The activity log is the answer.
+az monitor activity-log list \
+  --resource-group rg-analytics-prod-weu-01 \
+  --start-time 2026-09-01T00:00:00Z \
+  --query "[?contains(resourceId, 'stanalyticsprodweu01')].
+           {time:eventTimestamp, op:operationName.value, who:caller, status:status.value}" \
+  -o table
+
+# 5 · Did OUR configuration change? Check git, not just the plan.
+git log -p --since="2 weeks ago" -- lake.tf
+
+# 6 · Did the PROVIDER change?
+git log -p -- .terraform.lock.hcl</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Step 4 is the one people skip</div>
+  <p style="margin-bottom:0">
+    The Azure activity log records who made every control-plane change and when. Most “mysterious drift” turns
+    out to be a named person doing something reasonable during an incident, or an Azure Policy remediation task.
+    Knowing which changes the fix: revert it, adopt it into configuration, or add <code>ignore_changes</code>
+    if a system legitimately owns that attribute.
+  </p>
+</div>
+
+<h3 id="drift-decisions">Deciding what to do about drift</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Cause</th><th>Right response</th></tr></thead>
+  <tbody>
+    <tr><td>An emergency portal fix that should persist</td><td>Update the configuration to match, then <code>terraform apply -refresh-only</code> so state agrees. The change is now reviewed and reproducible.</td></tr>
+    <tr><td>An unauthorised change</td><td>Let the next apply revert it — but check first that reverting is not itself destructive, and talk to whoever made it.</td></tr>
+    <tr><td>Azure Policy appending tags</td><td><code>ignore_changes</code> on those specific tags. Fighting policy from Terraform is a losing game.</td></tr>
+    <tr><td>Autoscaling changing a count</td><td><code>ignore_changes</code> on that attribute.</td></tr>
+    <tr><td>Another Terraform configuration managing the same resource</td><td>A design bug. Decide who owns it; the other side uses a data source or a <code>removed</code> block.</td></tr>
+    <tr><td>The resource was deleted</td><td>Decide whether recreating is safe. For anything stateful it usually is not — see Lesson 10.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Read this plan</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-out">
+      <div class="code-head"><span class="fname">plan excerpt</span></div>
+<pre><code class="language-bash">  # azurerm_key_vault.main must be replaced
+-/+ resource "azurerm_key_vault" "main" {
+      ~ id                         = "/subscriptions/.../kv-analytics-prod-weu-01" -&gt; (known after apply)
+        name                       = "kv-analytics-prod-weu-01"
+      ~ soft_delete_retention_days = 7 -&gt; 90
+      ~ sku_name                   = "standard" -&gt; "premium" # forces replacement
+      ~ vault_uri                  = "https://kv-analytics-prod-weu-01.vault.azure.net/" -&gt; (known after apply)
+    }
+
+  # azurerm_key_vault_secret.api will be destroyed
+  # (because azurerm_key_vault.main is being replaced)
+  - resource "azurerm_key_vault_secret" "api" { ... }
+
+Plan: 2 to add, 0 to change, 2 to destroy.</code></pre>
+    </div>
+    <p>Answer: what triggered this, what happens if you apply it, and what should you do?</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Trigger:</strong> <code>sku_name</code> changing from <code>standard</code> to
+        <code>premium</code>, marked <code># forces replacement</code>. The retention change is incidental — it
+        would have been an in-place update on its own.
+      </p>
+      <p><strong>If applied:</strong></p>
+      <ul>
+        <li>The vault and every secret, key and certificate in it are destroyed.</li>
+        <li>The secret is destroyed too, and Terraform tells you why: it depends on a resource being replaced.</li>
+        <li>Because Key Vault soft-deletes, the name stays reserved — so the create step may fail with a conflict, leaving you with <strong>no vault at all</strong>.</li>
+        <li>If <code>purge_protection_enabled</code> is on, that failure cannot be resolved for up to 90 days.</li>
+        <li>Every application reading from this vault breaks immediately.</li>
+      </ul>
+      <p><strong>What to do:</strong></p>
+      <ol>
+        <li>Do not apply. Check whether the SKU change was intended — <code>git log -p</code> on the file.</li>
+        <li>If unintended, revert it. The retention change can go ahead on its own.</li>
+        <li>If genuinely needed, it is a migration: create a new premium vault alongside, copy secrets, repoint consumers, then decommission. Azure cannot change a vault's SKU in place.</li>
+        <li>Add <code>lifecycle { prevent_destroy = true }</code> so this plan fails at plan time in future rather than relying on someone reading carefully.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        The general point: the destroy of <code>azurerm_key_vault_secret.api</code> is <em>collateral</em>.
+        Replacements cascade to dependents, so a two-line diff can produce a plan that destroys a dozen things.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Adopt a legacy lake</span>
+  </div>
+  <div class="exercise-body">
+    <p>An unmanaged storage account exists:</p>
+    <ul>
+      <li><code>stlegacydata001</code> in <code>rg-legacy-data</code>, West Europe</li>
+      <li>StorageV2, Standard, GRS, hierarchical namespace enabled</li>
+      <li>Containers: <code>raw</code>, <code>curated</code>, <code>archive</code></li>
+      <li>Shared key access enabled; public network access enabled</li>
+      <li>Actively used by three teams</li>
+    </ul>
+    <p>Write the import configuration and the exact command sequence. State how you verify safety at each step.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">legacy-import.tf — phase 1: adopt, change NOTHING</span></div>
+<pre><code class="language-hcl">locals {
+  legacy_sa_id = "/subscriptions/${var.subscription_id}/resourceGroups/rg-legacy-data/providers/Microsoft.Storage/storageAccounts/stlegacydata001"
+  legacy_containers = toset(["raw", "curated", "archive"])
+}
+
+import {
+  to = azurerm_storage_account.legacy
+  id = local.legacy_sa_id
+}
+
+import {
+  for_each = local.legacy_containers
+  to       = azurerm_storage_container.legacy[each.value]
+  id       = "${local.legacy_sa_id}/blobServices/default/containers/${each.value}"
+}
+
+# Configuration must MATCH REALITY EXACTLY — including the settings
+# you dislike. Improving them is phase 2.
+resource "azurerm_storage_account" "legacy" {
+  name                = "stlegacydata001"
+  resource_group_name = "rg-legacy-data"
+  location            = "westeurope"
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = "GRS"
+  is_hns_enabled           = true
+
+  # Deliberately matching the insecure current state:
+  shared_access_key_enabled     = true
+  public_network_access_enabled = true
+
+  lifecycle {
+    prevent_destroy = true      # add this immediately
+  }
+}
+
+resource "azurerm_storage_container" "legacy" {
+  for_each = local.legacy_containers
+
+  name               = each.value
+  storage_account_id = azurerm_storage_account.legacy.id
+}</code></pre>
+      </div>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">the sequence</span></div>
+<pre><code class="language-bash"># 1 · Capture the truth first, so you can diff against it later.
+az storage account show -n stlegacydata001 -g rg-legacy-data &gt; before.json
+az storage container list --account-name stlegacydata001 --auth-mode login &gt; containers.json
+
+# 2 · Generate a starting configuration.
+terraform plan -generate-config-out=generated.tf
+
+# 3 · Merge the useful parts, then iterate until the plan is EMPTY.
+terraform plan -out=tfplan
+terraform show -json tfplan | jq '[.resource_changes[]
+  | select(.change.actions != ["no-op"] and .change.actions != [])] | length'
+# → must be 0 apart from the imports themselves
+
+# 4 · Apply the import.
+terraform apply tfplan
+
+# 5 · Verify nothing changed in Azure.
+az storage account show -n stlegacydata001 -g rg-legacy-data &gt; after.json
+diff &lt;(jq -S . before.json) &lt;(jq -S . after.json)   # → no differences
+
+# 6 · Remove the import blocks; commit.
+</code></pre>
+      </div>
+      <p><strong>Phase 2, as a separate change with its own communication and rollback plan:</strong></p>
+      <ol>
+        <li>Audit who uses account keys — the storage analytics logs show authentication type per request.</li>
+        <li>Give each consumer a managed identity and the appropriate data role. Verify each one works.</li>
+        <li>Only then set <code>shared_access_key_enabled = false</code>.</li>
+        <li>Separately, add private endpoints, then set <code>public_network_access_enabled = false</code>.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        <strong>The principle:</strong> adoption and improvement are two changes. Combining them means that if
+        something breaks, you cannot tell whether it was the import or the hardening — and you have three teams
+        asking.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Import a whole existing account in one pass</span>
+  </div>
+  <div class="exercise-body">
+    <p>A storage account created in the portal two years ago must come under management. It has three containers and a lifecycle policy, and three teams use it daily.</p>    <p style="margin-bottom:0">Write the import configuration &mdash; account, containers and policy &mdash; using <code>for_each</code> where you can, plus the command sequence that proves the import changes nothing.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">imports.tf</span></div>
+<pre><code class="language-hcl">locals {
+  legacy_sa_id = join("", [
+    "/subscriptions/", var.subscription_id,
+    "/resourceGroups/rg-legacy-data",
+    "/providers/Microsoft.Storage/storageAccounts/stlegacydata001",
+  ])
+
+  legacy_containers = toset(["raw", "curated", "archive"])
+}
+
+import {
+  to = azurerm_storage_account.legacy
+  id = local.legacy_sa_id
+}
+
+# import blocks accept for_each (Terraform 1.7+), so three containers are
+# one block rather than three.
+import {
+  for_each = local.legacy_containers
+
+  to = azurerm_storage_container.legacy[each.value]
+  id = "${local.legacy_sa_id}/blobServices/default/containers/${each.value}"
+}
+
+# The management policy's ID is the account ID plus a fixed suffix. Every
+# resource's registry page has an "Import" section giving the exact format -
+# they are not guessable.
+import {
+  to = azurerm_storage_management_policy.legacy
+  id = "${local.legacy_sa_id}/managementPolicies/default"
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">legacy.tf</span></div>
+<pre><code class="language-hcl"># PHASE 1: the configuration must MATCH REALITY EXACTLY - including the
+# settings you dislike. Improving them is a separate, later change.
+
+resource "azurerm_storage_account" "legacy" {
+  name                = "stlegacydata001"
+  resource_group_name = "rg-legacy-data"
+  location            = "westeurope"
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = "GRS"
+  is_hns_enabled           = true
+
+  # Deliberately matching the insecure current state. Changing these here
+  # would break three teams the moment you apply.
+  shared_access_key_enabled     = true
+  public_network_access_enabled = true
+
+  lifecycle {
+    prevent_destroy = true    # add this immediately, before anything else
+  }
+}
+
+resource "azurerm_storage_container" "legacy" {
+  for_each = local.legacy_containers
+
+  name               = each.value
+  storage_account_id = azurerm_storage_account.legacy.id
+}</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">adopt.sh</span></div>
+<pre><code class="language-bash"># 1 - Capture the truth BEFORE, so you can diff against it after.
+az storage account show -n stlegacydata001 -g rg-legacy-data &gt; before.json
+
+# 2 - Generate a starting configuration rather than writing it blind.
+terraform plan -generate-config-out=generated.tf
+
+# 3 - Merge the useful parts, then iterate until the plan is EMPTY apart
+#     from the imports themselves. THIS is the safety property.
+terraform plan -out=tfplan
+terraform show -json tfplan | jq -r '
+  .resource_changes[]
+  | select(.change.actions != ["no-op"] and .change.actions != [])
+  | "\(.change.actions | join(",")): \(.address)"'
+# -> only "no-op" entries alongside the imports. Any update means your
+#    config disagrees with reality and applying would CHANGE a live account.
+
+terraform apply tfplan
+
+# 4 - Prove nothing moved.
+az storage account show -n stlegacydata001 -g rg-legacy-data &gt; after.json
+diff &lt;(jq -S . before.json) &lt;(jq -S . after.json)   # -> no output
+
+# 5 - Delete imports.tf; commit.</code></pre>
+</div>    <p>The discipline is <strong>adopt first, improve second</strong>. A plan that imports <em>and</em> sets <code>shared_access_key_enabled = false</code> looks efficient and would instantly break every consumer still using an account key.</p>    <p style="margin-bottom:0">Phase 2 is its own change with its own rollback plan: audit who actually uses keys from the storage analytics logs, give each consumer a managed identity and role, verify, and only then flip the flag. If something breaks after a combined change you cannot tell whether it was the import or the hardening &mdash; and three teams are asking.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Hand a resource to another team without deleting it</span>
+  </div>
+  <div class="exercise-body">
+    <p>The shared VNet is in two state files &mdash; yours and the platform team's &mdash; and they revert each other nightly. You are giving it up. Write the change.</p>    <p style="margin-bottom:0">There is one flag here that, if omitted, destroys the platform team's network. Write the verification that catches that before it happens.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">handover.tf</span></div>
+<pre><code class="language-hcl"># STEP 1: delete the resource block.
+#
+#   resource "azurerm_virtual_network" "shared" { ... }   &lt;- removed
+#
+# Deleting it alone would make the next apply DESTROY the VNet. The removed
+# block below is what turns "delete" into "forget".
+
+removed {
+  from = azurerm_virtual_network.shared
+
+  lifecycle {
+    # THE CRITICAL FLAG. Without it, this destroys the shared VNet and
+    # everything attached to it.
+    destroy = false
+  }
+}
+
+# STEP 2: read it instead of owning it.
+data "azurerm_virtual_network" "shared" {
+  name                = "vnet-shared-prod-weu-01"
+  resource_group_name = "rg-shared-prod-weu-01"
+}
+
+# STEP 3: repoint every reference.
+#   azurerm_virtual_network.shared.id
+#     ->  data.azurerm_virtual_network.shared.id
+data "azurerm_subnet" "privatelink" {
+  name                 = "snet-privatelink-prod-weu-01"
+  virtual_network_name = data.azurerm_virtual_network.shared.name
+  resource_group_name  = data.azurerm_virtual_network.shared.resource_group_name
+}</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">verify.sh</span></div>
+<pre><code class="language-bash">terraform plan -out=tfplan
+
+# THE GATE: nothing may be deleted. If the VNet appears here, the
+# `destroy = false` is missing or misplaced - do not apply.
+terraform show -json tfplan | jq -r '
+  .resource_changes[]
+  | select(.change.actions | index("delete"))
+  | .address'
+# -> must print NOTHING
+
+terraform apply tfplan
+
+# Confirm it is gone from YOUR state but still exists in Azure.
+terraform state list | grep virtual_network     # -> only the data source
+az network vnet show -n vnet-shared-prod-weu-01 -g rg-shared-prod-weu-01 \
+  --query name -o tsv                            # -> still there</code></pre>
+</div>    <p>Before <code>removed</code> blocks existed (Terraform 1.7) this required running <code>terraform state rm</code> <em>and remembering to do it before merging the deletion</em> &mdash; precisely the kind of ordering people get wrong under time pressure. The block makes the intent explicit, reviewable and visible in the plan.</p>    <p style="margin-bottom:0">The prevention is a rule rather than a tool: <strong>one resource, one owner</strong>. Where a boundary is genuinely shared, the non-owner uses a data source. A scheduled drift-detection job would have surfaced this on day one instead of week six.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Two configurations, one resource</span>
+  </div>
+  <div class="exercise-body">
+    <p>Symptoms:</p>
+    <ul>
+      <li>The platform team's pipeline runs at 02:00. The analytics team's runs at 03:00.</li>
+      <li>Every morning, one of them shows a change to <code>vnet-shared-prod-weu-01</code>'s DNS servers and applies it.</li>
+      <li>The next night the other reverts it.</li>
+      <li>Both pipelines are green. Nobody has changed any code in weeks.</li>
+    </ul>
+    <p>Diagnose and fix.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Diagnosis: the VNet is in both state files.</strong> Each configuration considers itself the
+        owner, so each sees the other's value as drift and reverts it — a stable oscillation. Both pipelines are
+        green because from each side's perspective it is doing exactly its job.
+      </p>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">confirm</span></div>
+<pre><code class="language-bash">cd platform  &amp;&amp; terraform state list | grep virtual_network
+cd analytics &amp;&amp; terraform state list | grep virtual_network
+# both list azurerm_virtual_network.shared → confirmed
+
+# and the activity log shows two different service principals alternating
+az monitor activity-log list -g rg-shared-prod-weu-01 \
+  --query "[?contains(resourceId,'vnet-shared-prod-weu-01')].{t:eventTimestamp,who:caller}" -o table</code></pre>
+      </div>
+      <p><strong>Fix — pick one owner.</strong> The platform team owns networking, so analytics should stop managing it.</p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">analytics: stop managing, do NOT destroy</span></div>
+<pre><code class="language-hcl"># Delete the resource "azurerm_virtual_network" "shared" block, then:
+removed {
+  from = azurerm_virtual_network.shared
+
+  lifecycle {
+    destroy = false     # critical — without this, the VNet is DELETED
+  }
+}
+
+# Read it instead.
+data "azurerm_virtual_network" "shared" {
+  name                = "vnet-shared-prod-weu-01"
+  resource_group_name = "rg-shared-prod-weu-01"
+}
+
+# Update every reference from azurerm_virtual_network.shared.*
+# to data.azurerm_virtual_network.shared.*
+</code></pre>
+      </div>
+      <p>Then verify, in this order:</p>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">verify</span></div>
+<pre><code class="language-bash">terraform plan -out=tfplan
+terraform show -json tfplan | jq -r '.resource_changes[]
+  | select(.change.actions | index("delete")) | .address'
+# → MUST be empty. If the VNet appears here, the `destroy = false`
+#   is missing or misplaced and applying would delete the platform
+#   team's network.
+
+terraform apply tfplan
+terraform state list | grep virtual_network   # → only the data source</code></pre>
+      </div>
+      <div class="callout callout-warn" style="margin-top:16px;margin-bottom:0">
+        <div class="callout-title">The dangerous shortcut</div>
+        <p style="margin-bottom:0">
+          Simply deleting the resource block and running apply would <strong>destroy the shared VNet</strong> and
+          everything attached to it. The <code>removed</code> block with <code>destroy = false</code> is the
+          entire point. Before it existed you had to run <code>terraform state rm</code> first and remember to do
+          it before merging — which is precisely the kind of ordering people get wrong.
+        </p>
+      </div>
+      <p style="margin-top:16px;margin-bottom:0">
+        <strong>Prevention:</strong> one resource, one owner, always. Where a boundary is shared, the non-owner
+        uses a data source. And a scheduled drift-detection job comparing consecutive plans would have caught
+        this on day one instead of week six.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>Explain the symbols in Terraform plan output.</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>+</code> create, <code>~</code> update in place, <code>-</code> destroy, <code>-/+</code> destroy
+        then create (replacement), and <code>+/-</code> create then destroy when
+        <code>create_before_destroy</code> is set. The annotations matter as much as the symbols:
+        <code>(known after apply)</code> marks values Terraform cannot compute until the API responds — which is
+        also a visible dependency edge — and <code># forces replacement</code> names the specific argument that
+        made an in-place update impossible. That comment is the one I look for first, because on a stateful
+        resource it means data loss.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you bring existing Azure infrastructure under Terraform management?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        With <code>import</code> blocks. I find the resource ID, write an <code>import</code> block naming the
+        target address, and run <code>terraform plan -generate-config-out</code> to produce a starting
+        configuration. Then I iterate until the plan shows the import and <strong>zero other changes</strong> —
+        that is the safety property, because any change at that point would modify a resource people are using.
+        Only after applying the import do I improve the settings, in a separate commit. I prefer import blocks to
+        the <code>terraform import</code> CLI because they are previewable in a plan, reviewable in a pull
+        request, work in CI and support <code>for_each</code>.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the difference between <code>terraform state rm</code> and a <code>removed</code> block?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Both stop Terraform managing a resource without deleting it in Azure. <code>state rm</code> mutates
+        state immediately, with no plan, no review and no record in version control. A <code>removed</code> block
+        with <code>lifecycle { destroy = false }</code> declares the intent in code, shows up in the plan, and is
+        reviewed like any other change. Critically, it also solves an ordering hazard: deleting a resource block
+        and applying would <em>destroy</em> the resource, and before <code>removed</code> blocks existed you had
+        to remember to run <code>state rm</code> first.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Two Terraform configurations manage the same resource. What happens and how do you fix it?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Each considers itself the owner, so each sees the other's changes as drift and reverts them — the
+        resource oscillates on whatever cadence the two pipelines run, and both pipelines report success. I would
+        confirm with <code>terraform state list</code> on both and the Azure activity log showing two principals
+        alternating. The fix is to pick one owner: the other removes it from state with a <code>removed</code>
+        block using <code>destroy = false</code> and replaces the references with a data source. The prevention
+        is a clear ownership boundary per resource and scheduled drift detection, which would surface this
+        immediately rather than after weeks.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>A plan wants to destroy and recreate a production resource. Walk me through your response.</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Do not apply, and stop any pipeline that might. Find the <code># forces replacement</code> line — the
+        plan names the argument responsible. Then determine the cause: <code>git log -p</code> on the file for a
+        configuration change, <code>terraform plan -refresh-only</code> plus the Azure activity log for drift, and
+        <code>git diff</code> on the lock file for a provider change. If it was unintended, revert. If the new
+        value is genuinely required, a replacement is not the mechanism — for a stateful resource that is a data
+        migration project. Finally, add <code>prevent_destroy</code> and a CI gate on delete actions so the next
+        occurrence fails at plan time rather than depending on someone reading carefully.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is drift and how do you decide what to do about it?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A difference between state and reality caused by something other than Terraform. I investigate with
+        <code>plan -refresh-only</code> to see it without proposing a revert, then the Azure activity log to find
+        who changed it and when — that step is what most people skip, and it usually turns a mystery into an
+        obvious explanation. The response depends on the cause: an emergency fix that should persist gets adopted
+        into configuration; an unauthorised change gets reverted after checking that reverting is not itself
+        destructive; a system that legitimately owns the attribute, like Azure Policy or an autoscaler, gets
+        <code>ignore_changes</code>; and two configurations fighting is a design bug to resolve, not to ignore.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Read the summary line, then search for <code>forces replacement</code>, then read every destroy and its “because”.</li>
+  <li>Plan JSON turns careful reading into an automated gate. Fail CI on unexpected deletes.</li>
+  <li>Prefer <code>moved</code>, <code>import</code> and <code>removed</code> blocks over CLI state commands — they are reviewable.</li>
+  <li>Brownfield import succeeds when the plan is <strong>empty</strong>. Adopt first, improve second.</li>
+  <li><code>removed</code> without <code>destroy = false</code> deletes the resource. That flag is the whole point.</li>
+  <li>Investigate drift with the activity log before deciding. Most drift has a person and a reason behind it.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,990 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 · Azure Functions — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="13">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate</span>
+    <span>Part 12</span><span>·</span><span>~65 min</span><span>·</span><span>Requires Lessons 08, 11</span>
+  </div>
+  <h1>Azure Functions</h1>
+  <p class="lede">
+    The Azure equivalent of AWS Lambda — but not a drop-in one. A Function App is three resources, not one, it
+    has a mandatory storage account that trips up every private-networking deployment, and its app settings
+    drift by design.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Map Lambda concepts onto Azure Functions accurately</li>
+      <li>Choose a hosting plan and explain the cost/cold-start/networking trade-offs</li>
+      <li>Explain why a Function App needs a storage account and what breaks when you lock it down</li>
+      <li>Configure identity-based storage connections instead of connection strings</li>
+      <li>Separate infrastructure deployment from code deployment</li>
+      <li>Stop app settings from producing a permanent diff</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Function App</span><span class="pill">Managed identity</span><span class="pill">VNet integration</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="lambda-comparison">Lambda vs Azure Functions</h2>
+
+<p>
+  “Lambda” is AWS terminology. The Azure equivalent is <strong>Azure Functions</strong> — but the resource
+  model differs in ways that matter to your Terraform.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>AWS Lambda</th><th>Azure Functions</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Unit of deployment</td>
+      <td>One function = one resource</td>
+      <td>A <strong>Function App</strong> containing many functions, sharing one runtime, one identity and one set of app settings</td>
+    </tr>
+    <tr>
+      <td>Terraform resources needed</td>
+      <td><code>aws_lambda_function</code> (+ role)</td>
+      <td><code>azurerm_service_plan</code> + <code>azurerm_storage_account</code> + <code>azurerm_linux_function_app</code></td>
+    </tr>
+    <tr>
+      <td>Compute model</td>
+      <td>Per-invocation, fully managed</td>
+      <td>Depends on the hosting plan — from truly serverless to a dedicated VM fleet</td>
+    </tr>
+    <tr>
+      <td>Storage dependency</td>
+      <td>None</td>
+      <td><strong>A storage account is mandatory</strong> — see below</td>
+    </tr>
+    <tr>
+      <td>Max execution time</td>
+      <td>15 minutes</td>
+      <td>5 min default on Consumption (10 max); unlimited on Premium/Dedicated</td>
+    </tr>
+    <tr>
+      <td>Identity</td>
+      <td>IAM execution role</td>
+      <td>Managed identity + Azure RBAC role assignments</td>
+    </tr>
+    <tr>
+      <td>Private networking</td>
+      <td>VPC configuration on the function</td>
+      <td>Regional VNet integration (outbound) and private endpoints (inbound) — two separate things</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">The mental shift</div>
+  <p style="margin-bottom:0">
+    In Lambda you think per function. In Azure you think per <em>app</em>: a Function App is closer to a small
+    service with several entry points. That granularity decision — how many functions per app — matters, because
+    everything inside an app shares scaling, identity, settings and deployment. Group functions that share a
+    lifecycle and a security context.
+  </p>
+</div>
+
+<h2 id="anatomy">Anatomy of a Function App</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    SP["<b>azurerm_service_plan</b><br/>the compute that hosts the app<br/>os_type + sku_name"]
+    SA[("<b>azurerm_storage_account</b><br/><i>mandatory</i><br/>function metadata, triggers,<br/>timer leases, code package")]
+    AI["<b>azurerm_application_insights</b><br/>logs, traces, metrics"]
+    FA["<b>azurerm_linux_function_app</b><br/>the app itself"]
+    MI["<b>User-assigned identity</b><br/>how it reaches everything else"]
+
+    SP --> FA
+    SA --> FA
+    AI --> FA
+    MI --> FA
+
+    FA -->|"Storage Blob Data Contributor"| LAKE[("ADLS Gen2<br/>raw container")]
+    FA -->|"Key Vault Secrets User"| KV["Key Vault"]
+
+    style FA fill:#e6f2fb,stroke:#0078d4,stroke-width:2px
+    style SA fill:#fdf3e0,stroke:#a5670a
+</div>
+  <figcaption>
+    Four resources minimum. The storage account in orange is the one people forget to plan for.
+  </figcaption>
+</figure>
+
+<h3 id="storage-dependency">Why the storage account is mandatory</h3>
+
+<p>The Functions runtime uses it for things that are not optional:</p>
+
+<ul>
+  <li><strong>Trigger state</strong> — blob trigger receipts, so a blob is not processed twice; timer trigger leases, so only one instance fires a scheduled function.</li>
+  <li><strong>Durable Functions state</strong> — orchestration history lives in storage tables and queues.</li>
+  <li><strong>Key storage</strong> — function access keys.</li>
+  <li><strong>The code package itself</strong> on Consumption and Premium plans, mounted from a file share.</li>
+</ul>
+
+<div class="callout callout-warn">
+  <div class="callout-title">This is the single most common Functions + private networking failure</div>
+  <p style="margin-bottom:0">
+    Lock down the Function App's storage account — <code>public_network_access_enabled = false</code>, or
+    <code>default_action = "Deny"</code> — without giving the app a route to it, and the app silently fails to
+    start. There is often no useful error: the app simply reports no functions. If you restrict that storage
+    account you must also configure VNet integration, private endpoints for <strong>blob, file, queue and
+    table</strong>, and the matching private DNS zones. Many teams keep the runtime storage account separate
+    from the data lake and accept a more permissive posture on it precisely to avoid this.
+  </p>
+</div>
+
+<h3 id="hosting-plans">Hosting plans</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Plan</th><th><code>sku_name</code></th><th>Cold start</th><th>VNet integration</th><th>Use for</th></tr></thead>
+  <tbody>
+    <tr><td>Consumption</td><td><code>Y1</code></td><td>Yes, seconds</td><td>No</td><td>Sporadic, non-private workloads. Cheapest — pay per execution.</td></tr>
+    <tr><td>Flex Consumption</td><td><code>FC1</code></td><td>Reduced</td><td>Yes</td><td>The modern serverless option: per-second billing, VNet support, configurable always-ready instances.</td></tr>
+    <tr><td>Premium</td><td><code>EP1</code>–<code>EP3</code></td><td>No — pre-warmed</td><td>Yes</td><td>Data pipelines needing private networking and predictable latency. The usual choice for a locked-down platform.</td></tr>
+    <tr><td>Dedicated</td><td><code>P1v3</code>, <code>B1</code>…</td><td>No</td><td>Yes</td><td>Reusing an existing App Service Plan; long-running work.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The choice that decides your architecture</div>
+  <p style="margin-bottom:0">
+    Classic Consumption (<code>Y1</code>) cannot do VNet integration. If your lake and vault have public access
+    disabled, a <code>Y1</code> function cannot reach them — full stop. That single fact usually forces Premium
+    (<code>EP1</code>) or Flex Consumption for a private data platform, and it is a meaningful cost step: Premium
+    bills for a warm instance continuously rather than per execution. Decide this before designing the network,
+    not after.
+  </p>
+</div>
+
+<h2 id="building">Building it</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">functions.tf — complete</span></div>
+<pre><code class="language-hcl"># --- identity, created first so roles can be granted before the app exists ---
+resource "azurerm_user_assigned_identity" "ingest" {
+  name                = "id-ingest-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  tags                = local.common_tags
+}
+
+# --- the runtime storage account (separate from the data lake) ---
+resource "azurerm_storage_account" "functions" {
+  name                = substr(lower(replace("stfunc${local.suffix}", "-", "")), 0, 24)
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  account_kind             = "StorageV2"
+
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+
+  tags = local.common_tags
+}
+
+# The app's identity needs data access to its own runtime storage
+# when using identity-based connections.
+resource "azurerm_role_assignment" "func_runtime_storage" {
+  for_each = toset([
+    "Storage Blob Data Owner",
+    "Storage Queue Data Contributor",
+    "Storage Account Contributor",   # required for the file share on Premium
+  ])
+
+  scope                = azurerm_storage_account.functions.id
+  role_definition_name = each.value
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+# --- observability ---
+resource "azurerm_log_analytics_workspace" "main" {
+  name                = "log-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
+  tags                = local.common_tags
+}
+
+resource "azurerm_application_insights" "functions" {
+  name                = "appi-ingest-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  workspace_id        = azurerm_log_analytics_workspace.main.id
+  application_type    = "web"
+  tags                = local.common_tags
+}
+
+# --- hosting ---
+resource "azurerm_service_plan" "functions" {
+  name                = "asp-ingest-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  os_type             = "Linux"
+
+  # EP1 (Premium) because we need VNet integration to reach a private lake.
+  sku_name = var.environment == "prod" ? "EP1" : "Y1"
+
+  tags = local.common_tags
+}
+
+# --- the app ---
+resource "azurerm_linux_function_app" "ingest" {
+  name                = "func-ingest-${local.suffix}"   # globally unique, keep under 32 chars
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  service_plan_id     = azurerm_service_plan.functions.id
+
+  # --- runtime storage via managed identity, NOT a connection string ---
+  storage_account_name          = azurerm_storage_account.functions.name
+  storage_uses_managed_identity = true
+
+  https_only                    = true
+  functions_extension_version   = "~4"
+  public_network_access_enabled = false
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ingest.id]
+  }
+
+  # Outbound VNet integration — required to reach private endpoints.
+  virtual_network_subnet_id = var.environment == "prod" ? azurerm_subnet.this["functions"].id : null
+
+  site_config {
+    application_stack {
+      python_version = "3.12"
+    }
+
+    application_insights_connection_string = azurerm_application_insights.functions.connection_string
+
+    # Route ALL outbound traffic through the VNet, not only RFC1918 ranges.
+    vnet_route_all_enabled = var.environment == "prod"
+
+    ftps_state        = "Disabled"
+    minimum_tls_version = "1.2"
+
+    # Premium: keep instances warm.
+    always_on          = var.environment == "prod"
+    pre_warmed_instance_count = var.environment == "prod" ? 1 : null
+  }
+
+  app_settings = {
+    # Which identity the SDK should use — required with user-assigned MI.
+    "AZURE_CLIENT_ID" = azurerm_user_assigned_identity.ingest.client_id
+
+    # Lake access: an account NAME, not a connection string.
+    "LAKE_ACCOUNT_NAME" = azurerm_storage_account.lake.name
+    "LAKE_CONTAINER"    = "raw"
+
+    # A third-party secret, by reference. The value never enters Terraform.
+    "SAAS_API_KEY" = "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.main.name};SecretName=saas-api-key)"
+
+    # Deployment is handled separately — see below.
+    "SCM_DO_BUILD_DURING_DEPLOYMENT" = "1"
+  }
+
+  tags = local.common_tags
+
+  lifecycle {
+    ignore_changes = [
+      # Azure and the deploy tooling add settings of their own.
+      app_settings["WEBSITE_RUN_FROM_PACKAGE"],
+      app_settings["AzureWebJobsStorage"],
+      tags["hidden-link: /app-insights-resource-id"],
+    ]
+  }
+}
+
+# --- what the app is actually allowed to do ---
+resource "azurerm_role_assignment" "func_lake" {
+  scope                = "${azurerm_storage_account.lake.id}/blobServices/default/containers/raw"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_role_assignment" "func_kv" {
+  scope                = "${azurerm_key_vault.main.id}/secrets/saas-api-key"
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+</div>
+
+<h2 id="identity-storage">Identity-based storage connections</h2>
+
+<p>
+  The default pattern puts a connection string containing an account key into
+  <code>AzureWebJobsStorage</code>. That key is then in app settings, in Terraform state, and readable by anyone
+  with Contributor on the app. <code>storage_uses_managed_identity = true</code> removes it.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Connection string</th><th>Managed identity</th></tr></thead>
+  <tbody>
+    <tr><td>Setting</td><td><code>AzureWebJobsStorage</code> = a key-bearing string</td><td><code>storage_uses_managed_identity = true</code></td></tr>
+    <tr><td>Key in state</td><td>Yes</td><td>No</td></tr>
+    <tr><td>Rotation</td><td>Rotating the key breaks the app until reapplied</td><td>Nothing to rotate</td></tr>
+    <tr><td>Works with <code>shared_access_key_enabled = false</code></td><td>No</td><td>Yes</td></tr>
+    <tr><td>Extra setup</td><td>None</td><td>The identity needs Storage Blob Data Owner, Queue Data Contributor, and Account Contributor for the Premium file share</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Under-granting the runtime roles</div>
+  <p style="margin-bottom:0">
+    Identity-based connections need broader roles on the <em>runtime</em> storage account than people expect —
+    the runtime writes blobs, queues and, on Premium, mounts a file share. <code>Storage Blob Data
+    Contributor</code> alone produces an app that deploys successfully and then does not run, with unhelpful
+    diagnostics. Grant the roles above on the runtime account, and keep that account separate from your data
+    lake so this generosity does not extend to your data.
+  </p>
+</div>
+
+<h2 id="code-deployment">Infrastructure vs code deployment</h2>
+
+<div class="callout callout-important">
+  <div class="callout-title">Terraform should not deploy your function code</div>
+  <p>
+    It is possible — <code>zip_deploy_file</code>, or <code>WEBSITE_RUN_FROM_PACKAGE</code> pointing at a blob.
+    It is a bad idea. Application code changes many times a day; infrastructure changes weekly. Coupling them
+    means every code change runs a plan against production infrastructure state, and a code rollback becomes a
+    Terraform operation.
+  </p>
+  <p style="margin-bottom:0">
+    Terraform creates the app, its identity, its settings and its permissions. A separate pipeline —
+    <code>func azure functionapp publish</code>, the Azure Functions GitHub Action, or an Azure DevOps task —
+    deploys the code. The two pipelines have different triggers, different approvers and different rollback
+    stories.
+  </p>
+</div>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    subgraph INFRA["Infrastructure pipeline — weekly"]
+        TF["terraform apply"] --> APP["Function App exists,<br/>with identity, settings,<br/>RBAC and networking"]
+    end
+
+    subgraph CODE["Application pipeline — many times a day"]
+        BUILD["build + test"] --> DEPLOY["func azure functionapp publish<br/>/ Azure Functions Action"]
+    end
+
+    APP --> DEPLOY
+    DEPLOY --> RUN["Running functions"]
+
+    style INFRA fill:#efedfd,stroke:#5c4ee5
+    style CODE fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>Two pipelines, two cadences. The infrastructure one owns the app's existence, not its contents.</figcaption>
+</figure>
+
+<h2 id="drift">App settings drift</h2>
+
+<p>
+  <code>app_settings</code> is a map that Terraform manages as a whole. Azure and the deployment tooling add
+  their own keys — <code>WEBSITE_RUN_FROM_PACKAGE</code>, App Insights instrumentation keys, function keys. Each
+  plan then proposes to remove them.
+</p>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the permanent diff</span></div>
+<pre><code class="language-bash">  ~ resource "azurerm_linux_function_app" "ingest" {
+      ~ app_settings = {
+          - "WEBSITE_RUN_FROM_PACKAGE" = "https://stfunc.../releases/v1.4.2.zip" -&gt; null
+            # (5 unchanged elements hidden)
+        }
+    }</code></pre>
+</div>
+
+<p>
+  Applying that would unset the setting pointing at the deployed package — breaking the running app. The fix is
+  <code>ignore_changes</code> on the specific keys, as in the configuration above.
+</p>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Ignore specific keys, not the whole map</div>
+  <p style="margin-bottom:0">
+    <code>ignore_changes = [app_settings]</code> makes Terraform stop managing app settings entirely — after
+    which adding a new setting in code does nothing, silently. Always target individual keys:
+    <code>ignore_changes = [app_settings["WEBSITE_RUN_FROM_PACKAGE"]]</code>. Lesson 15 covers
+    <code>ignore_changes</code> properly.
+  </p>
+</div>
+
+<h2 id="networking">Networking a Function App</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Direction</th><th>Mechanism</th><th>Terraform</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Outbound</strong> — app reaches private resources</td>
+      <td>Regional VNet integration through a delegated subnet</td>
+      <td><code>virtual_network_subnet_id</code> + <code>site_config.vnet_route_all_enabled = true</code></td>
+    </tr>
+    <tr>
+      <td><strong>Inbound</strong> — who may call the app</td>
+      <td>Private endpoint, and/or IP restrictions</td>
+      <td><code>azurerm_private_endpoint</code> with <code>subresource_names = ["sites"]</code>, plus <code>public_network_access_enabled = false</code></td>
+    </tr>
+    <tr>
+      <td>Deployment access (Kudu/SCM)</td>
+      <td>A second DNS record in the same zone</td>
+      <td>An A record for <code>&lt;app&gt;.scm</code> in <code>privatelink.azurewebsites.net</code></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Locking inbound access and then breaking deployment</div>
+  <p style="margin-bottom:0">
+    Setting <code>public_network_access_enabled = false</code> also blocks the SCM/Kudu endpoint that
+    deployment tooling uses. A CI runner on the public internet can then no longer publish code. Solutions: a
+    self-hosted agent inside the VNet, an IP restriction allowing the runner's egress range on the SCM site
+    specifically, or deploying via <code>WEBSITE_RUN_FROM_PACKAGE</code> pointing at a blob the app pulls
+    itself. Decide this at design time — discovering it during an incident is unpleasant.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Why does the app show no functions?</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      A Premium Function App is deployed with private networking. Terraform applies cleanly. Code deploys
+      successfully. The portal shows the app as Running but lists <em>no functions</em>, and Application Insights
+      shows no traces at all.
+    </p>
+    <p>List the likely causes in order.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        Almost always: <strong>the runtime cannot reach its own storage account.</strong> The Functions host
+        reads the function metadata from storage at startup. If it cannot, it starts with zero functions and
+        reports no error to the portal.
+      </p>
+      <p>Check in this order:</p>
+      <ol>
+        <li>Does the runtime storage account have <code>public_network_access_enabled = false</code> or a Deny firewall, without private endpoints the app can reach?</li>
+        <li>Does it have private endpoints for <strong>all four</strong> services the runtime uses — blob, file, queue and table — with matching private DNS zones linked to the VNet?</li>
+        <li>Is the app VNet-integrated, and is <code>vnet_route_all_enabled = true</code>? Without route-all, DNS and storage traffic may still go out publicly.</li>
+        <li>With <code>storage_uses_managed_identity = true</code>, does the identity have Storage Blob Data Owner, Storage Queue Data Contributor and Storage Account Contributor on the runtime account?</li>
+        <li>Is <code>AZURE_CLIENT_ID</code> set? With a user-assigned identity the runtime must be told which one to use.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        This is why many teams keep the runtime storage account outside the private-networking perimeter and
+        reserve the lockdown for the data lake — the security benefit on a metadata-only account is modest
+        compared with the operational cost.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Zero-credential ingestion function</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write the Terraform for a Python Function App that:</p>
+    <ul>
+      <li>Writes to the <code>raw</code> container in the data lake.</li>
+      <li>Reads one secret from Key Vault.</li>
+      <li>Sends telemetry to Application Insights.</li>
+      <li>Contains <strong>no connection strings or keys anywhere</strong> — not in app settings, not in state.</li>
+      <li>Uses Premium hosting in prod and Consumption in dev.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>The full configuration is the one in the Building it section above. The four credential-free choices are:</p>
+      <ol>
+        <li>
+          <strong>Runtime storage:</strong> <code>storage_uses_managed_identity = true</code> instead of
+          <code>storage_account_access_key</code>. No key in app settings or state.
+        </li>
+        <li>
+          <strong>Lake access:</strong> app settings carry only <code>LAKE_ACCOUNT_NAME</code>; the code uses
+          <code>DefaultAzureCredential</code>. Permission comes from a role assignment scoped to the
+          <code>raw</code> container.
+        </li>
+        <li>
+          <strong>Key Vault:</strong> the app setting is a
+          <code>@Microsoft.KeyVault(...)</code> reference, resolved by the App Service runtime with the app's
+          identity. Terraform stores a pointer.
+        </li>
+        <li>
+          <strong>App Insights:</strong> <code>application_insights_connection_string</code> is unavoidable —
+          it contains an instrumentation key. It is low-sensitivity (write-only telemetry ingestion), and the
+          modern alternative is Entra ID-based ingestion where your tier supports it.
+        </li>
+      </ol>
+      <p>Environment differences via a single local:</p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">environment switching</span></div>
+<pre><code class="language-hcl">locals { is_prod = var.environment == "prod" }
+
+# EP1 supports VNet integration and always-on; Y1 supports neither.
+sku_name                  = local.is_prod ? "EP1" : "Y1"
+virtual_network_subnet_id = local.is_prod ? azurerm_subnet.this["functions"].id : null
+always_on                 = local.is_prod
+vnet_route_all_enabled    = local.is_prod</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Note that these must move together: <code>always_on = true</code> on a <code>Y1</code> plan is rejected
+        by Azure, and <code>virtual_network_subnet_id</code> on <code>Y1</code> is unsupported. Deriving all of
+        them from one <code>is_prod</code> local keeps the combination valid — the more general lesson being
+        that environment differences should hang off a single decision rather than several independent booleans
+        that can be set to an impossible combination.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Build the Function App module</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write <code>modules/functions</code> creating everything a Python function app needs: hosting plan, runtime storage, Application Insights, and the app itself with a user-assigned identity.</p>    <p style="margin-bottom:0">No connection strings or account keys may appear anywhere. It must work on both Consumption and Premium, and the caller chooses by passing one SKU.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/functions/main.tf</span></div>
+<pre><code class="language-hcl">variable "name"                { type = string }
+variable "resource_group_name"  { type = string }
+variable "location"             { type = string }
+variable "sku_name" {
+  type        = string
+  description = "Y1 (Consumption), EP1-EP3 (Premium) or a Dedicated SKU."
+  default     = "Y1"
+}
+variable "subnet_id" {
+  type        = string
+  description = "Delegated subnet for outbound VNet integration. Null on Y1."
+  default     = null
+}
+variable "identity_id"           { type = string }
+variable "identity_client_id"    { type = string }
+variable "identity_principal_id" { type = string }
+variable "log_analytics_workspace_id" {
+  type    = string
+  default = null
+}
+variable "app_settings" {
+  type    = map(string)
+  default = {}
+}
+variable "tags" {
+  type    = map(string)
+  default = {}
+}
+
+locals {
+  # Y1 supports neither always_on nor VNet integration. Deriving both from
+  # the SKU makes an invalid combination impossible to express.
+  is_premium = !startswith(var.sku_name, "Y")
+}
+
+resource "azurerm_service_plan" "this" {
+  name                = "asp-${var.name}"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  os_type             = "Linux"
+  sku_name            = var.sku_name
+  tags                = var.tags
+}
+
+# Deliberately SEPARATE from the data lake: the Functions runtime writes its
+# own metadata, queues and file share here, and locking this account down is
+# what breaks function apps.
+resource "azurerm_storage_account" "runtime" {
+  name                = substr(lower(replace("stfn${var.name}", "-", "")), 0, 24)
+  resource_group_name = var.resource_group_name
+  location            = var.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = "LRS"
+
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+
+  tags = var.tags
+}
+
+# Identity-based runtime storage needs BROADER roles than people expect:
+# the host writes blobs, uses queues, and mounts a file share on Premium.
+resource "azurerm_role_assignment" "runtime" {
+  for_each = toset([
+    "Storage Blob Data Owner",
+    "Storage Queue Data Contributor",
+    "Storage Account Contributor",
+  ])
+
+  scope                = azurerm_storage_account.runtime.id
+  role_definition_name = each.value
+  principal_id         = var.identity_principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_application_insights" "this" {
+  name                = "appi-${var.name}"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  workspace_id        = var.log_analytics_workspace_id
+  application_type    = "web"
+  tags                = var.tags
+}
+
+resource "azurerm_linux_function_app" "this" {
+  name                = var.name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  service_plan_id     = azurerm_service_plan.this.id
+
+  # No access key: the identity authenticates to the runtime storage.
+  storage_account_name          = azurerm_storage_account.runtime.name
+  storage_uses_managed_identity = true
+
+  https_only                  = true
+  functions_extension_version = "~4"
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [var.identity_id]
+  }
+
+  virtual_network_subnet_id = local.is_premium ? var.subnet_id : null
+
+  site_config {
+    application_stack {
+      python_version = "3.12"
+    }
+
+    application_insights_connection_string = azurerm_application_insights.this.connection_string
+
+    always_on              = local.is_premium
+    vnet_route_all_enabled = local.is_premium && var.subnet_id != null
+    ftps_state             = "Disabled"
+    minimum_tls_version    = "1.2"
+  }
+
+  app_settings = merge(var.app_settings, {
+    # Required so the SDK knows WHICH user-assigned identity to use.
+    AZURE_CLIENT_ID = var.identity_client_id
+  })
+
+  tags = var.tags
+
+  lifecycle {
+    ignore_changes = [
+      # The deployment pipeline owns this one. Unsetting it breaks the app.
+      app_settings["WEBSITE_RUN_FROM_PACKAGE"],
+      tags["hidden-link: /app-insights-resource-id"],
+    ]
+  }
+}
+
+output "id"           { value = azurerm_linux_function_app.this.id }
+output "name"         { value = azurerm_linux_function_app.this.name }
+output "default_hostname" { value = azurerm_linux_function_app.this.default_hostname }</code></pre>
+</div>    <p><code>local.is_premium</code> is the design idea worth keeping. <code>always_on</code>, <code>vnet_route_all_enabled</code> and VNet integration are only valid on Premium, so deriving all three from the SKU makes an impossible combination unrepresentable &mdash; rather than leaving three independent booleans a caller can set inconsistently.</p>    <p style="margin-bottom:0">The three runtime role assignments catch people out. <code>Storage Blob Data Contributor</code> alone produces an app that deploys fine and then silently runs no functions, because the host cannot reach its queues or mount its file share.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Lock the app down without breaking deployment</span>
+  </div>
+  <div class="exercise-body">
+    <p>Production requires the function app to have no public inbound access, and to reach a lake whose own public access is disabled. Write it.</p>    <p style="margin-bottom:0">Then explain the deployment problem this creates and give two ways to solve it &mdash; this is the part that catches teams out after the fact.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">functions-network.tf</span></div>
+<pre><code class="language-hcl"># OUTBOUND: the app reaches private endpoints through a delegated subnet.
+resource "azurerm_subnet" "functions" {
+  name                 = "snet-functions-${local.suffix}"
+  resource_group_name  = azurerm_resource_group.network.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [cidrsubnet(var.vnet_cidr, 10, 16)]   # /26
+
+  delegation {
+    name = "webapp"
+    service_delegation {
+      name = "Microsoft.Web/serverFarms"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+    }
+  }
+}
+
+resource "azurerm_linux_function_app" "ingest" {
+  # ...
+  public_network_access_enabled = false          # INBOUND: locked
+  virtual_network_subnet_id     = azurerm_subnet.functions.id   # OUTBOUND: integrated
+
+  site_config {
+    # Without this, only RFC1918 traffic is routed through the VNet and DNS
+    # still resolves publicly - so the private endpoints are never used.
+    vnet_route_all_enabled = true
+  }
+}
+
+# INBOUND: a private endpoint for the app itself.
+resource "azurerm_private_endpoint" "functions" {
+  name                = "pe-func-${local.suffix}"
+  resource_group_name = azurerm_resource_group.network.name
+  location            = var.location
+  subnet_id           = azurerm_subnet.privatelink.id
+
+  private_service_connection {
+    name                           = "psc-func"
+    private_connection_resource_id = azurerm_linux_function_app.ingest.id
+    subresource_names              = ["sites"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "pdz-sites"
+    private_dns_zone_ids = [azurerm_private_dns_zone.sites.id]
+  }
+}
+
+resource "azurerm_private_dns_zone" "sites" {
+  name                = "privatelink.azurewebsites.net"
+  resource_group_name = azurerm_resource_group.network.name
+}</code></pre>
+</div>    <p><strong>The problem this creates:</strong> <code>public_network_access_enabled = false</code> also blocks the SCM/Kudu endpoint that deployment tooling uses. A GitHub-hosted runner on the public internet can no longer publish code &mdash; and you usually discover this the first time you try to deploy after the hardening lands.</p>    <p style="margin-bottom:0"><strong>Two solutions.</strong> Either run the deploy from inside the network &mdash; a self-hosted agent in the VNet, or a private build pool &mdash; or invert the direction: publish the package to a storage blob and set <code>WEBSITE_RUN_FROM_PACKAGE</code> to a URL the app pulls itself, so nothing needs inbound access. A third, weaker option is an IP restriction allowing the runner's egress range on the SCM site specifically. Decide at design time, not during an incident.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Four bugs</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_service_plan" "functions" {
+  name                = "asp-ingest"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  os_type             = "Linux"
+  sku_name            = "Y1"
+}
+
+resource "azurerm_linux_function_app" "ingest" {
+  name                = "func-ingest-analytics-production-westeurope-01"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  service_plan_id     = azurerm_service_plan.functions.id
+
+  storage_account_name       = azurerm_storage_account.lake.name
+  storage_account_access_key = azurerm_storage_account.lake.primary_access_key
+
+  virtual_network_subnet_id = azurerm_subnet.this["functions"].id
+
+  site_config {
+    always_on = true
+  }
+
+  app_settings = {
+    "LAKE_CONNECTION" = azurerm_storage_account.lake.primary_connection_string
+  }
+}</code></pre>
+    </div>
+    <p>Find four problems.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>1 · <code>Y1</code> with <code>always_on</code> and VNet integration.</strong></p>
+      <p>
+        Consumption plans do not support <code>always_on</code> — Azure rejects it — and classic
+        <code>Y1</code> does not support regional VNet integration at all. Use <code>EP1</code> (Premium) or
+        <code>FC1</code> (Flex Consumption) if you need either.
+      </p>
+
+      <p><strong>2 · Using the data lake as the runtime storage account.</strong></p>
+      <p>
+        The Functions runtime writes its own metadata, queues and file share into whatever account you give it.
+        Pointing it at the data lake mixes runtime plumbing with your data, forces broad runtime roles on the
+        lake, and means locking down the lake breaks the app. Use a separate, small storage account.
+      </p>
+
+      <p><strong>3 · Two credentials in plaintext.</strong></p>
+      <p>
+        <code>storage_account_access_key</code> and <code>primary_connection_string</code> both put the account
+        key into app settings and into Terraform state. Replace with
+        <code>storage_uses_managed_identity = true</code> for the runtime, and an account <em>name</em> plus a
+        role assignment for the lake.
+      </p>
+
+      <p><strong>4 · The name is too long and not globally unique-safe.</strong></p>
+      <p style="margin-bottom:0">
+        <code>func-ingest-analytics-production-westeurope-01</code> is 45 characters. Function App names become
+        DNS hostnames and Microsoft recommends staying under 32 characters to avoid host ID collisions — two
+        apps whose first 32 characters match can collide on their host ID and corrupt each other's trigger
+        state, which is an extremely confusing bug. Use the short region form and the short environment form:
+        <code>func-ingest-prod-weu-01</code>.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is the Azure equivalent of AWS Lambda, and how does it differ?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Azure Functions. The main structural difference is granularity: a Lambda function is one resource,
+        whereas Azure groups many functions into a Function App that shares a runtime, identity, app settings and
+        scaling. An Azure Function App also requires an explicit hosting plan and a mandatory storage account for
+        trigger state, keys and often the code package — so a minimal deployment is three or four Terraform
+        resources rather than one. Permissions come from a managed identity and Azure RBAC rather than an IAM
+        execution role.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why does a Function App need a storage account?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The runtime uses it for trigger state — blob receipts so a blob is not processed twice, timer leases so
+        only one instance fires a schedule — for function access keys, for Durable Functions orchestration
+        history, and on Consumption and Premium plans for the code package mounted from a file share. The
+        practical consequence is that locking that storage account down behind private networking will silently
+        break the app unless you also add private endpoints for blob, file, queue and table with matching DNS
+        zones. Which is why the runtime account should be separate from the data lake.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you avoid connection strings in a Function App?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Three moves. For the runtime storage, <code>storage_uses_managed_identity = true</code> instead of an
+        access key, with the identity granted Storage Blob Data Owner, Storage Queue Data Contributor and
+        Storage Account Contributor on that account. For data access, put only the account name in app settings
+        and let the code use <code>DefaultAzureCredential</code>, with a role assignment scoped to the container.
+        For third-party secrets, use a <code>@Microsoft.KeyVault(...)</code> reference so the App Service runtime
+        resolves it with the app's identity and Terraform stores only a pointer.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Should Terraform deploy function code?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        No. Application code changes many times a day and infrastructure changes weekly; coupling them means
+        every code change runs a plan against production infrastructure state and every rollback becomes a
+        Terraform operation. Terraform should create the app, its identity, settings, networking and RBAC. A
+        separate pipeline publishes the code. The one Terraform concession is <code>ignore_changes</code> on the
+        settings the deploy tooling writes, such as <code>WEBSITE_RUN_FROM_PACKAGE</code>, so the two pipelines
+        do not fight.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Which hosting plan would you choose for a data ingestion function?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        It depends almost entirely on networking. If the lake and vault have public access disabled, classic
+        Consumption (<code>Y1</code>) is out — it cannot do VNet integration — so Premium (<code>EP1</code>) or
+        Flex Consumption (<code>FC1</code>). Premium also removes cold starts and lifts the execution timeout,
+        which matters for ingestion runs. In dev, where public access is usually allowed, <code>Y1</code> is
+        fine and much cheaper. I would drive that from a single environment variable so the plan SKU,
+        <code>always_on</code> and VNet integration all move together — they are only valid in certain
+        combinations.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why do app settings cause permanent plan diffs?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because <code>app_settings</code> is a map Terraform manages as a whole, while Azure and the deployment
+        tooling add keys of their own — <code>WEBSITE_RUN_FROM_PACKAGE</code>, instrumentation keys, function
+        keys. Terraform sees keys it did not declare and proposes to remove them, which would break the running
+        app. The fix is <code>ignore_changes</code> targeting those specific keys. Ignoring the whole
+        <code>app_settings</code> map is the wrong fix, because then adding a new setting in code silently does
+        nothing.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>A Function App is a service plan + a storage account + the app. Plan for all three.</li>
+  <li>The runtime storage account is mandatory and is where private-networking deployments break. Keep it separate from your data lake.</li>
+  <li>Classic Consumption (<code>Y1</code>) cannot do VNet integration — that decision drives your whole architecture.</li>
+  <li><code>storage_uses_managed_identity = true</code> plus per-container role assignments removes every credential.</li>
+  <li>Terraform owns the app; a separate pipeline owns the code.</li>
+  <li><code>ignore_changes</code> on individual app-setting keys, never the whole map.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

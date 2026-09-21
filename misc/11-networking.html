@@ -1,0 +1,1140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11 · VNets, NSGs, private endpoints &amp; private DNS — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="11">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate</span>
+    <span>Part 10</span><span>·</span><span>~80 min</span><span>·</span><span>Requires Lessons 06, 10</span>
+  </div>
+  <h1>VNets, NSGs, private endpoints &amp; private DNS</h1>
+  <p class="lede">
+    Private endpoints are two thirds networking and one third DNS — and the DNS third is where everyone loses a
+    day. This lesson builds the network a data platform needs and explains the resolution chain precisely
+    enough that you can debug it.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Size and lay out subnets for Databricks, private endpoints and Functions</li>
+      <li>Explain subnet delegation and why Databricks needs two subnets</li>
+      <li>State the real difference between a service endpoint and a private endpoint</li>
+      <li>Trace a private endpoint DNS lookup through the CNAME chain</li>
+      <li>Know that ADLS Gen2 needs <em>two</em> private endpoints, and why</li>
+      <li>Debug <code>Name or service not known</code> and “it resolves to a public IP”</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">VNet</span><span class="pill">Private Endpoint</span><span class="pill">Private DNS</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="model">The Azure networking model</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Object</th><th>What it is</th><th>Terraform</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Virtual network</strong></td><td>An isolated private address space in one region. Resources in it can reach each other by private IP.</td><td><code>azurerm_virtual_network</code></td></tr>
+    <tr><td><strong>Subnet</strong></td><td>A slice of the VNet's address space. The unit of NSG association, delegation and service endpoints.</td><td><code>azurerm_subnet</code></td></tr>
+    <tr><td><strong>Network security group</strong></td><td>A stateful firewall of priority-ordered allow/deny rules, attached to a subnet or a NIC.</td><td><code>azurerm_network_security_group</code></td></tr>
+    <tr><td><strong>Private endpoint</strong></td><td>A NIC in your subnet with a private IP, mapped to a specific PaaS resource.</td><td><code>azurerm_private_endpoint</code></td></tr>
+    <tr><td><strong>Private DNS zone</strong></td><td>A DNS zone resolvable only from linked VNets. What makes a private endpoint usable by name.</td><td><code>azurerm_private_dns_zone</code></td></tr>
+    <tr><td><strong>Delegation</strong></td><td>Handing a subnet to a specific Azure service so it can inject its own resources and rules.</td><td>A <code>delegation</code> block on the subnet</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="planning">Planning the address space</h2>
+
+<p>
+  Get this wrong and you cannot fix it without rebuilding — subnet address prefixes can be changed only if the
+  subnet is empty, and VNet peering rejects overlapping ranges.
+</p>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">a data platform address plan</span></div>
+<pre class="plain">vnet-analytics-dev-weu-01        10.10.0.0/16     (65 536 addresses — generous, and free)
+│
+├── snet-privatelink              10.10.1.0/24     251 usable · private endpoint NICs
+├── snet-databricks-host          10.10.2.0/24     251 usable · Databricks driver + executor VMs
+├── snet-databricks-container     10.10.3.0/24     251 usable · Databricks container side
+├── snet-functions                10.10.4.0/26      59 usable · delegated to Microsoft.Web
+├── snet-agents                   10.10.5.0/27      27 usable · self-hosted CI agents
+└── (reserved)                    10.10.6.0/24+                 future services</pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Azure reserves five addresses in every subnet</div>
+  <p style="margin-bottom:0">
+    A <code>/24</code> gives you 251 usable addresses, not 256: the network address, the broadcast address, and
+    three that Azure keeps for the default gateway and DNS. A <code>/29</code> therefore has 3 usable addresses,
+    and <code>/29</code> is the smallest subnet Azure accepts. Databricks additionally requires its host and
+    container subnets to be between <code>/26</code> and <code>/24</code> — with two IPs consumed per cluster
+    node, a <code>/26</code> caps you at roughly 30 nodes.
+  </p>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">network.tf — subnets from a typed variable</span></div>
+<pre><code class="language-hcl">variable "vnet_cidr" {
+  type    = string
+  default = "10.10.0.0/16"
+}
+
+locals {
+  # cidrsubnet(prefix, newbits, netnum):
+  #   cidrsubnet("10.10.0.0/16", 8, 1) = "10.10.1.0/24"   (16 + 8 = /24)
+  #   cidrsubnet("10.10.0.0/16", 10, 16) = "10.10.4.0/26" (16 + 10 = /26)
+  subnets = {
+    privatelink = {
+      prefix            = cidrsubnet(var.vnet_cidr, 8, 1)
+      service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"]
+      delegation        = null
+    }
+    databricks_host = {
+      prefix            = cidrsubnet(var.vnet_cidr, 8, 2)
+      service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"]
+      delegation        = "Microsoft.Databricks/workspaces"
+    }
+    databricks_container = {
+      prefix            = cidrsubnet(var.vnet_cidr, 8, 3)
+      service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"]
+      delegation        = "Microsoft.Databricks/workspaces"
+    }
+    functions = {
+      prefix            = cidrsubnet(var.vnet_cidr, 10, 16)
+      service_endpoints = ["Microsoft.Storage"]
+      delegation        = "Microsoft.Web/serverFarms"
+    }
+  }
+}
+
+resource "azurerm_virtual_network" "main" {
+  name                = "vnet-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  address_space       = [var.vnet_cidr]
+  tags                = local.common_tags
+}
+
+resource "azurerm_subnet" "this" {
+  for_each = local.subnets
+
+  name                 = "snet-${replace(each.key, "_", "-")}-${local.suffix}"
+  resource_group_name  = azurerm_resource_group.analytics.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [each.value.prefix]
+  service_endpoints    = each.value.service_endpoints
+
+  dynamic "delegation" {
+    for_each = each.value.delegation == null ? [] : [each.value.delegation]
+
+    content {
+      name = "delegation"
+      service_delegation {
+        name = delegation.value
+        actions = [
+          "Microsoft.Network/virtualNetworks/subnets/join/action",
+          "Microsoft.Network/virtualNetworks/subnets/action",
+        ]
+      }
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Why <code>cidrsubnet()</code> rather than literal strings</div>
+  <p style="margin-bottom:0">
+    With literals, changing the VNet's base range means editing every subnet by hand and getting one wrong.
+    With <code>cidrsubnet()</code>, the whole plan shifts consistently when <code>var.vnet_cidr</code> changes,
+    and dev/test/prod can occupy non-overlapping ranges from the same code. Verify your arithmetic in
+    <code>terraform console</code> before applying — a mistake here is expensive to undo.
+  </p>
+</div>
+
+<h2 id="nsgs">Network security groups</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">nsg.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_network_security_group" "databricks" {
+  name                = "nsg-databricks-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  tags                = local.common_tags
+
+  # Databricks injects its own required rules into this NSG.
+  # Do NOT try to manage those — see the ignore_changes note below.
+}
+
+resource "azurerm_subnet_network_security_group_association" "databricks_host" {
+  subnet_id                 = azurerm_subnet.this["databricks_host"].id
+  network_security_group_id = azurerm_network_security_group.databricks.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "databricks_container" {
+  subnet_id                 = azurerm_subnet.this["databricks_container"].id
+  network_security_group_id = azurerm_network_security_group.databricks.id
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · associations declared two ways</div>
+  <p style="margin-bottom:0">
+    <code>azurerm_subnet</code> historically accepted inline <code>network_security_group_id</code>, and there is
+    also a separate association resource. Using both for the same subnet makes them fight: each apply reports a
+    change, undoing the other. Pick the <strong>separate association resource</strong> — it is the supported
+    pattern and it works cleanly with <code>for_each</code>. The same applies to route table associations.
+  </p>
+</div>
+
+<h2 id="endpoints">Service endpoints vs private endpoints</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph SE["Service endpoint"]
+        direction TB
+        SEV["Your subnet"] -->|"traffic stays on the<br/>Azure backbone,<br/>source = subnet identity"| SESA["Storage account<br/><b>keeps its public IP</b><br/><b>keeps its public DNS name</b>"]
+        SEN["The storage firewall allows<br/>this subnet. Anyone else on the<br/>internet still reaches the endpoint<br/>and is rejected there."]
+    end
+
+    subgraph PE["Private endpoint"]
+        direction TB
+        PEV["Your subnet<br/>NIC at 10.10.1.4"] -->|"private IP,<br/>never leaves the VNet"| PESA["Storage account<br/><b>public access can be OFF</b>"]
+        PEN["The account has an address<br/>INSIDE your network. With public<br/>access disabled there is no<br/>internet-facing surface at all."]
+    end
+
+    style PE fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+    style SE fill:#fdf3e0,stroke:#a5670a
+  </div>
+  <figcaption>
+    Service endpoints filter who may use a public endpoint. Private endpoints remove the public endpoint from
+    the equation.
+  </figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Service endpoint</th><th>Private endpoint</th></tr></thead>
+  <tbody>
+    <tr><td>Cost</td><td>Free</td><td>Billed per endpoint-hour plus data processed</td></tr>
+    <tr><td>Resource gets a private IP</td><td>No</td><td>Yes</td></tr>
+    <tr><td>Public endpoint can be disabled</td><td>No</td><td>Yes</td></tr>
+    <tr><td>Reachable from peered VNets / on-premises</td><td>No</td><td>Yes, with DNS forwarding</td></tr>
+    <tr><td>Granularity</td><td>Whole service in a region</td><td>One specific resource, one subresource</td></tr>
+    <tr><td>DNS complexity</td><td>None</td><td><strong>Significant</strong> — the rest of this lesson</td></tr>
+    <tr><td>Use for</td><td>Dev environments; cheap defence in depth alongside a firewall</td><td>Production data platforms</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="private-endpoints">Private endpoints in Terraform</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">private-endpoints.tf — ADLS Gen2 needs TWO</span></div>
+<pre><code class="language-hcl">locals {
+  # Each private endpoint targets ONE subresource and needs ONE matching zone.
+  storage_endpoints = {
+    blob = "privatelink.blob.core.windows.net"
+    dfs  = "privatelink.dfs.core.windows.net"
+  }
+}
+
+resource "azurerm_private_dns_zone" "storage" {
+  for_each = local.storage_endpoints
+
+  name                = each.value
+  resource_group_name = azurerm_resource_group.analytics.name
+  tags                = local.common_tags
+}
+
+# A zone resolves nothing until it is LINKED to a virtual network.
+resource "azurerm_private_dns_zone_virtual_network_link" "storage" {
+  for_each = local.storage_endpoints
+
+  name                  = "link-${each.key}-${local.suffix}"
+  resource_group_name   = azurerm_resource_group.analytics.name
+  private_dns_zone_name = azurerm_private_dns_zone.storage[each.key].name
+  virtual_network_id    = azurerm_virtual_network.main.id
+  registration_enabled  = false
+}
+
+resource "azurerm_private_endpoint" "storage" {
+  for_each = local.storage_endpoints
+
+  name                = "pe-lake-${each.key}-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  subnet_id           = azurerm_subnet.this["privatelink"].id
+
+  private_service_connection {
+    name                           = "psc-lake-${each.key}"
+    private_connection_resource_id = azurerm_storage_account.lake.id
+    subresource_names              = [each.key]   # "blob" or "dfs"
+    is_manual_connection           = false
+  }
+
+  # This is what writes the A record into the zone. Omit it and the
+  # endpoint exists but nothing resolves to it.
+  private_dns_zone_group {
+    name                 = "pdz-${each.key}"
+    private_dns_zone_ids = [azurerm_private_dns_zone.storage[each.key].id]
+  }
+
+  tags = local.common_tags
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Why ADLS Gen2 needs two private endpoints</div>
+  <p style="margin-bottom:0">
+    A private endpoint maps to one <strong>subresource</strong>. A storage account exposes separate endpoints for
+    blob, dfs, file, queue, table and web. ADLS Gen2 clients use <code>abfss://</code>, which resolves through
+    the <strong>dfs</strong> endpoint — but many tools, the portal's data browser included, use
+    <strong>blob</strong>. Creating only the blob endpoint gives you a lake where the portal works fine and Spark
+    fails with a name-resolution error. Create both, with both zones.
+  </p>
+</div>
+
+<h3 id="zone-reference">Zone and subresource reference</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Service</th><th><code>subresource_names</code></th><th>Private DNS zone</th></tr></thead>
+  <tbody>
+    <tr><td>Storage — blob</td><td><code>blob</code></td><td><code>privatelink.blob.core.windows.net</code></td></tr>
+    <tr><td>Storage — ADLS Gen2</td><td><code>dfs</code></td><td><code>privatelink.dfs.core.windows.net</code></td></tr>
+    <tr><td>Storage — file</td><td><code>file</code></td><td><code>privatelink.file.core.windows.net</code></td></tr>
+    <tr><td>Storage — queue</td><td><code>queue</code></td><td><code>privatelink.queue.core.windows.net</code></td></tr>
+    <tr><td>Key Vault</td><td><code>vault</code></td><td><code>privatelink.vaultcore.azure.net</code></td></tr>
+    <tr><td>Azure Databricks</td><td><code>databricks_ui_api</code>, <code>browser_authentication</code></td><td><code>privatelink.azuredatabricks.net</code></td></tr>
+    <tr><td>Function App / Web App</td><td><code>sites</code></td><td><code>privatelink.azurewebsites.net</code></td></tr>
+    <tr><td>Azure SQL</td><td><code>sqlServer</code></td><td><code>privatelink.database.windows.net</code></td></tr>
+    <tr><td>Event Hubs / Service Bus</td><td><code>namespace</code></td><td><code>privatelink.servicebus.windows.net</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">The zone name must be exact</div>
+  <p style="margin-bottom:0">
+    Azure only auto-populates the A record when the zone uses the documented name. A typo —
+    <code>privatelink.blob.core.windows.com</code>, or the region left in — creates a zone that silently
+    resolves nothing. This produces a private endpoint that exists, shows “Approved”, and does not work.
+  </p>
+</div>
+
+<h2 id="dns">How private endpoint DNS actually resolves</h2>
+
+<p>
+  This is the part worth understanding properly, because it is where the failures are.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+sequenceDiagram
+    participant C as Client in the VNet<br/>(a Databricks node)
+    participant AD as Azure-provided DNS<br/>168.63.129.16
+    participant PZ as Private DNS zone<br/>privatelink.dfs.core.windows.net<br/><i>linked to this VNet</i>
+    participant PD as Public Azure DNS
+
+    C->>AD: A? stanalyticsdevweu01.dfs.core.windows.net
+    AD->>PD: (resolver logic) look up the public name
+    PD-->>AD: CNAME → stanalyticsdevweu01.privatelink.dfs.core.windows.net
+    Note over AD,PZ: the CNAME lands in the privatelink zone,<br/>which is linked to this VNet
+    AD->>PZ: A? stanalyticsdevweu01.privatelink.dfs.core.windows.net
+    PZ-->>AD: A 10.10.1.5
+    AD-->>C: 10.10.1.5 (private)
+    C->>C: connect over the VNet — never touches the internet
+  </div>
+  <figcaption>
+    The public DNS name never changes. Azure always returns a CNAME into the <code>privatelink</code> zone; the
+    only question is whether your resolver can see that zone.
+  </figcaption>
+</figure>
+
+<div class="callout callout-important">
+  <div class="callout-title">The one sentence that explains every private-endpoint DNS bug</div>
+  <p style="margin-bottom:0">
+    Applications keep using the <strong>public</strong> hostname. Azure's public DNS returns a CNAME into
+    <code>privatelink.*</code>. If the resolver can reach a private DNS zone with that name — because the zone
+    is linked to the VNet the client sits in — the chain ends at a private IP. If not, it falls through to the
+    public IP. <strong>So “it resolves to a public IP” always means the zone is missing, misnamed, not linked,
+    or the client is using a resolver that cannot see it.</strong>
+  </p>
+</div>
+
+<h3 id="dns-debug">Debugging</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">from inside the VNet</span></div>
+<pre><code class="language-bash">$ nslookup stanalyticsdevweu01.dfs.core.windows.net
+
+Non-authoritative answer:
+stanalyticsdevweu01.dfs.core.windows.net
+        canonical name = stanalyticsdevweu01.privatelink.dfs.core.windows.net.
+Name:   stanalyticsdevweu01.privatelink.dfs.core.windows.net
+Address: 10.10.1.5          # ✓ private — working
+
+# ✗ if you instead see a public address like 20.60.x.x, the private zone is
+#   not being consulted. Check, in order:
+#     1 · does the zone exist with the EXACT documented name?
+#     2 · is there a virtual_network_link to THIS VNet?
+#     3 · does the zone contain an A record for the account? (created by
+#         private_dns_zone_group — is that block present?)
+#     4 · is the client using Azure-provided DNS (168.63.129.16), or a
+#         custom DNS server that does not forward to it?</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">checking from the control plane</span></div>
+<pre><code class="language-bash"># Did the endpoint get an IP, and is the connection approved?
+az network private-endpoint show \
+  --name pe-lake-dfs-analytics-dev-weu-01 \
+  --resource-group rg-analytics-dev-weu-01 \
+  --query '{ip: customDnsConfigs, state: privateLinkServiceConnections[0].privateLinkServiceConnectionState}'
+
+# Does the zone actually contain the A record?
+az network private-dns record-set a list \
+  --zone-name privatelink.dfs.core.windows.net \
+  --resource-group rg-analytics-dev-weu-01 -o table</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · one zone shared by two different services</div>
+  <p style="margin-bottom:0">
+    Microsoft's documentation explicitly warns against associating one private DNS zone with private endpoints
+    of two different service types — it deletes the initial A record and breaks resolution for one of them.
+    Create a zone per service type. The related trap: once a VNet is linked to
+    <code>privatelink.blob.core.windows.net</code>, clients in that VNet may fail to resolve <em>other</em>
+    storage accounts that have no private endpoint, because the private zone answers NXDOMAIN rather than
+    falling through. Azure's “fallback to internet” option on the VNet link exists for exactly this.
+  </p>
+</div>
+
+<h2 id="full-network">The platform network, assembled</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph VNET["vnet-analytics-prod-weu-01 · 10.10.0.0/16"]
+        subgraph PLSNET["snet-privatelink · 10.10.1.0/24"]
+            PE1["pe-lake-blob → 10.10.1.4"]
+            PE2["pe-lake-dfs → 10.10.1.5"]
+            PE3["pe-kv → 10.10.1.6"]
+        end
+        subgraph DBXSNET["Databricks subnets"]
+            HOST["snet-databricks-host<br/>10.10.2.0/24<br/><i>delegated</i>"]
+            CONT["snet-databricks-container<br/>10.10.3.0/24<br/><i>delegated</i>"]
+        end
+        FSNET["snet-functions · 10.10.4.0/26<br/><i>delegated to Microsoft.Web</i>"]
+    end
+
+    subgraph ZONES["Private DNS zones — linked to the VNet"]
+        Z1["privatelink.blob.core.windows.net"]
+        Z2["privatelink.dfs.core.windows.net"]
+        Z3["privatelink.vaultcore.azure.net"]
+    end
+
+    LAKE[("ADLS Gen2<br/>public access disabled")]
+    KV["Key Vault<br/>public access disabled"]
+    DBX["Databricks workspace<br/>VNet-injected"]
+    FUNC["Function App<br/>VNet-integrated"]
+
+    PE1 --> LAKE
+    PE2 --> LAKE
+    PE3 --> KV
+    PE1 -.-> Z1
+    PE2 -.-> Z2
+    PE3 -.-> Z3
+
+    DBX --- HOST
+    DBX --- CONT
+    FUNC --- FSNET
+
+    HOST -->|"resolves via Z2<br/>to 10.10.1.5"| PE2
+    FSNET -->|"resolves via Z1/Z3"| PLSNET
+
+    style ZONES fill:#efedfd,stroke:#5c4ee5
+    style LAKE fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>
+    Every arrow into the lake and the vault is a private IP inside the VNet. Neither resource has an
+    internet-facing surface.
+  </figcaption>
+</figure>
+
+<h3 id="vnet-integration">Outbound VNet integration for Functions</h3>
+
+<p>
+  A private endpoint controls <em>inbound</em> access to a service. For a Function App to reach a private
+  endpoint, you need the opposite: <strong>outbound VNet integration</strong>, which routes the app's egress
+  through a delegated subnet.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">functions-networking.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_linux_function_app" "ingest" {
+  # ...
+  # Outbound: route egress through the delegated subnet.
+  virtual_network_subnet_id = azurerm_subnet.this["functions"].id
+
+  site_config {
+    # Force ALL outbound traffic through the VNet, not just RFC1918 ranges.
+    vnet_route_all_enabled = true
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">The classic Functions + private endpoint failure</div>
+  <p style="margin-bottom:0">
+    You disable public access on the storage account, add private endpoints, and the Function App stops working
+    with <code>Name or service not known</code> or a 403. Cause: the app is not VNet-integrated, so its outbound
+    traffic leaves from Azure's shared egress and cannot reach the private IP — or it <em>is</em> integrated but
+    <code>vnet_route_all_enabled</code> is false, so only private ranges are routed and DNS still resolves
+    publicly. You need integration <strong>and</strong> route-all <strong>and</strong> a linked private DNS zone.
+  </p>
+</div>
+
+<h2 id="mistakes">Common mistakes</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Databricks NSG rule drift</div>
+  <p style="margin-bottom:0">
+    Databricks injects its own required security rules into the NSG attached to its subnets. If you manage
+    <code>security_rule</code> blocks inline on that NSG, every plan will show Terraform removing Databricks'
+    rules and Databricks re-adding them. Either keep the NSG bare (as in this lesson) and let Databricks own it,
+    or use <code>lifecycle { ignore_changes = [security_rule] }</code>. Lesson 15.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Subnets sized for today</div>
+  <p style="margin-bottom:0">
+    Changing a subnet's address prefix requires it to be empty — which for a Databricks subnet means deleting
+    the workspace. Private address space is free and effectively unlimited; a <code>/24</code> costs the same as
+    a <code>/28</code>. Be generous, and leave gaps between allocations so you can grow one range without
+    renumbering everything.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Private DNS zones in the workload resource group</div>
+  <p style="margin-bottom:0">
+    Zones are usually shared infrastructure — one <code>privatelink.blob.core.windows.net</code> per landing
+    zone, linked to many VNets. Creating a copy per workload works until two of them try to hold records for
+    accounts in the same VNet, at which point resolution becomes ambiguous. In an enterprise landing zone the
+    zones live in a central connectivity subscription and workloads reference them via a provider alias
+    (Lesson 04) or a data source.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Why does Spark fail but the portal works?</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      A team disables public network access on their ADLS Gen2 account and creates one private endpoint with
+      <code>subresource_names = ["blob"]</code> and the zone
+      <code>privatelink.blob.core.windows.net</code>, linked to the VNet.
+    </p>
+    <p>
+      Browsing containers in the portal from a jump box in the VNet works. A Databricks notebook reading
+      <code>abfss://bronze@stanalyticsdevweu01.dfs.core.windows.net/</code> fails. Why, and what is the fix?
+    </p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        The <code>abfss://</code> driver targets the <strong>dfs</strong> endpoint —
+        <code>stanalyticsdevweu01.dfs.core.windows.net</code> — and there is no private endpoint or private DNS
+        zone for <code>dfs</code>. That name resolves via public DNS to the account's public IP, and public
+        network access is disabled, so the connection is refused.
+      </p>
+      <p>
+        The portal's data browser uses the blob endpoint, which does have a private endpoint, so it works — which
+        is exactly why this bug survives testing.
+      </p>
+      <p><strong>Fix:</strong> add the second endpoint and zone.</p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">fix</span></div>
+<pre><code class="language-hcl">resource "azurerm_private_dns_zone" "dfs" {
+  name                = "privatelink.dfs.core.windows.net"
+  resource_group_name = azurerm_resource_group.analytics.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "dfs" {
+  name                  = "link-dfs"
+  resource_group_name   = azurerm_resource_group.analytics.name
+  private_dns_zone_name = azurerm_private_dns_zone.dfs.name
+  virtual_network_id    = azurerm_virtual_network.main.id
+}
+
+resource "azurerm_private_endpoint" "lake_dfs" {
+  name                = "pe-lake-dfs-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  subnet_id           = azurerm_subnet.this["privatelink"].id
+
+  private_service_connection {
+    name                           = "psc-lake-dfs"
+    private_connection_resource_id = azurerm_storage_account.lake.id
+    subresource_names              = ["dfs"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "pdz-dfs"
+    private_dns_zone_ids = [azurerm_private_dns_zone.dfs.id]
+  }
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        General rule: enumerate <em>every</em> endpoint your consumers use, and create a private endpoint and
+        zone for each. For a data lake that is nearly always blob and dfs together.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Generalise the private endpoint pattern</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      Write configuration that creates private endpoints and private DNS zones for a variable set of targets —
+      the lake (blob and dfs) and the Key Vault (vault) — with no repeated resource blocks, zones created only
+      once each, and each VNet link created only once.
+    </p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">private-endpoints.tf</span></div>
+<pre><code class="language-hcl">locals {
+  private_endpoints = {
+    lake_blob = {
+      resource_id = azurerm_storage_account.lake.id
+      subresource = "blob"
+      zone        = "privatelink.blob.core.windows.net"
+    }
+    lake_dfs = {
+      resource_id = azurerm_storage_account.lake.id
+      subresource = "dfs"
+      zone        = "privatelink.dfs.core.windows.net"
+    }
+    keyvault = {
+      resource_id = azurerm_key_vault.main.id
+      subresource = "vault"
+      zone        = "privatelink.vaultcore.azure.net"
+    }
+  }
+
+  # Deduplicate zone names — two endpoints may share one zone, and creating
+  # the same zone twice is an error.
+  dns_zones = toset([for pe in local.private_endpoints : pe.zone])
+}
+
+resource "azurerm_private_dns_zone" "this" {
+  for_each = local.dns_zones
+
+  name                = each.value
+  resource_group_name = azurerm_resource_group.analytics.name
+  tags                = local.common_tags
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "this" {
+  for_each = local.dns_zones
+
+  name                  = "link-${replace(each.value, ".", "-")}"
+  resource_group_name   = azurerm_resource_group.analytics.name
+  private_dns_zone_name = azurerm_private_dns_zone.this[each.value].name
+  virtual_network_id    = azurerm_virtual_network.main.id
+  registration_enabled  = false
+  tags                  = local.common_tags
+}
+
+resource "azurerm_private_endpoint" "this" {
+  for_each = local.private_endpoints
+
+  name                = "pe-${replace(each.key, "_", "-")}-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  subnet_id           = azurerm_subnet.this["privatelink"].id
+
+  private_service_connection {
+    name                           = "psc-${each.key}"
+    private_connection_resource_id = each.value.resource_id
+    subresource_names              = [each.value.subresource]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "pdz-${each.key}"
+    private_dns_zone_ids = [azurerm_private_dns_zone.this[each.value.zone].id]
+  }
+
+  tags = local.common_tags
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        The key move is deriving <code>dns_zones</code> as a <code>toset()</code> of the zone names used by the
+        endpoints. That deduplicates automatically, so adding a fourth endpoint that reuses an existing zone
+        creates no duplicate. This is exactly the shape a reusable module would take — Lesson 14.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write an NSG whose rules come from a variable</span>
+  </div>
+  <div class="exercise-body">
+    <p>The Functions subnet needs a network security group with rules supplied by the caller, so the same module serves dev (permissive) and prod (locked down). Write the variable and the resource.</p>    <p style="margin-bottom:0">Priorities must be assigned automatically from the map order so a caller never has to think about collisions, and the whole thing must work with zero rules.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">nsg.tf</span></div>
+<pre><code class="language-hcl">variable "nsg_rules" {
+  description = "Security rules, keyed by name. Priority is derived from order."
+
+  type = map(object({
+    direction                  = string
+    access                     = string
+    protocol                   = optional(string, "Tcp")
+    source_port_range          = optional(string, "*")
+    destination_port_range     = string
+    source_address_prefix      = optional(string, "*")
+    destination_address_prefix = optional(string, "*")
+    description                = optional(string)
+  }))
+
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for r in values(var.nsg_rules) : contains(["Inbound", "Outbound"], r.direction)
+    ])
+    error_message = "direction must be Inbound or Outbound."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in values(var.nsg_rules) : contains(["Allow", "Deny"], r.access)
+    ])
+    error_message = "access must be Allow or Deny."
+  }
+
+  validation {
+    # Azure allows priorities 100-4096; leave headroom above our block.
+    condition     = length(var.nsg_rules) &lt;= 100
+    error_message = "At most 100 rules are supported by this module."
+  }
+}
+
+locals {
+  # keys() over a map is sorted, so priorities are deterministic between
+  # runs. A non-deterministic order here would churn rules on every apply.
+  rule_names = keys(var.nsg_rules)
+}
+
+resource "azurerm_network_security_group" "functions" {
+  name                = "nsg-functions-${local.suffix}"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  tags                = var.tags
+
+  dynamic "security_rule" {
+    for_each = var.nsg_rules
+
+    content {
+      name        = security_rule.key
+      description = security_rule.value.description
+
+      priority  = 100 + (index(local.rule_names, security_rule.key) * 10)
+      direction = security_rule.value.direction
+      access    = security_rule.value.access
+      protocol  = security_rule.value.protocol
+
+      source_port_range          = security_rule.value.source_port_range
+      destination_port_range     = security_rule.value.destination_port_range
+      source_address_prefix      = security_rule.value.source_address_prefix
+      destination_address_prefix = security_rule.value.destination_address_prefix
+    }
+  }
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">env/prod.tfvars</span></div>
+<pre><code class="language-hcl">nsg_rules = {
+  allow-https-from-vnet = {
+    direction                  = "Inbound"
+    access                     = "Allow"
+    destination_port_range     = "443"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
+    description                = "Internal HTTPS only."
+  }
+  deny-all-inbound = {
+    direction              = "Inbound"
+    access                 = "Deny"
+    protocol               = "*"
+    destination_port_range = "*"
+    description            = "Explicit catch-all below the allows."
+  }
+}</code></pre>
+</div>    <p>The priority derivation is the interesting part. Stepping by 10 leaves room to insert a rule between two existing ones later, and deriving it from <code>keys()</code> &mdash; which is sorted for a map &mdash; makes the assignment deterministic. If priorities shuffled between runs, every apply would rewrite every rule.</p>    <p style="margin-bottom:0">There is a real limitation to notice: because priority follows alphabetical key order, <code>deny-all-inbound</code> sorts before <code>allow-https-from-vnet</code> and would therefore win. For a production module you would add an explicit optional <code>priority</code> field and only auto-assign when it is null. Spotting that ordering bug is the point of the exercise.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Make the private endpoint pattern reusable</span>
+  </div>
+  <div class="exercise-body">
+    <p>You now need private endpoints for the lake (blob and dfs), the Key Vault, and later the Function App. Write configuration that handles all of them with no repeated resource blocks, creates each DNS zone exactly once even when two endpoints share one, and can be switched off entirely for dev.</p>    <p style="margin-bottom:0">Zones must be created once per zone <em>name</em>, not once per endpoint.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">private-endpoints.tf</span></div>
+<pre><code class="language-hcl">variable "enable_private_endpoints" {
+  type    = bool
+  default = true
+}
+
+locals {
+  # Empty map when disabled: for_each over {} creates nothing, and needs
+  # no count/conditional gymnastics.
+  private_endpoints = var.enable_private_endpoints ? {
+    lake_blob = {
+      target = azurerm_storage_account.lake.id
+      sub    = "blob"
+      zone   = "privatelink.blob.core.windows.net"
+    }
+    lake_dfs = {
+      target = azurerm_storage_account.lake.id
+      sub    = "dfs"
+      zone   = "privatelink.dfs.core.windows.net"
+    }
+    keyvault = {
+      target = azurerm_key_vault.main.id
+      sub    = "vault"
+      zone   = "privatelink.vaultcore.azure.net"
+    }
+    functions = {
+      target = azurerm_linux_function_app.ingest.id
+      sub    = "sites"
+      zone   = "privatelink.azurewebsites.net"
+    }
+  } : {}
+
+  # THE KEY MOVE: deduplicate zone names. Two storage endpoints for the same
+  # account use different zones here, but if you later add a second storage
+  # account its blob endpoint reuses privatelink.blob.core.windows.net -
+  # and creating that zone twice is an error.
+  dns_zones = toset([for pe in local.private_endpoints : pe.zone])
+}
+
+resource "azurerm_private_dns_zone" "this" {
+  for_each = local.dns_zones
+
+  name                = each.value
+  resource_group_name = azurerm_resource_group.network.name
+  tags                = local.common_tags
+}
+
+# A zone resolves nothing until it is LINKED to the virtual network.
+resource "azurerm_private_dns_zone_virtual_network_link" "this" {
+  for_each = local.dns_zones
+
+  name                  = "link-${replace(each.value, ".", "-")}"
+  resource_group_name   = azurerm_resource_group.network.name
+  private_dns_zone_name = azurerm_private_dns_zone.this[each.value].name
+  virtual_network_id    = azurerm_virtual_network.main.id
+  registration_enabled  = false
+  tags                  = local.common_tags
+}
+
+resource "azurerm_private_endpoint" "this" {
+  for_each = local.private_endpoints
+
+  name                = "pe-${replace(each.key, "_", "-")}-${local.suffix}"
+  resource_group_name = azurerm_resource_group.network.name
+  location            = var.location
+  subnet_id           = azurerm_subnet.this["privatelink"].id
+
+  private_service_connection {
+    name                           = "psc-${each.key}"
+    private_connection_resource_id = each.value.target
+    subresource_names              = [each.value.sub]
+    is_manual_connection           = false
+  }
+
+  # WITHOUT this block the endpoint exists, shows "Approved" in the portal,
+  # and resolves nothing - because no A record is ever written into the zone.
+  private_dns_zone_group {
+    name                 = "pdz-${each.key}"
+    private_dns_zone_ids = [azurerm_private_dns_zone.this[each.value.zone].id]
+  }
+
+  tags = local.common_tags
+}
+
+output "private_endpoint_ips" {
+  value = {
+    for k, pe in azurerm_private_endpoint.this :
+    k =&gt; pe.private_service_connection[0].private_ip_address
+  }
+}</code></pre>
+</div>    <p><code>toset([for pe in ... : pe.zone])</code> is what makes this scale. Add a fifth endpoint sharing an existing zone and nothing breaks; without it you would get <code>A resource with the ID ... already exists</code>.</p>    <p style="margin-bottom:0">Note also that <code>for_each</code> over an empty map is a much cleaner way to express &ldquo;disabled&rdquo; than <code>count = var.enabled ? 1 : 0</code> &mdash; you keep meaningful instance keys, and adding a sixth endpoint stays a one-line data change.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">The endpoint that exists but does nothing</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_subnet" "privatelink" {
+  name                 = "snet-privatelink"
+  resource_group_name  = azurerm_resource_group.analytics.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["10.10.1.0/29"]
+}
+
+resource "azurerm_private_dns_zone" "blob" {
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = azurerm_resource_group.analytics.name
+}
+
+resource "azurerm_private_endpoint" "lake" {
+  name                = "pe-lake"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+  subnet_id           = azurerm_subnet.privatelink.id
+
+  private_service_connection {
+    name                           = "psc-lake"
+    private_connection_resource_id = azurerm_storage_account.lake.id
+    subresource_names              = ["blob"]
+    is_manual_connection           = false
+  }
+}</code></pre>
+    </div>
+    <p>The apply succeeds. The endpoint shows as Approved in the portal. Clients still resolve the public IP. Find four problems.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>1 · No <code>private_dns_zone_group</code> — the main bug.</strong></p>
+      <p>
+        The zone exists but nothing ever writes an A record into it. That block is what tells Azure to register
+        the endpoint's private IP in the zone. Without it, the zone is empty and resolution falls through to the
+        public IP. This is the single most common private endpoint mistake, precisely because the apply succeeds
+        and the portal shows green.
+      </p>
+
+      <p><strong>2 · No <code>azurerm_private_dns_zone_virtual_network_link</code>.</strong></p>
+      <p>
+        A private DNS zone is only visible to VNets it is linked to. Unlinked, it would not be consulted even if
+        it did contain records.
+      </p>
+
+      <p><strong>3 · Missing the <code>dfs</code> endpoint and zone.</strong></p>
+      <p>
+        Only <code>blob</code> is configured, so ADLS Gen2 clients using <code>abfss://</code> will not work —
+        the failure from the previous exercise.
+      </p>
+
+      <p><strong>4 · The subnet is far too small.</strong></p>
+      <p>
+        A <code>/29</code> yields three usable addresses after Azure's five reserved. Two storage endpoints plus
+        a Key Vault endpoint already fills it, and the next one fails with no available IPs. Use a
+        <code>/24</code>; the addresses are free.
+      </p>
+      <p style="margin-bottom:0">
+        A fifth, softer issue: the resource names carry no environment or region suffix, so this cannot be
+        deployed twice into the same resource group.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="scenario">Real-world scenario</h2>
+
+<div class="scenario">
+  <div class="scenario-tag">Scenario 3 from the brief</div>
+  <p><strong>“Production and development require different networking configurations.”</strong></p>
+  <p>
+    Production needs private endpoints and no public access. Development cannot justify the per-endpoint cost,
+    and engineers need to reach the lake from their laptops. Three ways to express that:
+  </p>
+  <ol>
+    <li>
+      <strong>Conditional resources in one module.</strong>
+      <code>count = var.enable_private_endpoints ? 1 : 0</code>. Keeps everything in one place, but the
+      configuration accumulates conditionals and dev stops resembling prod — so a change validated in dev may
+      still break production networking.
+    </li>
+    <li>
+      <strong>A separate root module per environment</strong> calling shared modules. Prod's
+      <code>main.tf</code> calls the private-endpoints module; dev's does not. More files, far more honest —
+      and a reviewer can see at a glance what production has that dev does not.
+    </li>
+    <li>
+      <strong>Same topology, cheaper settings.</strong> Dev keeps private endpoints but skips the Databricks
+      workspace, or uses service endpoints plus IP rules instead of private endpoints — free, and structurally
+      similar enough that the DNS and firewall logic is still exercised.
+    </li>
+  </ol>
+  <p style="margin-bottom:0">
+    I would take option 2 for the structure and option 3 for the substance: dev uses service endpoints and a
+    firewall allowing the office range, prod uses private endpoints with public access disabled. The important
+    principle is that <strong>the difference should be visible and deliberate</strong>, not buried in a boolean
+    that nobody re-reads.
+  </p>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is the difference between a service endpoint and a private endpoint?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A service endpoint keeps traffic on the Azure backbone and lets the service's firewall recognise your
+        subnet, but the service keeps its public IP and public DNS name — you are filtering access to a public
+        endpoint. A private endpoint gives the service a NIC with a private IP inside your VNet, so it can be
+        reached with no public exposure at all and public access can be disabled entirely. Service endpoints are
+        free and need no DNS work; private endpoints are billed per hour and require private DNS zones linked to
+        the VNet, which is where most of the operational complexity lives.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How does DNS resolution work for a private endpoint?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The client keeps using the public hostname. Azure's public DNS returns a CNAME pointing into the
+        <code>privatelink</code> zone for that service — for example
+        <code>account.privatelink.dfs.core.windows.net</code>. If a private DNS zone with that exact name is
+        linked to the client's VNet and contains an A record for the resource, the chain resolves to the private
+        IP; otherwise it falls through to the public IP. So three things must all be true: the zone exists with
+        the documented name, it is linked to the VNet, and the private endpoint has a
+        <code>private_dns_zone_group</code> that registers the A record.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why does ADLS Gen2 need two private endpoints?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because a private endpoint targets one subresource, and a storage account exposes separate service
+        endpoints. ADLS Gen2 clients using <code>abfss://</code> — Databricks, Synapse, Fabric — go through the
+        <code>dfs</code> endpoint, while the portal's data browser and many SDKs use <code>blob</code>. You need
+        a private endpoint and matching private DNS zone for each. Creating only <code>blob</code> produces a
+        lake where portal browsing works and Spark cannot connect, which is a genuinely confusing failure to
+        debug.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is subnet delegation?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Handing a subnet to a specific Azure service so it may inject its own resources and required network
+        rules into it. Databricks delegates its host and container subnets to
+        <code>Microsoft.Databricks/workspaces</code>; regional VNet integration for a Function App delegates its
+        subnet to <code>Microsoft.Web/serverFarms</code>. A delegated subnet is effectively owned by that
+        service — you cannot put arbitrary resources in it, and the service may manage NSG rules there, which is
+        why you often need <code>ignore_changes</code> on those rules.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you decide subnet sizes?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Generously, because private address space is free and resizing a subnet requires it to be empty — which
+        for a Databricks subnet means deleting the workspace. Azure reserves five addresses per subnet, and
+        service minimums apply: <code>/29</code> is the smallest Azure allows, Databricks host and container
+        subnets must be between <code>/26</code> and <code>/24</code>, and each cluster node consumes two IPs. I
+        would use a <code>/16</code> VNet with <code>/24</code> subnets and leave numbering gaps so one range can
+        grow without renumbering everything.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>A Function App cannot reach a storage account behind a private endpoint. What do you check?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Three things in order. Is the app VNet-integrated — does it have
+        <code>virtual_network_subnet_id</code> set to a delegated subnet? Is
+        <code>vnet_route_all_enabled</code> true, so all egress goes through the VNet rather than only private
+        ranges? And is the private DNS zone linked to that VNet, so the app resolves the private IP rather than
+        the public one? A private endpoint governs inbound access to the storage account; making the Function
+        App able to use it is a separate, outbound concern that people often forget.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>A private endpoint is a NIC in your subnet. It needs a matching private DNS zone <em>and</em> a VNet link <em>and</em> a <code>private_dns_zone_group</code> — miss any one and it silently does nothing.</li>
+  <li>Applications keep using the public hostname; the CNAME chain lands in the <code>privatelink</code> zone. That is why “it resolves to a public IP” is always a zone problem.</li>
+  <li>ADLS Gen2 needs two endpoints: <code>blob</code> and <code>dfs</code>.</li>
+  <li>Size subnets generously — resizing requires emptying them, and address space is free.</li>
+  <li>Use the separate NSG/route-table association resources, never both inline and separate.</li>
+  <li>Inbound private endpoints and outbound VNet integration are different problems. A Function App needs both.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

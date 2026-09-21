@@ -1,0 +1,1085 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>18 · CI/CD for Terraform — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="18">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-production">Production</span>
+    <span>Part 19</span><span>·</span><span>~80 min</span><span>·</span><span>Requires Lesson 17</span>
+  </div>
+  <h1>CI/CD for Terraform</h1>
+  <p class="lede">
+    A Terraform pipeline is not a build pipeline with <code>terraform apply</code> at the end. The plan is the
+    artefact, the human approval is the gate, and the whole design exists to guarantee one thing:
+    <strong>what a human approved is exactly what gets applied</strong>.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain why <code>apply</code> must not run unreviewed on every commit</li>
+      <li>Set up OIDC workload identity federation so no secret is stored anywhere</li>
+      <li>Build the plan-artefact → approval → apply flow in GitHub Actions and Azure DevOps</li>
+      <li>Enforce policy automatically on the plan JSON</li>
+      <li>Design environment promotion and per-environment approvals</li>
+      <li>Run scheduled drift detection</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">OIDC</span><span class="pill">Plan artefacts</span><span class="pill">Approval gates</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="the-shape">The shape of a Terraform pipeline</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    PR["Pull request opened"] --> FMT["terraform fmt -check"]
+    FMT --> VAL["terraform validate"]
+    VAL --> LINT["tflint + security scan"]
+    LINT --> PLAN["terraform plan -out=tfplan"]
+    PLAN --> POL["Policy check on plan JSON<br/><i>fail on unexpected destroys</i>"]
+    POL --> COMMENT["Post the plan as a PR comment"]
+    COMMENT --> REVIEW{"Human review<br/>of code AND plan"}
+
+    REVIEW -->|"changes requested"| PR
+    REVIEW -->|"approved + merged"| GATE{"Environment<br/>approval gate"}
+
+    GATE -->|"dev — auto"| APPLYD["apply to dev"]
+    GATE -->|"prod — manual approval"| APPLYP["apply the SAVED plan"]
+
+    APPLYD --> SOAK["Observe"]
+    SOAK --> GATE
+
+    style PLAN fill:#e6f2fb,stroke:#0078d4,stroke-width:2px
+    style REVIEW fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+    style APPLYP fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>
+    Two distinct pipelines really: one on pull requests that only plans, and one on merge that applies. They
+    need different permissions.
+  </figcaption>
+</figure>
+
+<div class="callout callout-important">
+  <div class="callout-title">Why <code>apply</code> must not run unreviewed on every commit</div>
+  <ul style="margin-bottom:0">
+    <li><strong>Plans are not obvious from diffs.</strong> Removing one element from a list can destroy four resources. Changing a provider version can change a default. Only the plan shows this.</li>
+    <li><strong>There is no rollback.</strong> Unlike application code, you cannot redeploy the previous version to undo a deleted storage account.</li>
+    <li><strong>Infrastructure changes are often irreversible.</strong> Data is gone, a global name is released, a soft-deleted vault blocks recreation for 90 days.</li>
+    <li><strong>Drift means the plan differs from what you expect.</strong> The same commit can produce a different plan tomorrow, because the cloud changed.</li>
+  </ul>
+</div>
+
+<h2 id="oidc">OIDC workload identity federation</h2>
+
+<p>
+  The foundation. Instead of storing a client secret in your CI system, you register a federated credential on
+  an Entra ID app registration that trusts tokens issued by your CI platform for a <em>specific repository and
+  environment</em>.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+sequenceDiagram
+    participant R as CI runner
+    participant I as CI OIDC issuer
+    participant E as Entra ID
+    participant A as Azure
+
+    R->>I: request an OIDC token for this job
+    I-->>R: JWT<br/>iss = token.actions.githubusercontent.com<br/>sub = repo:contoso/analytics:environment:prod
+    R->>E: exchange the JWT (client_id, tenant_id)
+    Note over E: Does an app registration have a<br/>federated credential matching<br/>this issuer AND this exact subject?
+    E-->>R: Azure access token (~1h)
+    R->>A: terraform plan / apply
+    Note over R,A: no secret was stored anywhere,<br/>and nothing needs rotating
+  </div>
+  <figcaption>
+    The subject claim is the security boundary. A token minted for a feature branch has a different
+    <code>sub</code> and cannot deploy production.
+  </figcaption>
+</figure>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">setup.sh — run once by an administrator</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+APP_NAME="sp-terraform-analytics-prod"
+REPO="contoso/analytics-platform"
+SUB_ID="00000000-0000-0000-0000-000000000000"
+
+# 1 · Create the app registration and its service principal.
+APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv)
+az ad sp create --id "$APP_ID"
+SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
+
+# 2 · Federated credential for the PROD environment.
+#     The subject must match GitHub's claim EXACTLY.
+az ad app federated-credential create --id "$APP_ID" --parameters "{
+  \"name\": \"github-prod\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:${REPO}:environment:prod\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+# 3 · A separate credential for pull requests — PLAN ONLY.
+az ad app federated-credential create --id "$APP_ID" --parameters "{
+  \"name\": \"github-pr\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:${REPO}:pull_request\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+# 4 · Least-privilege RBAC (Lesson 17).
+az role assignment create --assignee "$SP_OID" --role "Contributor" \
+  --scope "/subscriptions/$SUB_ID/resourceGroups/rg-analytics-prod-weu-01"
+
+az role assignment create --assignee "$SP_OID" --role "Role Based Access Control Administrator" \
+  --scope "/subscriptions/$SUB_ID/resourceGroups/rg-analytics-prod-weu-01"
+
+az role assignment create --assignee "$SP_OID" --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/$SUB_ID/resourceGroups/rg-tfstate-prod-weu-01/providers/Microsoft.Storage/storageAccounts/sttfstateprodweu01/blobServices/default/containers/tfstate"
+
+echo "AZURE_CLIENT_ID = $APP_ID   # store as a repository variable — it is NOT a secret"</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Two credentials, two privilege levels</div>
+  <p style="margin-bottom:0">
+    Ideally the pull-request credential belongs to a <em>different</em> app registration with only
+    <code>Reader</code> plus state read access — enough to plan, not enough to change anything. A pull request
+    from a fork should never be able to obtain a token that can apply. If you use one identity for both, an
+    attacker who can trigger a PR workflow has your apply permissions.
+  </p>
+</div>
+
+<h2 id="github-actions">GitHub Actions</h2>
+
+<div class="code is-yaml">
+  <div class="code-head"><span class="fname">.github/workflows/terraform-plan.yml — on pull requests</span></div>
+<pre><code class="language-yaml">name: Terraform Plan
+
+on:
+  pull_request:
+    paths: ["terraform/**"]
+
+permissions:
+  id-token: write        # REQUIRED to request the OIDC token
+  contents: read
+  pull-requests: write   # to post the plan as a comment
+
+env:
+  TF_VERSION: "1.16.1"
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_PLAN }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/environments/prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive -diff
+        working-directory: terraform
+
+      - name: Init
+        run: terraform init -backend-config=backend.hcl
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        id: plan
+        run: |
+          terraform plan -out=tfplan -lock-timeout=5m -no-color 2&gt;&amp;1 | tee plan.txt
+          terraform show -json tfplan &gt; plan.json
+
+      - name: Policy check — no unexpected destroys
+        run: |
+          DESTROYS=$(jq '[.resource_changes[]
+            | select(.change.actions | index("delete"))] | length' plan.json)
+          echo "destroy_count=$DESTROYS" &gt;&gt; "$GITHUB_OUTPUT"
+          if [ "$DESTROYS" -gt 0 ]; then
+            echo "::warning::This plan destroys $DESTROYS resource(s)"
+            jq -r '.resource_changes[]
+              | select(.change.actions | index("delete"))
+              | "  - " + .address' plan.json
+          fi
+
+      - name: Comment the plan on the PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('terraform/environments/prod/plan.txt', 'utf8');
+            // GitHub comments cap at 65 536 characters
+            if (plan.length &gt; 60000) {
+              plan = plan.slice(0, 60000) + '\n\n... truncated — see the full plan in the job log';
+            }
+            const body = [
+              '### Terraform plan — `prod`',
+              '',
+              '&lt;details&gt;&lt;summary&gt;Show plan&lt;/summary&gt;',
+              '',
+              '```terraform',
+              plan,
+              '```',
+              '',
+              '&lt;/details&gt;',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Upload the plan artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: terraform/environments/prod/tfplan
+          retention-days: 5     # short — the plan contains sensitive values</code></pre>
+</div>
+
+<div class="code is-yaml">
+  <div class="code-head"><span class="fname">.github/workflows/terraform-apply.yml — on merge</span></div>
+<pre><code class="language-yaml">name: Terraform Apply
+
+on:
+  push:
+    branches: [main]
+    paths: ["terraform/**"]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.16.1"
+  ARM_USE_OIDC: "true"
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+
+jobs:
+  dev:
+    runs-on: ubuntu-latest
+    environment: dev              # no reviewers configured — applies automatically
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_DEV }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID_DEV }}
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - run: terraform init -backend-config=backend.hcl
+      - run: terraform plan -out=tfplan -lock-timeout=10m
+      - run: terraform apply -lock-timeout=10m tfplan
+
+  prod:
+    needs: dev                    # promotion: prod only after dev succeeds
+    runs-on: ubuntu-latest
+    environment: prod             # REQUIRED REVIEWERS configured in repo settings
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_PROD }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID_PROD }}
+    defaults:
+      run:
+        working-directory: terraform/environments/prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - run: terraform init -backend-config=backend.hcl
+
+      - name: Plan
+        run: terraform plan -out=tfplan -lock-timeout=10m
+
+      - name: Fail on unapproved destroys
+        run: |
+          terraform show -json tfplan &gt; plan.json
+          DESTROYS=$(jq '[.resource_changes[]
+            | select(.change.actions | index("delete"))] | length' plan.json)
+          if [ "$DESTROYS" -gt 0 ] &amp;&amp; [ "${{ vars.ALLOW_DESTROY }}" != "true" ]; then
+            echo "::error::Plan destroys $DESTROYS resource(s). Set the ALLOW_DESTROY variable to override."
+            jq -r '.resource_changes[] | select(.change.actions | index("delete")) | "  - " + .address' plan.json
+            exit 1
+          fi
+
+      - name: Apply
+        run: terraform apply -lock-timeout=10m tfplan</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Where the approval gate actually lives</div>
+  <p style="margin-bottom:0">
+    <code>environment: prod</code> is the mechanism. In the repository's Settings → Environments you configure
+    <em>required reviewers</em> on <code>prod</code>; the job then pauses before its first step until a named
+    human approves. Environment secrets and variables are also scoped there, so the prod client ID is not
+    readable by a dev job. This is doing the real work — the YAML above is just wiring.
+  </p>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">The compromise in the prod job above</div>
+  <p style="margin-bottom:0">
+    It re-plans after the approval rather than applying the artefact from the pull request. That is a deliberate
+    trade-off: the PR plan may be hours old and state may have moved, so applying it could fail or apply a stale
+    change set. The mitigation is the destroy gate plus the fact that a human approved the same commit. The
+    stricter alternative — download the PR's <code>tfplan</code> artefact and apply exactly that — gives a
+    perfect approve-what-you-apply guarantee but fails if anything changed in between. Choose consciously; most
+    teams re-plan and gate.
+  </p>
+</div>
+
+<h2 id="azure-devops">Azure DevOps</h2>
+
+<div class="code is-yaml">
+  <div class="code-head"><span class="fname">azure-pipelines.yml</span></div>
+<pre><code class="language-yaml">trigger:
+  branches: { include: [main] }
+  paths:    { include: [terraform/**] }
+
+pr:
+  branches: { include: [main] }
+  paths:    { include: [terraform/**] }
+
+variables:
+  TF_VERSION: "1.16.1"
+
+stages:
+  - stage: Validate
+    jobs:
+      - job: Checks
+        pool: { vmImage: ubuntu-latest }
+        steps:
+          - task: TerraformInstaller@1
+            inputs: { terraformVersion: $(TF_VERSION) }
+          - script: terraform fmt -check -recursive -diff
+            workingDirectory: terraform
+            displayName: Format check
+
+  - stage: Plan
+    dependsOn: Validate
+    jobs:
+      - job: Plan
+        pool: { vmImage: ubuntu-latest }
+        steps:
+          - task: TerraformInstaller@1
+            inputs: { terraformVersion: $(TF_VERSION) }
+
+          # The service connection uses Workload Identity Federation —
+          # configure it as "Workload Identity federation (automatic)".
+          - task: TerraformTaskV4@4
+            displayName: Init
+            inputs:
+              provider: azurerm
+              command: init
+              workingDirectory: terraform/environments/prod
+              backendServiceArm: sc-terraform-prod
+              backendAzureRmResourceGroupName: rg-tfstate-prod-weu-01
+              backendAzureRmStorageAccountName: sttfstateprodweu01
+              backendAzureRmContainerName: tfstate
+              backendAzureRmKey: analytics/prod.terraform.tfstate
+
+          - task: TerraformTaskV4@4
+            displayName: Plan
+            inputs:
+              provider: azurerm
+              command: plan
+              workingDirectory: terraform/environments/prod
+              environmentServiceNameAzureRM: sc-terraform-prod
+              commandOptions: '-out=$(Build.ArtifactStagingDirectory)/tfplan -lock-timeout=10m'
+
+          - publish: $(Build.ArtifactStagingDirectory)
+            artifact: tfplan
+
+  - stage: Apply
+    dependsOn: Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      # A "deployment" job binds to an Environment, where approvals and
+      # checks are configured — this is the gate.
+      - deployment: Apply
+        environment: prod
+        pool: { vmImage: ubuntu-latest }
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: tfplan
+                - task: TerraformInstaller@1
+                  inputs: { terraformVersion: $(TF_VERSION) }
+                - task: TerraformTaskV4@4
+                  displayName: Apply the saved plan
+                  inputs:
+                    provider: azurerm
+                    command: apply
+                    workingDirectory: terraform/environments/prod
+                    environmentServiceNameAzureRM: sc-terraform-prod
+                    commandOptions: '$(Pipeline.Workspace)/tfplan/tfplan'</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">The platform-independent concepts</div>
+  <p style="margin-bottom:0">
+    Strip away the YAML dialects and both pipelines are the same five ideas: <strong>federated
+    authentication</strong> with no stored secret; a <strong>plan stage</strong> that produces a reviewable
+    artefact; an <strong>automated policy check</strong> on that artefact; a <strong>human gate</strong> bound to
+    a named environment; and an <strong>apply stage</strong> with a different, higher-privileged identity. Any CI
+    system that can express those five will do.
+  </p>
+</div>
+
+<h2 id="drift-workflow">Scheduled drift detection</h2>
+
+<div class="code is-yaml">
+  <div class="code-head"><span class="fname">.github/workflows/drift.yml</span></div>
+<pre><code class="language-yaml">name: Drift Detection
+
+on:
+  schedule:
+    - cron: "0 6 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, test, prod]
+    runs-on: ubuntu-latest
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_PLAN }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+
+      - run: terraform init -backend-config=backend.hcl
+        working-directory: terraform/environments/${{ matrix.environment }}
+
+      - name: Plan
+        id: plan
+        continue-on-error: true
+        working-directory: terraform/environments/${{ matrix.environment }}
+        # -lock=false: a read-only check must not block a real deployment.
+        # -detailed-exitcode: 0 = no changes, 1 = error, 2 = changes present.
+        run: terraform plan -detailed-exitcode -lock=false -no-color
+
+      - name: Open an issue if drift was detected
+        if: steps.plan.outputs.exitcode == 2
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Drift detected in ${{ matrix.environment }}`,
+              body: 'A scheduled plan found changes. See the workflow run for details.',
+              labels: ['drift', '${{ matrix.environment }}'],
+            });</code></pre>
+</div>
+
+<h2 id="secrets-in-ci">Secrets in the pipeline</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Value</th><th>Secret?</th><th>Where it goes</th></tr></thead>
+  <tbody>
+    <tr><td><code>ARM_CLIENT_ID</code></td><td>No</td><td>A repository/environment <em>variable</em>. It is an identifier, useless without a matching federated credential.</td></tr>
+    <tr><td><code>ARM_TENANT_ID</code>, <code>ARM_SUBSCRIPTION_ID</code></td><td>No</td><td>Variables.</td></tr>
+    <tr><td><code>ARM_CLIENT_SECRET</code></td><td>Yes</td><td>Nowhere — use OIDC and this does not exist.</td></tr>
+    <tr><td>Application secrets Terraform needs</td><td>Yes</td><td>Fetch at runtime from Key Vault with the pipeline identity, into <code>TF_VAR_*</code>. Never a repository secret, never a tfvars file.</td></tr>
+    <tr><td>The <code>tfplan</code> artefact</td><td><strong>Yes</strong></td><td>Short retention, restricted access. It contains every planned attribute value.</td></tr>
+    <tr><td>Terraform state</td><td><strong>Yes</strong></td><td>The backend, never an artefact.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Never set <code>TF_LOG=DEBUG</code> in a shared pipeline</div>
+  <p style="margin-bottom:0">
+    Debug and trace logging include provider request and response bodies — which means secrets, access keys and
+    connection strings land in the CI log, where they are typically readable by the whole engineering
+    organisation and retained for months. If you must debug, do it in a private run and delete the logs
+    afterwards.
+  </p>
+</div>
+
+<h2 id="mistakes">Common mistakes</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title"><code>terraform apply -auto-approve</code> on every push</div>
+  <p style="margin-bottom:0">
+    The most common and most damaging. Nobody sees a plan, so nobody notices the destroy. It also re-plans at
+    apply time, so even a reviewed PR is not what gets applied.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">One identity for plan and apply</div>
+  <p style="margin-bottom:0">
+    A pull request from a fork, or a contributor who can edit a workflow file, then has your apply permissions.
+    Use separate app registrations: the PR identity gets <code>Reader</code> plus state read; the apply identity
+    gets write access and is federated to an <em>environment</em> subject that pull requests cannot claim.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">No lock timeout</div>
+  <p style="margin-bottom:0">
+    Two runs overlap, the second fails instantly with a lock error, and someone force-unlocks it while the first
+    is still applying. <code>-lock-timeout=10m</code> makes the second wait. Combine with concurrency limits so
+    only one apply per environment runs at a time.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Not pinning the CLI version in CI</div>
+  <p style="margin-bottom:0">
+    <code>terraform_version: latest</code> means a new minor release lands in your pipeline unannounced — and
+    once a newer CLI writes the state file, older CLIs (including developer laptops) can no longer read it. Pin
+    it, and upgrade deliberately.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Critique this pipeline</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">.github/workflows/deploy.yml</span></div>
+<pre><code class="language-yaml">on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      TF_LOG: DEBUG
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init
+      - run: terraform apply -auto-approve</code></pre>
+    </div>
+    <p>Find six problems.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong><code>apply -auto-approve</code> with no plan step or review.</strong> Nobody ever sees what will change. A merged PR that removes one list element silently deletes containers.</li>
+        <li><strong>A stored client secret.</strong> Use OIDC — no secret, nothing to rotate, and the trust is scoped to a repository and environment.</li>
+        <li><strong><code>TF_LOG: DEBUG</code>.</strong> Provider request bodies — including secrets and storage keys — are written to a log the whole organisation can read.</li>
+        <li><strong>No <code>environment:</code>, so no approval gate.</strong> Merging to main deploys straight to production.</li>
+        <li><strong>No CLI version pinning.</strong> A new release arrives unannounced, and once it writes state, older CLIs cannot read it.</li>
+        <li><strong>No lock timeout and no concurrency control.</strong> Two merges in quick succession produce overlapping applies and a lock error.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        Also worth noting: no <code>fmt</code>, no <code>validate</code>, no policy check on the plan, no
+        environment separation, and it deploys prod without ever having deployed dev.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">A policy gate on plan JSON</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write a script that fails the build when a plan does any of the following, and prints exactly what and why:</p>
+    <ul>
+      <li>Destroys or replaces any storage account or Key Vault.</li>
+      <li>Sets <code>public_network_access_enabled</code> to <code>true</code> on any resource.</li>
+      <li>Creates a role assignment at subscription scope.</li>
+      <li>Creates any resource without a <code>cost_center</code> tag.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">scripts/policy-check.sh</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+PLAN_JSON="${1:-plan.json}"
+FAILED=0
+
+fail() { echo "::error::$1"; FAILED=1; }
+
+# --- 1 · destruction of stateful resources ---
+STATEFUL=$(jq -r '.resource_changes[]
+  | select(.type == "azurerm_storage_account" or .type == "azurerm_key_vault")
+  | select(.change.actions | index("delete"))
+  | .address' "$PLAN_JSON")
+
+if [ -n "$STATEFUL" ]; then
+  fail "Plan destroys or replaces stateful resources:"
+  echo "$STATEFUL" | sed 's/^/    /'
+fi
+
+# --- 2 · public network access being enabled ---
+PUBLIC=$(jq -r '.resource_changes[]
+  | select(.change.after.public_network_access_enabled == true)
+  | select(.change.before.public_network_access_enabled != true)
+  | .address' "$PLAN_JSON")
+
+if [ -n "$PUBLIC" ]; then
+  fail "Plan enables public network access on:"
+  echo "$PUBLIC" | sed 's/^/    /'
+fi
+
+# --- 3 · subscription-scope role assignments ---
+BROAD=$(jq -r '.resource_changes[]
+  | select(.type == "azurerm_role_assignment")
+  | select(.change.actions | index("create"))
+  | select(.change.after.scope | test("^/subscriptions/[^/]+$"))
+  | "\(.address) → \(.change.after.role_definition_name)"' "$PLAN_JSON")
+
+if [ -n "$BROAD" ]; then
+  fail "Plan creates subscription-scoped role assignments:"
+  echo "$BROAD" | sed 's/^/    /'
+fi
+
+# --- 4 · missing cost_center tag on new resources ---
+UNTAGGED=$(jq -r '.resource_changes[]
+  | select(.change.actions == ["create"])
+  | select(.change.after | has("tags"))
+  | select((.change.after.tags // {}) | has("cost_center") | not)
+  | .address' "$PLAN_JSON")
+
+if [ -n "$UNTAGGED" ]; then
+  fail "New resources missing a cost_center tag:"
+  echo "$UNTAGGED" | sed 's/^/    /'
+fi
+
+if [ "$FAILED" -eq 1 ]; then
+  echo ""
+  echo "Policy check failed. Fix the issues above, or document an exception."
+  exit 1
+fi
+
+echo "Policy check passed."</code></pre>
+      </div>
+      <div class="callout callout-note" style="margin-top:16px;margin-bottom:0">
+        <div class="callout-title">Two refinements worth knowing</div>
+        <p style="margin-bottom:0">
+          Check 4 uses <code>has("tags")</code> so it does not fail on resource types that have no tags at all.
+          And check 2 compares <code>before</code> and <code>after</code>, so it only fires on a resource
+          <em>newly</em> becoming public rather than on every plan touching an already-public resource. For
+          anything more elaborate than this, move to a real policy engine — Conftest with OPA, or Azure Policy
+          evaluated at deployment time. Lesson 19.
+        </p>
+      </div>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write the pull-request plan workflow</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write a GitHub Actions workflow that runs on pull requests touching <code>terraform/</code>: format check, validate, plan, a policy check, and the plan posted as a PR comment.</p>    <p style="margin-bottom:0">It must authenticate with OIDC and no stored secret, and the identity it uses must be unable to change anything.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-yaml">
+  <div class="code-head"><span class="fname">.github/workflows/terraform-plan.yml</span></div>
+<pre><code class="language-yaml">name: Terraform Plan
+
+on:
+  pull_request:
+    paths: ["terraform/**"]
+
+# Least privilege for the GITHUB token, separate from Azure RBAC.
+permissions:
+  id-token: write        # REQUIRED, or no OIDC token is issued at all
+  contents: read
+  pull-requests: write   # to post the comment
+
+concurrency:
+  group: tf-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: "1.16.1"   # pinned: 'latest' upgrades state format unannounced
+  ARM_USE_OIDC: "true"
+  # A PLAN-ONLY identity: Reader + state read. It cannot apply anything,
+  # so a workflow edited in a PR cannot be used to change infrastructure.
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_PLAN }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/environments/prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false     # so we can capture raw stdout
+
+      - name: Format check
+        run: terraform fmt -check -recursive -diff
+        working-directory: terraform
+
+      - name: Init
+        run: terraform init -backend-config=backend.hcl
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        run: |
+          terraform plan -out=tfplan -lock-timeout=5m -no-color | tee plan.txt
+          terraform show -json tfplan &gt; plan.json
+
+      - name: Policy check
+        run: ../../../scripts/policy-check.sh plan.json
+
+      - name: Comment the plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('terraform/environments/prod/plan.txt', 'utf8');
+            if (plan.length &gt; 60000) {
+              plan = plan.slice(0, 60000) + '\n... truncated, see the job log';
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Terraform plan\n\n&lt;details&gt;&lt;summary&gt;Show&lt;/summary&gt;\n\n` +
+                    '```terraform\n' + plan + '\n```\n\n&lt;/details&gt;',
+            });
+
+      - name: Upload the plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: terraform/environments/prod/tfplan
+          retention-days: 5   # SHORT: the plan contains sensitive values</code></pre>
+</div>    <p>Three security decisions worth naming. <code>permissions:</code> is set explicitly rather than inheriting the repository default, which is often write-all. The Azure identity is <strong>plan-only</strong>, so even someone who edits the workflow in a pull request cannot use it to change infrastructure. And the plan artefact has a short retention because it contains every planned attribute value, including sensitive ones.</p>    <p style="margin-bottom:0"><code>concurrency</code> with <code>cancel-in-progress</code> avoids two plans for the same branch queueing on the state lock &mdash; and <code>terraform_wrapper: false</code> is needed to capture clean stdout for the comment.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write the policy gate</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write <code>scripts/policy-check.sh</code>, taking a plan JSON file and failing the build on any of:</p>    <ul>
+      <li>Destroying or replacing a storage account or Key Vault.</li>
+      <li>Newly enabling <code>public_network_access_enabled</code>.</li>
+      <li>Creating a role assignment at subscription scope.</li>
+      <li>Creating a taggable resource with no <code>cost_center</code> tag.</li>
+    </ul>
+    <p style="margin-bottom:0">It must report <em>every</em> violation, not stop at the first, and must not fire on resources that were already non-compliant before this change.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">scripts/policy-check.sh</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+PLAN_JSON="${1:?usage: policy-check.sh &lt;plan.json&gt;}"
+FAILED=0
+
+fail() { echo "::error::$1"; FAILED=1; }
+
+# 1 - destruction or replacement of stateful resources
+STATEFUL=$(jq -r '.resource_changes[]
+  | select(.type == "azurerm_storage_account" or .type == "azurerm_key_vault")
+  | select(.change.actions | index("delete"))
+  | "  - \(.address) [\(.change.actions | join(","))]"' "$PLAN_JSON")
+
+if [ -n "$STATEFUL" ]; then
+  fail "Plan destroys or replaces stateful resources:"
+  echo "$STATEFUL"
+fi
+
+# 2 - NEWLY enabling public access. Comparing before and after means an
+#     already-public resource does not fail every unrelated build.
+PUBLIC=$(jq -r '.resource_changes[]
+  | select(.change.after.public_network_access_enabled == true)
+  | select((.change.before.public_network_access_enabled // false) != true)
+  | "  - \(.address)"' "$PLAN_JSON")
+
+if [ -n "$PUBLIC" ]; then
+  fail "Plan enables public network access on:"
+  echo "$PUBLIC"
+fi
+
+# 3 - role assignments at subscription scope
+BROAD=$(jq -r '.resource_changes[]
+  | select(.type == "azurerm_role_assignment")
+  | select(.change.actions | index("create"))
+  | select(.change.after.scope | test("^/subscriptions/[^/]+$"))
+  | "  - \(.address) -&gt; \(.change.after.role_definition_name // "custom role")"' "$PLAN_JSON")
+
+if [ -n "$BROAD" ]; then
+  fail "Plan creates subscription-scoped role assignments:"
+  echo "$BROAD"
+fi
+
+# 4 - new taggable resources without cost_center.
+#     has("tags") skips resource types that have no tags at all.
+UNTAGGED=$(jq -r '.resource_changes[]
+  | select(.change.actions == ["create"])
+  | select(.change.after | type == "object" and has("tags"))
+  | select((.change.after.tags // {}) | has("cost_center") | not)
+  | "  - \(.address)"' "$PLAN_JSON")
+
+if [ -n "$UNTAGGED" ]; then
+  fail "New resources missing a cost_center tag:"
+  echo "$UNTAGGED"
+fi
+
+if [ "$FAILED" -eq 1 ]; then
+  echo ""
+  echo "Policy check failed. Fix the issues above, or document an approved exception."
+  exit 1
+fi
+
+echo "Policy check passed."
+</code></pre>
+</div>    <p>Two details that make this usable rather than annoying. Every check runs before exiting, so a reviewer sees all four categories at once instead of fixing them one build at a time. And check 2 compares <code>before</code> against <code>after</code>, so a resource that was already public does not fail every unrelated pull request &mdash; a gate that cries wolf gets disabled.</p>    <p style="margin-bottom:0">This is the highest-value automated check in the whole course: static analysis reads HCL and cannot resolve variables or module inputs, whereas the plan has concrete values for exactly the resources that will change. For anything more elaborate, move to Conftest with OPA rather than growing the <code>jq</code>.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">OIDC login fails</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-out">
+      <div class="code-head"><span class="fname">error</span></div>
+<pre><code class="language-bash">Error: building account: could not acquire access token to parse claims:
+AADSTS70021: No matching federated identity record found for presented
+assertion. Assertion Issuer: 'https://token.actions.githubusercontent.com'.
+Assertion Subject: 'repo:contoso/analytics-platform:ref:refs/heads/main'.
+Assertion Audience: 'api://AzureADTokenExchange'.</code></pre>
+    </div>
+    <p>
+      The federated credential was created with subject
+      <code>repo:contoso/analytics-platform:environment:prod</code>. Diagnose and fix, and say what you would
+      check if that were not the cause.
+    </p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Diagnosis: the subject does not match.</strong> The error helpfully prints what was presented —
+        <code>repo:contoso/analytics-platform:ref:refs/heads/main</code> — against a credential registered for
+        <code>...:environment:prod</code>. GitHub only emits the <code>environment:</code> form when the job
+        declares <code>environment: prod</code>. This job does not, so it got the branch form instead.
+      </p>
+      <p><strong>Fix — add the environment to the job (also the right fix, because it gives you the approval gate):</strong></p>
+      <div class="code is-yaml">
+        <div class="code-head"><span class="fname">fix</span></div>
+<pre><code class="language-yaml">jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: prod          # ← now the subject claim is environment:prod
+    permissions:
+      id-token: write          # ← without this, no token is issued at all
+      contents: read</code></pre>
+      </div>
+      <p>
+        The alternative — registering a second federated credential for
+        <code>repo:contoso/analytics-platform:ref:refs/heads/main</code> — also works but is worse: it means any
+        push to main can deploy production with no approval gate.
+      </p>
+      <p><strong>If the subject were not the cause, check in this order:</strong></p>
+      <ol>
+        <li><strong><code>permissions: id-token: write</code> is missing.</strong> Without it GitHub issues no OIDC token, and the error is a different one about no authentication method being found.</li>
+        <li><strong>Audience mismatch.</strong> It must be <code>api://AzureADTokenExchange</code>. The Azure login action sets this by default; a hand-rolled token request may not.</li>
+        <li><strong>Wrong <code>ARM_CLIENT_ID</code>.</strong> The federated credential is registered on one app registration; the workflow presented a different client ID.</li>
+        <li><strong>Wrong tenant.</strong> The exchange happens against a specific tenant.</li>
+        <li><strong>RBAC.</strong> If login succeeds but operations fail with 403, authentication worked and the problem is authorization — a Lesson 08 problem, not an OIDC one.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        The general skill: <strong>read the assertion claims in the error</strong>. Azure tells you exactly what
+        it received, and comparing that against what you registered resolves nearly every federation failure.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>Describe a good Terraform CI/CD pipeline.</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Two pipelines. On a pull request: format check, validate, lint and security scan, then a plan saved as an
+        artefact, an automated policy check on the plan JSON, and the plan posted as a PR comment so reviewers
+        see consequences rather than only the diff. On merge: apply to dev automatically, then apply to
+        production behind a manual approval bound to a protected environment. Authentication is OIDC workload
+        identity federation with separate identities for plan and apply, both least-privileged. Plus a scheduled
+        drift-detection run using <code>-detailed-exitcode</code> and <code>-lock=false</code>.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why shouldn't <code>terraform apply</code> run on every commit?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because plans are not obvious from diffs — removing one list element can destroy four resources, and a
+        provider version bump can change a default — and because there is no rollback. You cannot redeploy the
+        previous version to bring back a deleted storage account. Infrastructure changes are frequently
+        irreversible: data is gone, a globally unique name is released, a soft-deleted vault blocks recreation
+        for up to 90 days. And drift means the same commit can produce a different plan tomorrow. A human
+        looking at a plan is the last checkpoint before any of that.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is workload identity federation and why use it?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A trust relationship registered on an Entra ID app registration that accepts short-lived OIDC tokens from
+        an external issuer — GitHub Actions, Azure DevOps — for a specific subject such as
+        <code>repo:org/repo:environment:prod</code>. The runner exchanges its OIDC token for an Azure access
+        token. No secret is stored, nothing needs rotating, and because the trust is scoped to a subject claim, a
+        feature branch cannot obtain a token that deploys production even if someone edits a workflow file. It
+        replaces the client-secret pattern, which is a long-lived password sitting in a CI system.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why save the plan to a file and apply that file?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        So that what a human approved is exactly what gets applied. Bare <code>terraform apply</code> computes a
+        fresh plan, so any change to code or infrastructure between review and apply reaches production
+        unreviewed. Applying a saved plan also errors out if state has moved underneath it, which is a useful
+        safety property. The trade-off is that a stale plan can fail, so many teams re-plan after approval and
+        rely on the policy gate plus the fact that the approver signed off on the same commit — that is a
+        conscious choice, not an oversight.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you handle secrets in a Terraform pipeline?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Mostly by not having them. OIDC removes the client secret entirely. Client ID, tenant ID and subscription
+        ID are identifiers, not secrets, and belong in variables. Where Terraform genuinely needs a secret value,
+        fetch it at runtime from Key Vault using the pipeline's own identity into a <code>TF_VAR_</code>
+        environment variable — never a repository secret, never a committed tfvars file. And treat the plan
+        artefact and the state file as secrets themselves, because both contain plaintext values. I would also
+        never enable <code>TF_LOG=DEBUG</code> in a shared pipeline, since it writes provider request bodies to
+        the log.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you prevent a pipeline from accidentally destroying production?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Layers, none of which is sufficient alone. A policy gate parsing the plan JSON that fails the build on
+        any delete action unless a human sets an explicit override variable. A required-reviewer approval bound
+        to the production environment. <code>prevent_destroy</code> on data-bearing resources so the plan fails
+        before CI even sees it. Azure resource locks, which work outside Terraform. Separate state and separate
+        least-privileged identities per environment, so a dev pipeline cannot reach production at all. And the
+        plan posted on the pull request, so the destroy is visible to a human before merge.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Two pipelines: plan on pull requests, apply on merge. Different identities, different permissions.</li>
+  <li>OIDC federation removes the stored secret. The subject claim is the security boundary.</li>
+  <li>The plan is the reviewable artefact — post it on the PR, and treat the file itself as a secret.</li>
+  <li>Automate the policy check on plan JSON. Fail on unexpected destroys.</li>
+  <li>The approval gate lives in the CI platform's environment feature, not in the YAML.</li>
+  <li>Pin the CLI version, set a lock timeout, and never enable debug logging in a shared pipeline.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>
