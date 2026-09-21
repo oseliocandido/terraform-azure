@@ -76,6 +76,9 @@ resource "azurerm_storage_account" "analytics" {
   tags = local.common_tags
 
   blob_properties {
+    # Blob versioning stays off: soft delete above covers accidental deletes.
+    versioning_enabled = false
+
     delete_retention_policy {
       days = local.soft_delete_days
     }

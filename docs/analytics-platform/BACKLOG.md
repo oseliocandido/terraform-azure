@@ -116,7 +116,8 @@ lifecycle handling once real volumes exist.
   prod, so no human group needs write access there. Revisit once those
   pipeline SPs exist.
 - **Enable scheduled drift detection.** `.github/workflows/drift-detection.yml`
-  runs a plan against `main` and fails on any diff, but it is manual-only.
+  runs a refresh-only plan (warning) and a plain plan against `main` (fails on any
+  diff), but it is manual-only.
   Uncomment its `schedule` to run it weekly. It cannot see drift in resources
   with `ignore_changes` (the metastore grant), and its prod job is only
   meaningful after prod's first apply.
@@ -125,8 +126,6 @@ lifecycle handling once real volumes exist.
   budget, and tag compute for DBU cost once compute exists.
 - **Lint and security scanning.** CI runs `fmt`, `validate`, and `plan` only.
   Add `tflint` and a scanner such as `checkov` or `trivy config`.
-- **Blob versioning.** Prod has 14-day soft delete on blobs and containers and
-  `prevent_destroy` on storage, but not blob versioning.
 - **Fine-grained DML privileges.** Engineers get blanket `MODIFY` because the
   metastore's privilege version (1.0) rejects `INSERT`/`UPDATE`/`DELETE` at
   catalog level. Revisit if the privilege version is upgraded; it would allow

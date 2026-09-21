@@ -1,12 +1,18 @@
 name: Drift detection
 
 # Manual trigger only for now. To run it on a schedule, uncomment `schedule`.
-# It runs a plain `terraform plan` against main: since main is what was last
-# applied, any diff means something changed outside Terraform (or a PR was
-# merged but not applied). It never applies anything.
+# It never applies anything. Each job runs two plans against main and reports
+# them separately:
+#   1. `plan -refresh-only`: state vs the real infrastructure (Azure and
+#      Databricks APIs). A diff means something changed outside Terraform.
+#      Reported as a warning only: it can show provider normalization noise
+#      (e.g. state "READ VOLUME" vs API "READ_VOLUME") that is not real drift.
+#   2. plain `plan`: code vs the refreshed real infrastructure. A diff here
+#      fails the job. With a clean check 1 it means a merge was not applied.
 #
-# Blind spot: resources with `ignore_changes` (e.g. the metastore grant in
-# databricks_grants.metastore_admins) are not reported.
+# Blind spots: resources with `ignore_changes` (e.g. the metastore grant in
+# databricks_grants.metastore_admins) are not reported, and neither check sees
+# resources created outside Terraform.
 on:
   workflow_dispatch:
     inputs:
@@ -53,17 +59,45 @@ jobs:
 
       - run: terraform init -input=false
 
-      - name: Plan and fail on drift
+      - name: Check for drift
         run: |
-          code=0
-          terraform plan -no-color -input=false -detailed-exitcode \
-            -var-file=../common.tfvars -var-file=terraform.tfvars -lock-timeout=5m || code=$?
-          if [ "$code" -eq 2 ]; then
-            echo "### :warning: Drift detected in dev" >> "$GITHUB_STEP_SUMMARY"
-            echo "The plan above is not empty. Review it before the next apply." >> "$GITHUB_STEP_SUMMARY"
+          args="-no-color -input=false -detailed-exitcode -lock-timeout=5m -var-file=../common.tfvars -var-file=terraform.tfvars"
+
+          echo "::group::1. State vs real infrastructure (refresh-only)"
+          refresh=0
+          terraform plan -refresh-only $args || refresh=$?
+          echo "::endgroup::"
+
+          echo "::group::2. Code vs real infrastructure (plan)"
+          plan=0
+          terraform plan $args || plan=$?
+          echo "::endgroup::"
+
+          if [ "$refresh" -eq 1 ] || [ "$plan" -eq 1 ]; then
+            echo "terraform failed (refresh-only exit $refresh, plan exit $plan)"
             exit 1
           fi
-          exit "$code"
+
+          {
+            echo "### Drift check: dev"
+            if [ "$refresh" -eq 2 ]; then
+              echo "- :warning: **State differs from the real infrastructure** (warning only). Something may have changed outside Terraform, or this is provider normalization noise. Check the refresh-only output."
+            else
+              echo "- :white_check_mark: State matches the real infrastructure."
+            fi
+            if [ "$plan" -eq 2 ]; then
+              if [ "$refresh" -eq 0 ]; then
+                echo "- :warning: **Code differs from reality, but state matches.** A merge was probably not applied."
+              else
+                echo "- :warning: **Code differs from reality.** See the plan output."
+              fi
+            else
+              echo "- :white_check_mark: Code matches the real infrastructure."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Only a code-vs-reality diff fails the job; check 1 is a warning.
+          if [ "$plan" -eq 2 ]; then exit 1; fi
 
   # Prod has never been applied, so until it is this reports the whole
   # configuration as a diff. Its Databricks provider also needs the prod
@@ -91,14 +125,42 @@ jobs:
 
       - run: terraform init -input=false
 
-      - name: Plan and fail on drift
+      - name: Check for drift
         run: |
-          code=0
-          terraform plan -no-color -input=false -detailed-exitcode \
-            -var-file=../common.tfvars -var-file=terraform.tfvars -lock-timeout=5m || code=$?
-          if [ "$code" -eq 2 ]; then
-            echo "### :warning: Drift detected in prod" >> "$GITHUB_STEP_SUMMARY"
-            echo "The plan above is not empty. Review it before the next apply." >> "$GITHUB_STEP_SUMMARY"
+          args="-no-color -input=false -detailed-exitcode -lock-timeout=5m -var-file=../common.tfvars -var-file=terraform.tfvars"
+
+          echo "::group::1. State vs real infrastructure (refresh-only)"
+          refresh=0
+          terraform plan -refresh-only $args || refresh=$?
+          echo "::endgroup::"
+
+          echo "::group::2. Code vs real infrastructure (plan)"
+          plan=0
+          terraform plan $args || plan=$?
+          echo "::endgroup::"
+
+          if [ "$refresh" -eq 1 ] || [ "$plan" -eq 1 ]; then
+            echo "terraform failed (refresh-only exit $refresh, plan exit $plan)"
             exit 1
           fi
-          exit "$code"
+
+          {
+            echo "### Drift check: prod"
+            if [ "$refresh" -eq 2 ]; then
+              echo "- :warning: **State differs from the real infrastructure** (warning only). Something may have changed outside Terraform, or this is provider normalization noise. Check the refresh-only output."
+            else
+              echo "- :white_check_mark: State matches the real infrastructure."
+            fi
+            if [ "$plan" -eq 2 ]; then
+              if [ "$refresh" -eq 0 ]; then
+                echo "- :warning: **Code differs from reality, but state matches.** A merge was probably not applied."
+              else
+                echo "- :warning: **Code differs from reality.** See the plan output."
+              fi
+            else
+              echo "- :white_check_mark: Code matches the real infrastructure."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Only a code-vs-reality diff fails the job; check 1 is a warning.
+          if [ "$plan" -eq 2 ]; then exit 1; fi
