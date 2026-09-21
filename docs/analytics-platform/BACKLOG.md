@@ -159,4 +159,4 @@ No private endpoints, VNet injection, or NSGs (PRD §16, ARCHITECTURE.md
 "Networking"). The workspace uses Azure's defaults: public workspace URL
 reachable and Secure Cluster Connectivity (no public IPs on nodes) on, both
 matching the live `dev` workspace. Revisit if a compliance or private
-connectivity requirement appears; it would need its own ADR.
+connectivity requirement appears; it would need its own design decision.

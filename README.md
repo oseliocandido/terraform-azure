@@ -70,36 +70,15 @@ workspace even for users who hold grants.
 
 ## Terraform structure
 
-```mermaid
-flowchart TB
-    subgraph modules["modules/ (reusable, no state of their own)"]
-        AG["analytics<br/>resource group, storage account,<br/>containers, retention"]
-        BA["budget_alert<br/>budget with spend alerts"]
-        subgraph dbx["databricks/"]
-            WS["workspaces<br/>workspace, access connector,<br/>metastore assignment"]
-            ST["storage<br/>credential, external locations,<br/>ingestion catalog"]
-            UC["unity_catalog<br/>domain catalog, silver/gold, grants"]
-        end
-    end
-
-    subgraph roots["environments/ (each has its own state)"]
-        DEV["dev"]
-        PROD["prod"]
-        SHARED["shared<br/>account-level metastore"]
-    end
-
-    DEV --> AG & BA & WS & ST
-    DEV -->|"once per domain"| UC
-    PROD --> AG & BA & WS & ST
-    PROD -->|"once per domain"| UC
-    AG -. containers .-> ST
-    WS -. access connector .-> ST
-    ST -. credential .-> UC
-```
-
-`unity_catalog` is called once per business domain, so adding a domain is one
-more module call. `storage` is called once per environment because the storage
-credential and the raw ingestion layer are shared by every domain.
+Five reusable modules with no state of their own: `analytics` (resource group,
+storage, containers), `budget_alert`, and three under `databricks/`
+(`workspaces`, `storage`, `unity_catalog`). Each environment root (`dev`, `prod`)
+composes them and keeps its own state; `shared` holds the account-level
+metastore. `unity_catalog` is called once per business domain, so adding a domain
+is one more module call. `storage` is called once per environment because the
+storage credential and the raw ingestion layer are shared by every domain.
+The module diagram and every object are in [ARCHITECTURE](docs/ARCHITECTURE.md)
+and [IMPLEMENTATION](docs/analytics-platform/IMPLEMENTATION.md).
 
 ## How a change reaches Azure
 
@@ -173,10 +152,9 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 | Document | Read it for |
 |---|---|
 | [PRD](docs/analytics-platform/PRD.md) | The business requirements |
-| [Architecture](docs/ARCHITECTURE.md) | Repo and pipeline design, and the analytics platform design |
+| [Architecture](docs/ARCHITECTURE.md) | Repo and pipeline design, the analytics platform design, and the key decisions |
 | [Implementation](docs/analytics-platform/IMPLEMENTATION.md) | Every module and object, the CI permission model, bootstrap |
 | [Backlog](docs/analytics-platform/BACKLOG.md) | Open work and known gaps |
-| [ADR-0002](docs/adr/0002-pipeline-and-identity-architecture.md) | Why the pipeline and identity are built this way |
 | [`docs/azure-setup-commands.sh`](docs/azure-setup-commands.sh) | The one-time Azure bootstrap (identities, backend) |
 
 ## Repo layout
@@ -197,7 +175,6 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── analytics-platform/   # PRD, IMPLEMENTATION, BACKLOG
-│   ├── adr/                  # architecture decision records
 │   └── azure-setup-commands.sh
 ├── .github/workflows/        # terraform.yml (plan/apply), drift-detection.yml
 └── deploy.sh                 # manual prod plan/apply helper

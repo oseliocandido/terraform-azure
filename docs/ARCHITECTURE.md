@@ -1,14 +1,14 @@
 # Architecture
 
-How this repo is organized and how the analytics platform is designed. For the
-reasoning behind individual decisions, see the ADRs in `adr/`.
+How this repo is organized and how the analytics platform is designed. The main
+decisions and their reasons are listed under [Key decisions](#5-key-decisions).
 
 - **[Part 1: Repository, pipeline and identity](#part-1--repository-pipeline-and-identity)**:
   module composition, Azure topology, the git → CI/CD → Azure flow, and the OIDC
   identity exchange.
 - **[Part 2: Analytics platform](#part-2--analytics-platform-databricks-and-unity-catalog)**:
   the Azure / Databricks / Terraform design that satisfies
-  [PRD.md](analytics-platform/PRD.md). Concrete HCL and mechanics are in
+  [PRD.md](analytics-platform/PRD.md). Every module and object, and how they are operated, is in
   [IMPLEMENTATION.md](analytics-platform/IMPLEMENTATION.md); open work is in
   [BACKLOG.md](analytics-platform/BACKLOG.md).
 
@@ -57,7 +57,7 @@ flowchart TB
 The Databricks/Unity Catalog design (catalog-per-domain, single ingestion
 bronze, workspace-bound catalogs, group-based access) is in
 [Part 2](#part-2--analytics-platform-databricks-and-unity-catalog) below, with
-the concrete HCL in
+every object described in
 [analytics-platform/IMPLEMENTATION.md](analytics-platform/IMPLEMENTATION.md).
 
 Each root has its own `terraform.tfvars` (environment-specific values:
@@ -65,8 +65,6 @@ Each root has its own `terraform.tfvars` (environment-specific values:
 shares environment-independent values via `environments/common.tfvars`
 (`subscription_id`, `notify_email`, `workload`), which is **not**
 auto-loaded and must always be passed explicitly with `-var-file`.
-
-See: [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#module-structure).
 
 ### 2. Azure resource topology
 
@@ -91,8 +89,7 @@ flowchart TB
 Each environment's resource group also holds the Databricks workspace and access
 connector; the workspace's own managed resource group is budgeted separately.
 Each resource group holds one budget alert, scoped to that resource group
-(not the subscription — see
-[ADR-0002](adr/0002-pipeline-and-identity-architecture.md#budget-scope)),
+(not the subscription),
 notifying at 20% and 40% of the configured monthly amount.
 
 `stanalyticsprodneu01b` carries a trailing `b`: Azure storage account names
@@ -127,7 +124,7 @@ flowchart TB
     AD --> AZURE
 ```
 
-Key properties, each with its own ADR-0002 subsection:
+Key properties (the reasons are under [Key decisions](#5-key-decisions)):
 
 - **Plan and apply are decoupled.** `apply-dev`/`apply-prod` never run
   `terraform plan` themselves — they download the exact `tfplan` artifact
@@ -136,10 +133,9 @@ Key properties, each with its own ADR-0002 subsection:
 - **`dev` deploys automatically on merge; `prod` waits for a human.** The
   only gate on `prod` is the `production` GitHub Environment's required
   reviewer — nothing about `prod`'s secrets or identity is hidden behind
-  that gate, since a `client-id` isn't secret material (see
-  [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#environments-are-a-gate-not-a-secret-store)).
+  that gate, since a `client-id` isn't secret material.
 
-### 4. Identity: three independent OIDC trust relationships
+### 4. Identity: one OIDC trust relationship per environment
 
 ```mermaid
 flowchart LR
@@ -164,17 +160,16 @@ specific App Registration. Two App Registrations
 subject and its own RBAC scope, means a compromised or misconfigured `dev`
 pipeline run cannot mint a token that authenticates as `prod`.
 
-See: [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#oidc-identity-per-environment).
+### 5. Key decisions
 
-### 5. Decision index
-
-| Decision | ADR |
+| Decision | Why |
 |---|---|
-| Why each environment gets its own OIDC identity | [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#oidc-identity-per-environment) |
-| Why `apply-*` downloads a plan artifact instead of re-planning | [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#plan-apply-decoupling) |
-| Why GitHub Environments gates prod but doesn't hold its secrets | [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#environments-are-a-gate-not-a-secret-store) |
-| Why budgets are resource-group-scoped, not subscription-scoped | [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#budget-scope) |
-| Why force-replace detection flags any `delete`, not just paired `delete+create` | [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#destructive-change-detection) |
+| One Terraform root per environment, each with its own state, instead of one root with per-environment conditionals | A `dev` change cannot surface in a `prod` plan, and one state file never spans every environment |
+| One OIDC identity (App Registration and federated credential) per environment | A bug or leaked credential in the `dev` pipeline cannot mint a token that acts as `prod`; no secret is stored anywhere |
+| `apply-*` applies the saved plan and never re-plans | What a human reviewed is exactly what is applied, with no window for state or providers to change in between |
+| The `production` GitHub Environment is only an approval gate and holds no secrets | A client ID is not secret. The real boundary is the federated-credential subject match plus RBAC scope, and hiding the ID behind an Environment would only stop `plan-prod` from running |
+| Budgets are scoped to the resource group, not the subscription | One subscription-scoped budget would be a single resource shared by both environments and would need subscription-wide RBAC. A budget per resource group has no shared resource and works with the RG-scoped Contributor role |
+| Destructive-change detection flags any `delete` in a plan | A resource-type swap appears as a separate delete and create, not a paired replace. The warning is informational and never blocks a merge |
 
 ## Part 2 — Analytics platform (Databricks and Unity Catalog)
 

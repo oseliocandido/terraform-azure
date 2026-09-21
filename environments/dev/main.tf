@@ -55,8 +55,8 @@ module "databricks_workspace" {
 # to the first budget_alert above, since it's scoped to
 # rg-analytics-dev-neu-01 only and resource groups aren't hierarchical for
 # billing. Same budget name is safe across the two -- the resource group is
-# part of the actual ARM resource ID path for RG-scoped budgets (unlike the
-# old subscription-scoped design ADR-0002 moved away from), so there's no
+# part of the actual ARM resource ID path for RG-scoped budgets (unlike a
+# subscription-scoped budget, which both environments would share), so there's no
 # collision despite both being named "guard-learning-dev".
 module "budget_alert_databricks_managed" {
   source = "../../modules/budget_alert"
