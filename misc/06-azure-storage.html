@@ -1,0 +1,1134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · Azure Storage &amp; ADLS Gen2 for data lakes — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="06">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-beginner">Beginner → Intermediate</span>
+    <span>Part 5</span><span>·</span><span>~75 min</span><span>·</span><span>Requires Lesson 05</span>
+  </div>
+  <h1>Azure Storage &amp; ADLS Gen2 for data lakes</h1>
+  <p class="lede">
+    This is the layer every Azure data platform sits on. What the hierarchical namespace actually changes,
+    why containers can fail to create even when the storage account succeeded, and how to express a medallion
+    lake — with lifecycle policies, encryption and network restrictions — in Terraform.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain what <code>is_hns_enabled</code> changes at the storage-engine level, and why Spark cares</li>
+      <li>Choose between <code>azurerm_storage_container</code> and <code>azurerm_storage_data_lake_gen2_filesystem</code></li>
+      <li>Diagnose the control-plane / data-plane failure that catches everyone once</li>
+      <li>Build a medallion lake with per-layer lifecycle rules</li>
+      <li>Lock a storage account down: no shared keys, no public network, TLS 1.2, private endpoints</li>
+      <li>Explain what Terraform stores in state for storage, and why it is dangerous</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">ADLS Gen2</span><span class="pill">Medallion</span><span class="pill">Lifecycle</span><span class="pill">Network rules</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="hns">The hierarchical namespace</h2>
+
+<p>
+  Azure Blob Storage and ADLS Gen2 are the same service. There is no separate “Data Lake” product to
+  provision — ADLS Gen2 <em>is</em> a storage account with one flag set:
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the entire difference</span></div>
+<pre><code class="language-hcl">is_hns_enabled = true</code></pre>
+</div>
+
+<p>
+  That flag replaces a flat key–value object store with a real filesystem, and the consequences are large
+  enough that getting it wrong means rebuilding your lake.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    subgraph FLAT["Flat namespace (is_hns_enabled = false)"]
+        direction TB
+        F1["Container: data"]
+        F2["blob key: 'raw/2026/01/15/events.parquet'"]
+        F3["blob key: 'raw/2026/01/15/orders.parquet'"]
+        F1 --> F2
+        F1 --> F3
+        FN["The slashes are just characters<br/>in the key. There are no directories.<br/><br/>Renaming 'raw/' = copy every blob<br/>to a new key, then delete each one.<br/>Not atomic. O(n) API calls."]
+    end
+
+    subgraph HNS["Hierarchical namespace (is_hns_enabled = true)"]
+        direction TB
+        H1["Filesystem: raw"]
+        H2["directory: 2026/"]
+        H3["directory: 01/15/"]
+        H4["file: events.parquet"]
+        H1 --> H2 --> H3 --> H4
+        HNODE["Directories are real objects<br/>in a metadata tree.<br/><br/>Rename = one atomic metadata update.<br/>O(1). Plus POSIX-style ACLs per<br/>directory and file."]
+    end
+
+    style HNS fill:#e3f5ee,stroke:#1a7f5a
+    style FLAT fill:#fdf3e0,stroke:#a5670a
+  </div>
+  <figcaption>The same-looking paths behave completely differently underneath.</figcaption>
+</figure>
+
+<h3 id="why-hns-matters">Why a data engineer specifically cares</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Capability</th><th>Flat blob</th><th>ADLS Gen2</th><th>Why it matters</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Atomic directory rename</td>
+      <td>No — copy + delete per blob</td>
+      <td>Yes — single metadata operation</td>
+      <td><strong>The big one.</strong> Spark and Hadoop commit protocols write to a temporary directory and rename it on success. On flat storage that “rename” is thousands of copy operations, which is slow, expensive, and not atomic — a failure mid-commit leaves partial results.</td>
+    </tr>
+    <tr>
+      <td>Directory-level ACLs</td>
+      <td>No — permissions are per container</td>
+      <td>Yes — POSIX-style ACLs on directories and files</td>
+      <td>Lets you grant a team access to <code>silver/finance/</code> without giving them the whole silver layer.</td>
+    </tr>
+    <tr>
+      <td>Directory listing cost</td>
+      <td>Prefix scan across all blobs</td>
+      <td>Tree traversal</td>
+      <td>Listing a partition in a lake with millions of files is dramatically faster.</td>
+    </tr>
+    <tr>
+      <td>Recursive delete</td>
+      <td>Enumerate and delete each blob</td>
+      <td>One operation</td>
+      <td>Dropping an old partition is instant instead of a batch job.</td>
+    </tr>
+    <tr>
+      <td><code>abfss://</code> driver</td>
+      <td>Works, degraded</td>
+      <td>Full support</td>
+      <td>The ABFS driver used by Databricks, Synapse and Fabric is designed for the DFS endpoint.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">You cannot turn it on later</div>
+  <p style="margin-bottom:0">
+    <code>is_hns_enabled</code> is ForceNew. Discovering after six months and 40 TB that your lake is a flat
+    blob account means creating a new account and migrating everything. Azure does offer an in-place upgrade
+    path through its own tooling for some cases, but Terraform will not do it — it will plan a destroy and
+    recreate. <strong>Set it correctly on day one.</strong>
+  </p>
+</div>
+
+<h2 id="hierarchy">The storage hierarchy, and how Terraform maps onto it</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    SA["<b>Storage account</b><br/>azurerm_storage_account<br/><i>control plane · management.azure.com</i>"]
+
+    SA --> BLOB["Blob service<br/><code>.blob.core.windows.net</code>"]
+    SA --> DFS["DFS service<br/><code>.dfs.core.windows.net</code><br/><i>only meaningful with HNS</i>"]
+    SA --> FILE["File service"]
+    SA --> QUEUE["Queue / Table services"]
+
+    BLOB --> C["<b>Container</b><br/>azurerm_storage_container<br/><i>data plane</i>"]
+    DFS --> FS["<b>Filesystem</b><br/>azurerm_storage_data_lake_gen2_filesystem<br/><i>data plane · same object as a container</i>"]
+
+    C --> B["Blobs<br/>azurerm_storage_blob"]
+    FS --> D["Directories + files<br/>azurerm_storage_data_lake_gen2_path"]
+
+    D --> SPARK["Spark / Databricks<br/>abfss://raw@acct.dfs.core.windows.net/"]
+
+    style SA fill:#e6f2fb,stroke:#0078d4,stroke-width:2px
+    style C fill:#efedfd,stroke:#5c4ee5
+    style FS fill:#efedfd,stroke:#5c4ee5
+  </div>
+  <figcaption>
+    A container and a filesystem are <strong>the same underlying object</strong> seen through two different
+    endpoints. That is why you must not create both for the same name.
+  </figcaption>
+</figure>
+
+<h3 id="container-vs-filesystem">Container or filesystem?</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th><code>azurerm_storage_container</code></th><th><code>azurerm_storage_data_lake_gen2_filesystem</code></th></tr></thead>
+  <tbody>
+    <tr><td>Endpoint used</td><td>Blob</td><td>DFS</td></tr>
+    <tr><td>Works without HNS</td><td>Yes</td><td>No</td></tr>
+    <tr><td>Can set POSIX ACLs</td><td>No</td><td>Yes — via the <code>ace</code> block</td></tr>
+    <tr><td>Can set owner / group</td><td>No</td><td>Yes</td></tr>
+    <tr><td>Sets <code>container_access_type</code></td><td>Yes</td><td>No</td></tr>
+    <tr><td>Recommended for</td><td>Plain blob accounts; simple lakes where RBAC alone is enough</td><td>ADLS Gen2 where you need directory-level ACLs</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · creating both for the same name</div>
+  <p style="margin-bottom:0">
+    Since they are two views of one object, defining a container <code>"raw"</code> <em>and</em> a filesystem
+    <code>"raw"</code> means two Terraform resources fighting over one Azure object. Whichever applies second
+    reports “already exists”, and if both somehow enter state, every plan shows churn. Pick one resource type
+    per name and stay consistent across the whole account.
+  </p>
+</div>
+
+<h2 id="control-vs-data-plane">Control plane vs data plane — the failure everyone hits</h2>
+
+<p>
+  This deserves its own section because it produces one of the most confusing errors in Azure Terraform.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    TF["Terraform"]
+
+    TF -->|"<b>Control plane</b><br/>management.azure.com<br/>Azure RBAC: Contributor<br/>Not affected by the<br/>storage firewall"| CP["Create the storage account<br/>Set network rules<br/>Set lifecycle policy<br/>Configure encryption"]
+
+    TF -->|"<b>Data plane</b><br/>acct.blob / acct.dfs<br/>.core.windows.net<br/>Needs a data role or key<br/><b>IS affected by the firewall</b>"| DP["Create containers<br/>Create filesystems<br/>Upload blobs<br/>Set ACLs"]
+
+    CP --> OK["✓ succeeds"]
+    DP --> FAIL["✗ 403 AuthorizationFailure<br/>if your IP is not allowed<br/>or you lack a data role"]
+
+    style CP fill:#e3f5ee,stroke:#1a7f5a
+    style DP fill:#fdeceb,stroke:#c0392b
+  </div>
+  <figcaption>
+    Two different APIs, two different authorisation systems. Terraform uses both, in the same apply.
+  </figcaption>
+</figure>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the error, in full</span></div>
+<pre><code class="language-bash">Error: creating Container "raw" (Account "stanalyticsdevweu01"):
+executing request: unexpected status 403 (403 This request is not authorized
+to perform this operation.) with AuthorizationFailure:
+This request is not authorized to perform this operation.
+
+  with azurerm_storage_container.raw,
+  on main.tf line 58, in resource "azurerm_storage_container" "raw":
+  58: resource "azurerm_storage_container" "raw" {</code></pre>
+</div>
+
+<p>The storage account was created fine two seconds earlier. Three possible causes, in order of likelihood:</p>
+
+<ol>
+  <li>
+    <strong>The storage firewall now blocks you.</strong> You set
+    <code>network_rules { default_action = "Deny" }</code> in the same apply. The account was created (control
+    plane, unaffected), then the container creation went to the data plane and was rejected because your runner's
+    IP is not in <code>ip_rules</code>.
+  </li>
+  <li>
+    <strong>You have no data-plane role.</strong> <code>Contributor</code> on the resource group lets you manage
+    the account but grants <em>no access to the data</em>. Reading and writing blobs requires
+    <code>Storage Blob Data Contributor</code> or similar — a separate role. This surprises people constantly
+    and is covered fully in Lesson 08.
+  </li>
+  <li>
+    <strong>Shared key access is disabled and the provider fell back to it.</strong> With
+    <code>shared_access_key_enabled = false</code>, the provider must use Entra ID for data-plane calls. Set
+    <code>storage_use_azuread = true</code> on the provider.
+  </li>
+</ol>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the fixes</span></div>
+<pre><code class="language-hcl"># 1 · Tell the provider to use Entra ID (not account keys) for data-plane calls.
+provider "azurerm" {
+  features {}
+  storage_use_azuread = true
+}
+
+# 2 · Allow the deployment runner through the firewall.
+resource "azurerm_storage_account" "lake" {
+  # ...
+  network_rules {
+    default_action             = "Deny"
+    bypass                     = ["AzureServices"]
+    ip_rules                   = var.deployment_agent_ip_ranges
+    virtual_network_subnet_ids = var.allowed_subnet_ids
+  }
+}
+
+# 3 · Grant the deployment identity a DATA role, and wait for it before
+#     creating data-plane objects.
+resource "azurerm_role_assignment" "deployer_data" {
+  scope                = azurerm_storage_account.lake.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+resource "azurerm_storage_container" "raw" {
+  name               = "raw"
+  storage_account_id = azurerm_storage_account.lake.id
+
+  # No data flows from the role assignment, so no implicit edge exists.
+  # This is one of the legitimate uses of depends_on.
+  depends_on = [azurerm_role_assignment.deployer_data]
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">RBAC propagation delay</div>
+  <p style="margin-bottom:0">
+    Even with <code>depends_on</code>, Azure role assignments can take up to a few minutes to become effective.
+    An apply that creates the role assignment and immediately uses it can still fail with a 403 — and succeed on
+    a retry with no code change. This is a genuine, well-known Azure behaviour, not a Terraform bug. In pipelines
+    the pragmatic answers are: grant the deployment identity its data roles <em>once, out of band</em>, or accept
+    a retry, or insert a <code>time_sleep</code> resource. Prefer the first.
+  </p>
+</div>
+
+<h2 id="medallion">A medallion data lake in Terraform</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    SRC["Source systems<br/>CDC, APIs, files"] --> RAW
+
+    subgraph LAKE["ADLS Gen2 · stanalyticsdevweu01"]
+        RAW["<b>raw/</b><br/>immutable landing<br/>original format<br/>Cool tier → Archive at 90d"]
+        BRZ["<b>bronze/</b><br/>ingested, typed<br/>Delta / Parquet<br/>Hot tier"]
+        SLV["<b>silver/</b><br/>cleansed, conformed<br/>deduplicated, joined<br/>Hot tier"]
+        GLD["<b>gold/</b><br/>business aggregates<br/>serving layer<br/>Hot tier"]
+    end
+
+    RAW --> BRZ --> SLV --> GLD
+    GLD --> BI["Power BI / Fabric"]
+    GLD --> ML["ML feature store"]
+
+    style RAW fill:#e6f2fb,stroke:#0078d4
+    style GLD fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>
+    The medallion pattern. The Terraform relevance is that each layer has different retention, tier and access
+    requirements — so they should be separate containers, not directories in one.
+  </figcaption>
+</figure>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">lake.tf — the data lake, complete</span></div>
+<pre><code class="language-hcl">variable "medallion_layers" {
+  description = "Data lake layers, with their retention and access-tier policy."
+
+  type = map(object({
+    tier_after_days     = optional(number)   # move to Cool after N days
+    archive_after_days  = optional(number)   # move to Archive after N days
+    delete_after_days   = optional(number)   # delete after N days (null = keep)
+  }))
+
+  default = {
+    raw = {
+      tier_after_days    = 30
+      archive_after_days = 90
+      delete_after_days  = 2555   # ~7 years, a common regulatory floor
+    }
+    bronze = {
+      tier_after_days   = 180
+      delete_after_days = 1095
+    }
+    silver = {
+      tier_after_days = 365
+    }
+    gold = {}                     # always hot, never auto-deleted
+  }
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                = local.sa_name
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = var.environment == "prod" ? "GZRS" : "LRS"
+  access_tier              = "Hot"
+
+  # --- what makes it a data lake ---
+  is_hns_enabled = true
+
+  # --- security posture ---
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+  shared_access_key_enabled       = false   # Entra ID only — no account keys
+  public_network_access_enabled   = false   # reachable only via private endpoint
+  default_to_oauth_authentication = true
+
+  # --- data protection ---
+  blob_properties {
+    versioning_enabled  = true
+    change_feed_enabled = true
+
+    delete_retention_policy {
+      days = var.environment == "prod" ? 30 : 7
+    }
+
+    container_delete_retention_policy {
+      days = var.environment == "prod" ? 30 : 7
+    }
+  }
+
+  # --- identity, so the account can reach a customer-managed key ---
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = merge(local.common_tags, {
+    data_classification = "confidential"
+  })
+
+  lifecycle {
+    prevent_destroy = true   # see Lesson 15
+  }
+}
+
+resource "azurerm_storage_data_lake_gen2_filesystem" "layers" {
+  for_each = var.medallion_layers
+
+  name               = each.key
+  storage_account_id = azurerm_storage_account.lake.id
+
+  properties = {
+    # ADLS Gen2 filesystem properties must be base64-encoded
+    layer = base64encode(each.key)
+  }
+
+  depends_on = [azurerm_role_assignment.deployer_data]
+}</code></pre>
+</div>
+
+<h3 id="lifecycle-policy">Lifecycle management</h3>
+
+<p>
+  A lifecycle policy is a <em>control-plane</em> resource — one policy document per storage account, containing
+  many rules. It is not per container, which means you cannot express it with <code>for_each</code> over
+  containers; you need a <code>dynamic</code> block instead. This is a good example of the schema dictating the
+  HCL shape.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">lifecycle.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_management_policy" "lake" {
+  storage_account_id = azurerm_storage_account.lake.id
+
+  dynamic "rule" {
+    for_each = var.medallion_layers
+
+    content {
+      name    = "lifecycle-${rule.key}"
+      enabled = true
+
+      filters {
+        prefix_match = ["${rule.key}/"]
+        blob_types   = ["blockBlob"]
+      }
+
+      actions {
+        base_blob {
+          tier_to_cool_after_days_since_modification_greater_than    = rule.value.tier_after_days
+          tier_to_archive_after_days_since_modification_greater_than = rule.value.archive_after_days
+          delete_after_days_since_modification_greater_than          = rule.value.delete_after_days
+        }
+
+        # With versioning enabled, old versions accumulate and cost money.
+        version {
+          delete_after_days_since_creation = 90
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Two things about lifecycle policies</div>
+  <ul style="margin-bottom:0">
+    <li>They are evaluated by Azure roughly <strong>once a day</strong>, not immediately. Do not expect a tier change the moment you apply.</li>
+    <li>Archive tier has an <strong>early-deletion penalty</strong> (180 days) and rehydration takes hours. Never archive anything a query might need — which is why <code>gold</code> in the example above has no tiering at all.</li>
+  </ul>
+</div>
+
+<h2 id="security">Locking the account down</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Argument</th><th>Set it to</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><code>shared_access_key_enabled</code></td><td><code>false</code></td><td>Disables the two account keys entirely. They are shared secrets that grant full data access, cannot be scoped, and are almost never rotated. With them off, every access must be an Entra ID identity — which means it is auditable and revocable.</td></tr>
+    <tr><td><code>public_network_access_enabled</code></td><td><code>false</code></td><td>The account is reachable only through private endpoints. The strongest control available.</td></tr>
+    <tr><td><code>min_tls_version</code></td><td><code>"TLS1_2"</code></td><td>The only accepted value in current provider versions. Older ones allowed TLS 1.0/1.1.</td></tr>
+    <tr><td><code>allow_nested_items_to_be_public</code></td><td><code>false</code></td><td>Prevents anyone from ever setting a container to public. In v5 this now defaults to <code>false</code>, but set it explicitly — explicit beats inherited.</td></tr>
+    <tr><td><code>https_traffic_only_enabled</code></td><td><code>true</code></td><td>Rejects plain HTTP. Default is true; state it anyway.</td></tr>
+    <tr><td><code>infrastructure_encryption_enabled</code></td><td><code>true</code> for sensitive data</td><td>Adds a second, independent layer of encryption at rest. ForceNew, so decide at creation.</td></tr>
+    <tr><td><code>default_to_oauth_authentication</code></td><td><code>true</code></td><td>Makes the portal use your Entra ID identity rather than reaching for account keys when browsing data.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="network-rules">Network rules</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">network.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  # ...
+  network_rules {
+    # Deny everything not explicitly allowed below.
+    default_action = "Deny"
+
+    # "AzureServices" lets trusted first-party services through — needed by
+    # some Azure integrations. It is broader than people assume: understand
+    # what it admits before enabling it.
+    bypass = ["AzureServices"]
+
+    # Allow specific public IPs, e.g. the CI runner's egress range.
+    # CIDR /31 and /32 are not accepted here — use the bare address for /32.
+    ip_rules = ["203.0.113.10"]
+
+    # Allow specific subnets — requires the Microsoft.Storage service
+    # endpoint on those subnets.
+    virtual_network_subnet_ids = [azurerm_subnet.databricks_host.id]
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Service endpoints vs private endpoints</div>
+  <p style="margin-bottom:0">
+    <code>virtual_network_subnet_ids</code> uses <strong>service endpoints</strong>: traffic stays on the Azure
+    backbone but the storage account keeps its public IP and public DNS name, and the firewall decides who gets
+    in. A <strong>private endpoint</strong> gives the account a private IP inside your VNet, so it is reachable
+    with no public exposure at all. Private endpoints are the stronger control and what you want in production.
+    Lesson 11 builds them, including the DNS wiring that everyone gets wrong once.
+  </p>
+</div>
+
+<h3 id="encryption">Encryption</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Layer</th><th>Terraform</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Microsoft-managed keys</td>
+      <td>Default — nothing to configure</td>
+      <td>AES-256 at rest, always on, cannot be disabled. Sufficient for most workloads.</td>
+    </tr>
+    <tr>
+      <td>Customer-managed keys</td>
+      <td><code>azurerm_storage_account_customer_managed_key</code></td>
+      <td>Key lives in your Key Vault. You control rotation and can revoke access to the data by revoking the key. Requires the account to have a managed identity with <code>Key Vault Crypto Service Encryption User</code>.</td>
+    </tr>
+    <tr>
+      <td>Infrastructure encryption</td>
+      <td><code>infrastructure_encryption_enabled = true</code></td>
+      <td>A second, independent encryption pass. ForceNew — must be set at creation.</td>
+    </tr>
+    <tr>
+      <td>In transit</td>
+      <td><code>https_traffic_only_enabled</code>, <code>min_tls_version</code></td>
+      <td>Always.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">The CMK circular dependency</div>
+  <p style="margin-bottom:0">
+    Customer-managed keys create a genuine ordering puzzle: the storage account needs a managed identity, that
+    identity needs a role on the Key Vault, and only then can the key be attached. This is why
+    <code>azurerm_storage_account_customer_managed_key</code> is a <em>separate resource</em> rather than a block
+    inside the account — splitting it breaks the cycle. When you see a provider offer a separate resource for
+    something that looks like it should be an argument, a dependency cycle is usually the reason.
+  </p>
+</div>
+
+<h2 id="state-implications">What all this puts in state</h2>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">terraform state show azurerm_storage_account.lake (abridged)</span></div>
+<pre><code class="language-bash">$ terraform state show azurerm_storage_account.lake
+
+# azurerm_storage_account.lake:
+resource "azurerm_storage_account" "lake" {
+    id                          = "/subscriptions/.../storageAccounts/stanalyticsdevweu01"
+    is_hns_enabled              = true
+    primary_access_key          = (sensitive value)
+    primary_blob_connection_string = (sensitive value)
+    primary_blob_endpoint       = "https://stanalyticsdevweu01.blob.core.windows.net/"
+    primary_dfs_endpoint        = "https://stanalyticsdevweu01.dfs.core.windows.net/"
+    secondary_access_key        = (sensitive value)
+    shared_access_key_enabled   = false
+    ...
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">“(sensitive value)” means redacted from output — not encrypted in state</div>
+  <p>
+    The raw state file contains <code>primary_access_key</code>, <code>secondary_access_key</code> and every
+    connection string in <strong>plaintext</strong>. Anyone who can read the state blob has full control of your
+    data lake, regardless of their Azure RBAC on the storage account itself.
+  </p>
+  <p style="margin-bottom:0">
+    Two mitigations, and you want both. First, put state in a remote backend with encryption and restrictive
+    RBAC (Lesson 10). Second — and more effective — set
+    <code>shared_access_key_enabled = false</code>, so those keys are not usable even if leaked. That single
+    argument turns a critical exposure into an inert one.
+  </p>
+</div>
+
+<h2 id="mistakes">Common mistakes</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Creating one container and using directories for layers</div>
+  <p style="margin-bottom:0">
+    <code>data/raw/</code>, <code>data/bronze/</code>… inside a single container looks tidier but costs you
+    control: lifecycle rules can still use prefix filters, but container-level RBAC scoping disappears, and you
+    cannot delete a whole layer atomically. Separate containers per medallion layer is the standard for good
+    reasons.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Forgetting that the DFS endpoint needs its own private endpoint</div>
+  <p style="margin-bottom:0">
+    A private endpoint targets a specific <code>subresource_name</code>. For ADLS Gen2 you need <strong>both</strong>
+    <code>blob</code> and <code>dfs</code> — plus the matching private DNS zones,
+    <code>privatelink.blob.core.windows.net</code> and <code>privatelink.dfs.core.windows.net</code>. Creating
+    only <code>blob</code> produces a lake that Spark cannot reach while the portal appears to work fine.
+    Lesson 11.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Setting <code>account_replication_type = "GRS"</code> and assuming failover is automatic</div>
+  <p style="margin-bottom:0">
+    GRS replicates asynchronously to a paired region, but reading the secondary requires RA-GRS, and failover
+    is a manual operation you must initiate. For a data lake, also check that your replication choice is
+    compatible with HNS — <code>ZRS</code>, <code>GZRS</code> and <code>RAGZRS</code> have specific requirements,
+    and the provider documents that some combinations of <code>account_tier</code>, <code>account_kind</code> and
+    HNS restrict the allowed values.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Diagnose the 403</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      An apply creates <code>azurerm_storage_account.lake</code> successfully and then fails creating
+      <code>azurerm_storage_container.raw</code> with
+      <code>403 ... AuthorizationFailure</code>. The engineer says: “But I'm Owner on the subscription!”
+    </p>
+    <p>Explain why Owner is not necessarily enough, and list what you would check.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        Owner is a <strong>control-plane</strong> role. It grants full management of the storage account —
+        create, configure, delete, and read the account keys — but by itself it grants <strong>no data-plane
+        access</strong>. Reading and writing blobs requires a data role such as
+        <code>Storage Blob Data Contributor</code>, which even Owner does not implicitly include.
+      </p>
+      <p>What to check, in order:</p>
+      <ol>
+        <li>Does the configuration set <code>network_rules { default_action = "Deny" }</code>? If so, is the runner's public IP in <code>ip_rules</code>?</li>
+        <li>Is <code>public_network_access_enabled = false</code> with no private endpoint reachable from where Terraform runs?</li>
+        <li>Is <code>shared_access_key_enabled = false</code> without <code>storage_use_azuread = true</code> on the provider? Then the provider tried to use a key that does not work.</li>
+        <li>Does the identity have a Storage Blob Data role at account or container scope?</li>
+        <li>Was such a role assigned in this same apply? Then it may simply be RBAC propagation delay — retry.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        Owner does let you <em>read the access keys</em>, so with <code>shared_access_key_enabled = true</code>
+        the provider often works anyway — which is why disabling shared keys is the moment most teams first meet
+        this distinction.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Environment-aware lake</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write an <code>azurerm_storage_account</code> that behaves differently per environment:</p>
+    <ul>
+      <li><strong>dev</strong> — LRS, public network access allowed, shared keys allowed, 7-day soft delete.</li>
+      <li><strong>prod</strong> — GZRS, public network access disabled, shared keys disabled, 30-day soft delete, versioning on, infrastructure encryption on.</li>
+      <li>Both — HNS enabled, TLS 1.2, no public blobs, tagged consistently.</li>
+      <li>Only <code>prod</code> should be protected against destruction.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution</span></div>
+<pre><code class="language-hcl">variable "environment" {
+  type = string
+  validation {
+    condition     = contains(["dev", "test", "prod"], var.environment)
+    error_message = "environment must be one of: dev, test, prod."
+  }
+}
+
+locals {
+  is_prod = var.environment == "prod"
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                = local.sa_name
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = local.is_prod ? "GZRS" : "LRS"
+
+  is_hns_enabled                    = true
+  https_traffic_only_enabled        = true
+  min_tls_version                   = "TLS1_2"
+  allow_nested_items_to_be_public   = false
+  infrastructure_encryption_enabled = local.is_prod
+
+  public_network_access_enabled = !local.is_prod
+  shared_access_key_enabled     = !local.is_prod
+
+  blob_properties {
+    versioning_enabled = local.is_prod
+
+    delete_retention_policy {
+      days = local.is_prod ? 30 : 7
+    }
+  }
+
+  tags = local.common_tags
+}</code></pre>
+      </div>
+      <div class="callout callout-warn" style="margin-top:16px;margin-bottom:0">
+        <div class="callout-title">The catch in the last requirement</div>
+        <p style="margin-bottom:0">
+          You <strong>cannot</strong> write <code>prevent_destroy = local.is_prod</code>. The
+          <code>lifecycle</code> block accepts only literal values — it is evaluated before variables in some
+          contexts, so no expressions are permitted. Terraform errors with
+          <code>Variables not allowed</code>. The real solutions are to keep environments in separate root
+          modules or state (Lesson 17), so the production configuration can hardcode
+          <code>prevent_destroy = true</code>, or to enforce it outside Terraform with an Azure resource lock.
+          This limitation catches almost everyone the first time.
+        </p>
+      </div>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write the lifecycle management policy</span>
+  </div>
+  <div class="exercise-body">
+    <p>Each medallion layer needs its own retention behaviour. Write an <code>azurerm_storage_management_policy</code> driven by this variable, where a layer with no settings produces no rule at all, and the whole policy resource disappears if no layer has any.</p><div class="code is-hcl">
+  <div class="code-head"><span class="fname">variables.tf</span></div>
+<pre><code class="language-hcl">variable "medallion_layers" {
+  type = map(object({
+    cool_after_days    = optional(number)
+    archive_after_days = optional(number)
+    delete_after_days  = optional(number)
+  }))
+
+  default = {
+    raw    = { cool_after_days = 30, archive_after_days = 90, delete_after_days = 2555 }
+    bronze = { cool_after_days = 180, delete_after_days = 1095 }
+    silver = { cool_after_days = 365 }
+    gold   = {}
+  }
+}</code></pre>
+</div>    <p style="margin-bottom:0">Also expire non-current blob versions after 90 days, since versioning is enabled on this account.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">lifecycle.tf</span></div>
+<pre><code class="language-hcl">locals {
+  # A layer needs a rule only if it sets at least one action.
+  layers_with_rules = {
+    for k, v in var.medallion_layers : k =&gt; v
+    if v.cool_after_days != null || v.archive_after_days != null || v.delete_after_days != null
+  }
+}
+
+resource "azurerm_storage_management_policy" "lake" {
+  # A policy with zero rules is invalid, so create the resource conditionally.
+  count = length(local.layers_with_rules) &gt; 0 ? 1 : 0
+
+  storage_account_id = azurerm_storage_account.lake.id
+
+  # A policy is ONE resource containing MANY rules, so this is a dynamic
+  # block - not for_each on the resource. The schema dictates the shape.
+  dynamic "rule" {
+    for_each = local.layers_with_rules
+
+    content {
+      name    = "lifecycle-${rule.key}"
+      enabled = true
+
+      filters {
+        prefix_match = ["${rule.key}/"]
+        blob_types   = ["blockBlob"]
+      }
+
+      actions {
+        base_blob {
+          # null means "no action" - the provider omits the field entirely.
+          tier_to_cool_after_days_since_modification_greater_than    = rule.value.cool_after_days
+          tier_to_archive_after_days_since_modification_greater_than = rule.value.archive_after_days
+          delete_after_days_since_modification_greater_than          = rule.value.delete_after_days
+        }
+
+        # Versioning without this is the most common cause of runaway
+        # storage cost: every overwrite keeps the old blob forever.
+        version {
+          delete_after_days_since_creation = 90
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>    <p>Three judgements being tested. The <code>count</code> guard, because a management policy with no rules is rejected by the API. The <code>dynamic</code> block rather than <code>for_each</code> on the resource, because Azure allows exactly one policy per storage account containing many rules. And passing <code>null</code> straight through for unset actions, which the provider correctly omits.</p>    <p style="margin-bottom:0">Two operational notes worth knowing: Azure evaluates lifecycle policies roughly <strong>once a day</strong>, so nothing happens the moment you apply; and Archive has a 180-day early-deletion penalty with rehydration measured in hours, which is why <code>gold</code> deliberately has no tiering at all.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Lock the account down with customer-managed keys</span>
+  </div>
+  <div class="exercise-body">
+    <p>Harden the lake for production: no shared keys, no public network access, infrastructure encryption, and encryption with a customer-managed key from your own Key Vault.</p>    <p style="margin-bottom:0">The CMK part contains a genuine ordering puzzle. Write it, and explain in one sentence why the provider offers a separate resource rather than an argument on the storage account.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">lake-cmk.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                = local.sa_name
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = "GZRS"
+  is_hns_enabled           = true
+
+  # --- hardening ---
+  shared_access_key_enabled         = false   # Entra ID only
+  public_network_access_enabled     = false   # private endpoints only
+  https_traffic_only_enabled        = true
+  min_tls_version                   = "TLS1_2"
+  allow_nested_items_to_be_public   = false
+  default_to_oauth_authentication   = true
+  infrastructure_encryption_enabled = true    # ForceNew - decide at creation
+
+  # The account needs an identity BEFORE it can be granted access to the key.
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = local.common_tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# The account's identity must be able to wrap/unwrap the key.
+resource "azurerm_role_assignment" "lake_cmk" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_storage_account.lake.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_key_vault_key" "lake" {
+  name         = "cmk-lake"
+  key_vault_id = azurerm_key_vault.main.id
+  key_type     = "RSA"
+  key_size     = 4096
+
+  key_opts = ["unwrapKey", "wrapKey"]
+
+  rotation_policy {
+    automatic {
+      time_before_expiry = "P30D"
+    }
+    expire_after         = "P365D"
+    notify_before_expiry = "P29D"
+  }
+}
+
+# A SEPARATE resource - this is the point of the exercise.
+resource "azurerm_storage_account_customer_managed_key" "lake" {
+  storage_account_id = azurerm_storage_account.lake.id
+  key_vault_id       = azurerm_key_vault.main.id
+  key_name           = azurerm_key_vault_key.lake.name
+
+  # The role must be effective before the account can reach the key.
+  depends_on = [azurerm_role_assignment.lake_cmk]
+}</code></pre>
+</div>    <p><strong>Why a separate resource:</strong> a cycle. The storage account needs a managed identity; that identity needs a role on the vault; only then can the key be attached to the account. If the key were an argument on <code>azurerm_storage_account</code>, the account would depend on a role assignment that depends on the account &mdash; and Terraform would reject the configuration with <code>Cycle:</code>. Splitting the attachment into its own resource breaks it.</p>    <p style="margin-bottom:0">A general heuristic worth carrying: whenever a provider gives you a separate resource for something that looks like it should be an argument &mdash; role assignments, CMK attachment, NSG associations &mdash; a dependency cycle is usually the reason.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Why will this fail?</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                     = "my-data-lake"
+  resource_group_name      = azurerm_resource_group.analytics.name
+  location                 = "West Europe"
+  account_tier             = "Premium"
+  account_replication_type = "GRS"
+  is_hns_enabled           = true
+  min_tls_version          = "TLS1_0"
+
+  network_rules {
+    default_action = "Deny"
+  }
+}
+
+resource "azurerm_storage_container" "raw" {
+  name                  = "Raw"
+  storage_account_name  = azurerm_storage_account.lake.name
+  container_access_type = "blob"
+}</code></pre>
+    </div>
+    <p>Find every problem. There are at least seven.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li>
+          <strong><code>name = "my-data-lake"</code></strong> — hyphens are not allowed. Storage account names
+          are 3–24 lowercase alphanumeric characters only. Also almost certainly taken globally.
+        </li>
+        <li>
+          <strong><code>account_tier = "Premium"</code> with <code>account_replication_type = "GRS"</code></strong> —
+          Premium supports only <code>LRS</code> and <code>ZRS</code>. And with HNS enabled, Premium requires
+          <code>account_kind = "BlockBlobStorage"</code>, which is not set here.
+        </li>
+        <li>
+          <strong><code>min_tls_version = "TLS1_0"</code></strong> — no longer an accepted value; the only
+          permitted value is <code>TLS1_2</code>.
+        </li>
+        <li>
+          <strong><code>network_rules</code> with <code>default_action = "Deny"</code> and nothing allowed</strong> —
+          the provider requires at least one of <code>ip_rules</code> or <code>virtual_network_subnet_ids</code>
+          when the default action is Deny. Even if it applied, the container creation below would then fail with
+          a 403.
+        </li>
+        <li>
+          <strong><code>storage_account_name</code> on the container</strong> — removed in azurerm v5. Must be
+          <code>storage_account_id = azurerm_storage_account.lake.id</code>.
+        </li>
+        <li>
+          <strong><code>name = "Raw"</code></strong> — container names must be lowercase, 3–63 characters,
+          letters, digits and hyphens.
+        </li>
+        <li>
+          <strong><code>container_access_type = "blob"</code></strong> — this makes blobs publicly readable
+          without authentication. Never do this for a data lake. It will also fail outright, because
+          <code>allow_nested_items_to_be_public</code> defaults to <code>false</code> in v5.
+        </li>
+      </ol>
+      <p style="margin-bottom:0">
+        A bonus eighth: <code>location = "West Europe"</code> is valid but inconsistent with the
+        lowercase-no-spaces convention used elsewhere in the course, and it hardcodes the region instead of
+        referencing <code>azurerm_resource_group.analytics.location</code>.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="scenarios">Real-world scenarios</h2>
+
+<div class="scenario">
+  <div class="scenario-tag">Scenario</div>
+  <p>
+    <strong>“Our storage costs have tripled and nobody knows why. The lake looks the same size.”</strong>
+  </p>
+  <p>Likely causes, all Terraform-visible:</p>
+  <ul>
+    <li><strong>Versioning without a version lifecycle rule.</strong> <code>versioning_enabled = true</code> keeps every overwritten blob forever. A daily-overwritten Delta table silently accumulates hundreds of versions. Fix: add a <code>version { delete_after_days_since_creation = N }</code> action to the management policy.</li>
+    <li><strong>Soft delete retention set high.</strong> Deleted blobs still bill for the retention window.</li>
+    <li><strong>Change feed enabled and never consumed.</strong> It writes a log that grows forever.</li>
+    <li><strong>Archive rehydration.</strong> Somebody queried archived data, which rehydrates it to Hot and bills for the transition — and the early-deletion penalty if it was archived under 180 days ago.</li>
+  </ul>
+  <p style="margin-bottom:0">
+    The lesson: <code>versioning_enabled</code>, <code>change_feed_enabled</code> and soft delete are one-line
+    changes with unbounded cost implications. Pair each with a lifecycle rule in the same commit.
+  </p>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is the difference between Azure Blob Storage and ADLS Gen2?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        They are the same service; ADLS Gen2 is a storage account with the hierarchical namespace enabled. HNS
+        turns the flat key–value namespace into a real directory tree, which gives atomic directory renames,
+        POSIX-style ACLs on directories and files, faster listings and cheaper recursive deletes. The atomic
+        rename is the one that matters most for analytics, because Spark's commit protocol renames a temporary
+        output directory on success — on flat blob storage that is thousands of copy-and-delete operations and
+        is not atomic. In Terraform it is <code>is_hns_enabled = true</code>, and it is ForceNew, so it must be
+        right at creation.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why might creating a storage container fail when creating the storage account succeeded?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because they use different APIs with different authorisation. The account is a control-plane resource on
+        <code>management.azure.com</code>, governed by Azure RBAC roles like Contributor and unaffected by the
+        storage firewall. The container is a data-plane object on the blob or dfs endpoint, which requires a data
+        role such as Storage Blob Data Contributor and <em>is</em> subject to the firewall. So an apply that sets
+        <code>default_action = "Deny"</code>, or runs as an identity with only management permissions, creates the
+        account and then gets a 403 on the container.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you organise a data lake's containers in Terraform?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        One container per medallion layer — raw, bronze, silver, gold — created with <code>for_each</code> over a
+        map so each layer can carry its own retention and tiering configuration. Separate containers rather than
+        directories in one, because it lets you scope RBAC per layer, apply distinct lifecycle rules, and delete
+        a layer atomically. On an HNS account I would use
+        <code>azurerm_storage_data_lake_gen2_filesystem</code> rather than
+        <code>azurerm_storage_container</code>, since it exposes ACLs and owner settings.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why disable shared access keys on a storage account?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because the two account keys are shared secrets that grant unrestricted access to all data, cannot be
+        scoped to a container or an operation, carry no identity so their use is unattributable in logs, and are
+        rarely rotated. They are also written in plaintext into Terraform state, so anyone who can read the state
+        file effectively owns the lake. Disabling them forces every access through Entra ID, which is scoped,
+        auditable and revocable. The trade-off is that every consumer — including Terraform itself, via
+        <code>storage_use_azuread</code> — must be able to authenticate with an identity.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you control storage costs for a lake in Terraform?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        An <code>azurerm_storage_management_policy</code> with per-prefix rules: tier raw data to Cool after 30
+        days and Archive after 90, delete after the regulatory retention period, and — critically — add a
+        <code>version</code> action to expire old blob versions if versioning is enabled, since that is the most
+        common cause of runaway cost. I would also avoid archiving anything queryable, because rehydration takes
+        hours and archive has a 180-day early-deletion penalty. And I would tag consistently so cost analysis can
+        attribute spend.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is stored in Terraform state for a storage account, and why does it matter?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Every attribute the API returns, including <code>primary_access_key</code>,
+        <code>secondary_access_key</code> and the connection strings — in plaintext. Terraform redacts them from
+        CLI output as “(sensitive value)”, but does not encrypt them in the state file. So state must live in a
+        remote backend with encryption at rest and tightly scoped RBAC, and ideally you set
+        <code>shared_access_key_enabled = false</code> so that even if state leaks, the keys in it are unusable.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What happens if you change <code>is_hns_enabled</code> on a live account?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Terraform plans a destroy and recreate — the plan shows <code>-/+</code> with
+        <code># forces replacement</code> — because the hierarchical namespace is fixed at creation in the Azure
+        API. Applying it deletes the account and every byte in it. If a lake genuinely needs to move from flat
+        blob to ADLS Gen2, that is a data migration project: create a new account, copy with AzCopy or a Spark
+        job, repoint consumers, then decommission. I would also put <code>prevent_destroy</code> on the account
+        so a careless apply cannot do it.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>ADLS Gen2 is a storage account with <code>is_hns_enabled = true</code>. It is ForceNew — get it right on day one.</li>
+  <li>Containers and filesystems are the same object through different endpoints. Pick one resource type per account.</li>
+  <li>Control plane ≠ data plane. Contributor does not grant data access, and the storage firewall does not affect account creation but does affect container creation.</li>
+  <li>One container per medallion layer, driven by <code>for_each</code> over a map that also carries lifecycle policy.</li>
+  <li><code>shared_access_key_enabled = false</code> is the single highest-value security argument on the resource — it neutralises the keys sitting in your state file.</li>
+  <li>Versioning, soft delete and change feed all cost money forever unless paired with a lifecycle rule.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

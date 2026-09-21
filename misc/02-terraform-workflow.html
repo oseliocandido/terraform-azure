@@ -1,0 +1,961 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 · The Terraform workflow &amp; CLI — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="02">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-beginner">Beginner</span>
+    <span>Part 1</span><span>·</span><span>~50 min</span><span>·</span><span>Requires Lesson 01</span>
+  </div>
+  <h1>The Terraform workflow &amp; CLI</h1>
+  <p class="lede">
+    <code>init → validate → plan → apply → destroy</code> is easy to memorise and easy to misunderstand.
+    This lesson is about what Terraform is <em>actually doing</em> in each step — which files appear, which
+    network calls happen, what gets locked, and why <code>plan</code> is the command you will spend most of
+    your career reading.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Describe precisely what <code>terraform init</code> downloads, writes and locks</li>
+      <li>Explain <code>.terraform.lock.hcl</code> — what it pins, why it is committed, and how to update it correctly</li>
+      <li>Say what <code>validate</code> catches and, more importantly, what it cannot</li>
+      <li>Read the phases of a plan: refresh, graph walk, diff</li>
+      <li>Use saved plan files, and explain why CI should always use them</li>
+      <li>Know which files belong in git and which must never be</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">CLI</span><span class="pill">Lock file</span><span class="pill">Saved plans</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="the-loop">The workflow is a loop, not a line</h2>
+
+<p>
+  The canonical diagram is a straight line, which is misleading. In practice you spend nearly all your time
+  cycling between <code>plan</code> and editing code, and <code>init</code> happens rarely.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TD
+    W["Write / edit .tf files"] --> F["terraform fmt<br/><i>canonical formatting</i>"]
+    F --> V["terraform validate<br/><i>syntax + schema, offline</i>"]
+    V -->|"errors"| W
+    V --> P["terraform plan<br/><i>reads Azure, computes the diff</i>"]
+    P -->|"not what I wanted"| W
+    P --> R{"Review<br/>the plan"}
+    R -->|"approve"| A["terraform apply<br/><i>executes the graph</i>"]
+    A --> S[("State updated")]
+    S --> W
+    A --> D["terraform destroy<br/><i>only in dev / ephemeral envs</i>"]
+
+    I["terraform init<br/><i>once per directory,<br/>and after changing<br/>providers, modules or backend</i>"] -.-> V
+
+    style I fill:#efedfd,stroke:#5c4ee5
+    style P fill:#e6f2fb,stroke:#0078d4,stroke-width:2px
+    style S fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>
+    The real loop. <code>init</code> is not part of the inner cycle — it is a setup step you re-run only when
+    the <em>dependencies</em> of the configuration change.
+  </figcaption>
+</figure>
+
+<h2 id="init">terraform init</h2>
+
+<p>
+  <code>init</code> prepares a working directory. It does four distinct jobs, and it is worth knowing them
+  separately because they fail for different reasons.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    START["terraform init"] --> B1["<b>1 · Backend initialisation</b><br/>read the backend block,<br/>authenticate, fetch existing state<br/>(or confirm migration)"]
+    B1 --> B2["<b>2 · Module installation</b><br/>download every module source<br/>into .terraform/modules/"]
+    B2 --> B3["<b>3 · Provider resolution</b><br/>read required_providers + the lock file,<br/>select versions, download plugin binaries<br/>into .terraform/providers/"]
+    B3 --> B4["<b>4 · Lock file write</b><br/>record exact versions + checksums<br/>in .terraform.lock.hcl"]
+    B4 --> DONE["Directory ready"]
+
+    style B3 fill:#e6f2fb,stroke:#0078d4
+    style B4 fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>The four jobs of <code>init</code>. Each produces a distinct artefact on disk.</figcaption>
+</figure>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">terraform init — typical output</span></div>
+<pre><code class="language-bash">$ terraform init
+
+Initializing the backend...
+
+Successfully configured the backend "azurerm"! Terraform will automatically
+use this backend unless the backend configuration changes.
+
+Initializing provider plugins...
+- Finding hashicorp/azurerm versions matching "~&gt; 5.0"...
+- Installing hashicorp/azurerm v5.4.0...
+- Installed hashicorp/azurerm v5.4.0 (signed by HashiCorp)
+
+Terraform has created a lock file .terraform.lock.hcl to record the provider
+selections it made above. Include this file in your version control repository
+so that Terraform can guarantee to make the same selections by default when
+you run "terraform init" in the future.
+
+Terraform has been successfully initialized!</code></pre>
+</div>
+
+<h3 id="what-init-writes">What appears on disk</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">working directory after init</span></div>
+<pre class="plain">.
+├── main.tf
+├── variables.tf
+├── outputs.tf
+├── .terraform/                          ← never commit (large, machine-specific)
+│   ├── providers/
+│   │   └── registry.terraform.io/hashicorp/azurerm/5.4.0/windows_amd64/
+│   │       └── terraform-provider-azurerm_v5.4.0_x5.exe    ← ~250 MB binary
+│   ├── modules/
+│   │   └── modules.json                 ← where each module source was resolved to
+│   └── terraform.tfstate                ← backend *config* cache, not your state
+└── .terraform.lock.hcl                  ← COMMIT THIS</pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">That <code>.terraform/terraform.tfstate</code> file is not your state</div>
+  <p style="margin-bottom:0">
+    When you use a remote backend, Terraform writes a small file at
+    <code>.terraform/terraform.tfstate</code> that records <em>which backend is configured</em>. It is a pointer,
+    not your infrastructure state. Confusingly named; easy to panic about the first time you see it.
+  </p>
+</div>
+
+<h3 id="lock-file">The dependency lock file</h3>
+
+<p>
+  <code>.terraform.lock.hcl</code> is Terraform's equivalent of <code>package-lock.json</code> or
+  <code>poetry.lock</code>. It records the exact provider version selected and the checksums of the packages
+  for each platform.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">.terraform.lock.hcl</span></div>
+<pre><code class="language-hcl"># This file is maintained automatically by "terraform init".
+# Manual edits may be lost in future updates.
+
+provider "registry.terraform.io/hashicorp/azurerm" {
+  version     = "5.4.0"
+  constraints = "~&gt; 5.0"
+  hashes = [
+    "h1:0S9gW0h6WkUHDPI9zJTHnPKMB0K7xL6vJ9r6yGmS0Xk=",
+    "zh:1c2f0e8b8f...",
+    "zh:2a91b3c4d5...",
+    # ... one zh: entry per platform package
+  ]
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Commit it?</td>
+      <td><strong>Yes, always.</strong> It is the difference between “everyone on the team and CI run provider 5.4.0” and “whoever ran <code>init</code> most recently got whatever was newest that day”.</td>
+    </tr>
+    <tr>
+      <td>What does it pin?</td>
+      <td>Provider versions and their checksums. <strong>Not</strong> the Terraform CLI version, and <strong>not</strong> module versions (those are pinned in <code>.terraform/modules/modules.json</code>, which is <em>not</em> committed — module versions are pinned in the <code>module</code> block itself).</td>
+    </tr>
+    <tr>
+      <td>How do I upgrade a provider?</td>
+      <td><code>terraform init -upgrade</code>. This re-resolves within your <code>version</code> constraint and rewrites the lock file. Review the diff; it is a real change.</td>
+    </tr>
+    <tr>
+      <td>Why does CI fail with a checksum error?</td>
+      <td>Usually because the lock file was generated on one platform only. Fix with <code>terraform providers lock -platform=linux_amd64 -platform=windows_amd64 -platform=darwin_arm64</code> so all runner platforms are covered.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · gitignoring the lock file</div>
+  <p style="margin-bottom:0">
+    Some <code>.gitignore</code> templates found online include <code>.terraform.lock.hcl</code>. That is wrong
+    and it is the cause of the classic “it worked on my machine, the pipeline produced a different plan”
+    incident: a provider minor release changed a default, and only CI picked it up. Ignore
+    <code>.terraform/</code> (the directory); commit <code>.terraform.lock.hcl</code> (the file).
+  </p>
+</div>
+
+<h3 id="init-flags">Useful init flags</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Flag</th><th>Use</th></tr></thead>
+  <tbody>
+    <tr><td><code>-upgrade</code></td><td>Re-resolve providers and modules within their constraints, rewriting the lock file.</td></tr>
+    <tr><td><code>-backend-config=env/prod.hcl</code></td><td>Supply backend settings from a file — the standard way to point one codebase at per-environment state. Lesson 10.</td></tr>
+    <tr><td><code>-reconfigure</code></td><td>Ignore the cached backend config and start fresh. Does <em>not</em> migrate state.</td></tr>
+    <tr><td><code>-migrate-state</code></td><td>Move existing state to a newly configured backend, with a prompt.</td></tr>
+    <tr><td><code>-backend=false</code></td><td>Install providers without touching the backend — handy in CI when you only want to run <code>validate</code> and have no cloud credentials.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="fmt-validate">terraform fmt and terraform validate</h2>
+
+<p>These two are offline, fast, and belong in every pipeline and pre-commit hook.</p>
+
+<h3 id="fmt">fmt</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash"># rewrite files in place, recursively
+terraform fmt -recursive
+
+# CI mode: exit non-zero if anything is unformatted, change nothing
+terraform fmt -check -recursive -diff</code></pre>
+</div>
+
+<p>
+  <code>fmt</code> enforces canonical formatting — indentation, and crucially the alignment of <code>=</code>
+  signs within a block. It is not a linter: it has no opinion about your naming, structure or security. Its
+  value is that it removes formatting from code review entirely.
+</p>
+
+<h3 id="validate">validate</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">terraform validate
+# Success! The configuration is valid.</code></pre>
+</div>
+
+<p>
+  <code>validate</code> requires <code>init</code> to have run (it needs provider schemas) but makes
+  <strong>no network calls to Azure</strong> and needs no credentials. Being precise about its boundary matters:
+</p>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>✓ validate catches</h4>
+    <ul style="margin-bottom:0">
+      <li>Syntax errors</li>
+      <li>Unknown or misspelled arguments for a resource type</li>
+      <li>Missing required arguments</li>
+      <li>Type mismatches (a string where a list is required)</li>
+      <li>References to undeclared variables or resources</li>
+      <li>Duplicate resource addresses</li>
+      <li>Invalid attribute values where the provider declares an enum</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>✗ validate cannot catch</h4>
+    <ul style="margin-bottom:0">
+      <li>A storage account name already taken globally</li>
+      <li>Insufficient RBAC permissions</li>
+      <li>Quota exhaustion in a region</li>
+      <li>A resource group that does not exist</li>
+      <li>Azure Policy denying the deployment</li>
+      <li>Cross-argument rules the provider only checks at apply</li>
+      <li>Anything that depends on real values, e.g. whether a subnet CIDR overlaps</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The practical rule</div>
+  <p style="margin-bottom:0">
+    <code>validate</code> proves the configuration is <em>well-formed</em>. Only <code>plan</code> proves it is
+    <em>possible</em>, and only <code>apply</code> proves it works. A green <code>validate</code> in CI on a pull
+    request from a fork — where you have no Azure credentials — is still worth running, because it catches the
+    majority of typo-class errors for free.
+  </p>
+</div>
+
+<h2 id="plan">terraform plan</h2>
+
+<p>
+  This is the command that matters. Everything in Terraform operations is built on the discipline of reading
+  plans carefully. Internally, <code>plan</code> has three phases.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph PH1["Phase 1 · Refresh"]
+        R1["Load state"] --> R2["For every managed resource,<br/>call the provider's Read"]
+        R2 --> R3["GET management.azure.com/...<br/>one call per resource, parallelised"]
+        R3 --> R4["Update the in-memory state<br/>with reality"]
+    end
+
+    subgraph PH2["Phase 2 · Evaluate + build the graph"]
+        G1["Resolve variables, locals,<br/>data sources"] --> G2["Build the dependency graph<br/>from references"]
+        G2 --> G3["Detect cycles"]
+    end
+
+    subgraph PH3["Phase 3 · Diff"]
+        D1["For each resource:<br/>compare config vs refreshed state"] --> D2["Ask the provider:<br/>can this change be applied in place,<br/>or does it force replacement?"]
+        D2 --> D3["Emit the change set"]
+    end
+
+    PH1 --> PH2 --> PH3 --> OUT["Human-readable plan<br/>+ optionally a saved plan file"]
+
+    style PH1 fill:#e6f2fb,stroke:#0078d4
+    style PH3 fill:#efedfd,stroke:#5c4ee5
+  </div>
+  <figcaption>
+    Phase 1 explains why a plan on a large configuration is slow, and why it needs read access to every
+    resource even when you have changed nothing.
+  </figcaption>
+</figure>
+
+<h3 id="plan-symbols">Reading the change symbols</h3>
+
+<p>You will see five markers. Lesson 16 goes through full plan output line by line; here is the vocabulary:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Symbol</th><th>Meaning</th><th>Danger</th></tr></thead>
+  <tbody>
+    <tr><td><code>+</code></td><td>create</td><td>Low — new resource</td></tr>
+    <tr><td><code>~</code></td><td>update in place</td><td>Low to medium — the resource keeps its identity and data</td></tr>
+    <tr><td><code>-</code></td><td>destroy</td><td><strong>High</strong> — verify this is intended</td></tr>
+    <tr><td><code>-/+</code></td><td>destroy then create (replacement)</td><td><strong>Highest</strong> — the resource and anything inside it is deleted. On a storage account, that is your data.</td></tr>
+    <tr><td><code>+/-</code></td><td>create then destroy</td><td>Replacement with <code>create_before_destroy</code> set — safer ordering, but the name must be unique</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Always read the last line</div>
+  <p style="margin-bottom:0">
+    <code>Plan: 3 to add, 1 to change, 0 to destroy.</code> — if the destroy count is not what you expect,
+    stop and find out why before doing anything else. In production pipelines this line is worth failing the
+    build on: many teams gate on “destroy count must be zero unless a human sets an override flag”.
+  </p>
+</div>
+
+<h3 id="saved-plans">Saved plan files</h3>
+
+<p>
+  A plan can be written to a file and applied later. This closes a real race: between reading a plan and
+  approving it, somebody else could change the configuration or the infrastructure.
+</p>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash"># produce a plan file (binary)
+terraform plan -out=tfplan
+
+# inspect it later, without touching Azure
+terraform show tfplan
+terraform show -json tfplan | jq '.resource_changes[] | select(.change.actions[0]=="delete")'
+
+# apply exactly this plan — no re-planning, no prompt
+terraform apply tfplan</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Why CI must use saved plans</div>
+  <p>
+    When you run bare <code>terraform apply</code>, Terraform computes a <em>fresh</em> plan and asks you to
+    confirm it. In a pipeline where a human approved the plan an hour ago in a pull request, applying without
+    the saved file means you are applying something nobody reviewed.
+  </p>
+  <p style="margin-bottom:0">
+    <code>terraform apply tfplan</code> applies precisely the reviewed change set, and errors out if state has
+    moved underneath it. Lesson 18 builds this into a real pipeline.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · committing or publishing plan files</div>
+  <p style="margin-bottom:0">
+    A saved plan contains the full attribute values of everything it touches — including values marked
+    <code>sensitive</code>. Treat <code>tfplan</code> exactly like a state file: it is a secret. In CI, upload
+    it as a protected artefact with a short retention, never to a public artefact store, and never commit it.
+  </p>
+</div>
+
+<h3 id="plan-flags">Plan flags you will actually use</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Flag</th><th>Use</th></tr></thead>
+  <tbody>
+    <tr><td><code>-out=tfplan</code></td><td>Save the plan for review and later apply.</td></tr>
+    <tr><td><code>-var-file=env/prod.tfvars</code></td><td>Supply environment-specific inputs. Lesson 07.</td></tr>
+    <tr><td><code>-destroy</code></td><td>Preview a full teardown without running it.</td></tr>
+    <tr><td><code>-refresh=false</code></td><td>Skip the Azure read phase. Fast, but the diff may be based on stale state — use only for a quick sanity check, never before an apply.</td></tr>
+    <tr><td><code>-target=azurerm_storage_account.lake</code></td><td>Plan only one resource and its dependencies. An <strong>escape hatch for recovering from a broken state</strong>, not a normal workflow — the docs say so explicitly.</td></tr>
+    <tr><td><code>-detailed-exitcode</code></td><td>Exit 0 = no changes, 1 = error, 2 = changes present. The basis of automated drift detection.</td></tr>
+    <tr><td><code>-lock-timeout=5m</code></td><td>Wait for a held state lock instead of failing immediately. Useful in CI where two runs can overlap.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">On <code>-target</code></div>
+  <p style="margin-bottom:0">
+    If you find yourself reaching for <code>-target</code> regularly, that is a signal your state is too large
+    or your modules are badly split — not that you have found a useful flag. Every targeted apply leaves the
+    rest of your configuration un-reconciled, so the next full plan can surprise you.
+  </p>
+</div>
+
+<h2 id="apply">terraform apply</h2>
+
+<p>
+  <code>apply</code> executes the change set by walking the dependency graph. Concretely:
+</p>
+
+<ol>
+  <li><strong>Acquire the state lock.</strong> With the Azure backend this is a blob lease on the state blob. If another apply is running, you wait or fail.</li>
+  <li><strong>Re-plan</strong> (unless applying a saved plan file) and prompt for confirmation.</li>
+  <li><strong>Walk the graph</strong> in dependency order, up to 10 nodes in parallel (<code>-parallelism=n</code> to change).</li>
+  <li><strong>For each node</strong>, call the provider's Create/Update/Delete, which issues ARM API calls and polls the resulting long-running operation until Azure reports success.</li>
+  <li><strong>Write state after every individual resource</strong> — not at the end. This is what makes a half-failed apply recoverable.</li>
+  <li><strong>Release the lock</strong> and print outputs.</li>
+</ol>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">apply output</span></div>
+<pre><code class="language-bash">azurerm_resource_group.analytics: Creating...
+azurerm_resource_group.analytics: Creation complete after 3s [id=/subscriptions/.../resourceGroups/rg-analytics-dev-weu-01]
+azurerm_storage_account.lake: Creating...
+azurerm_storage_account.lake: Still creating... [10s elapsed]
+azurerm_storage_account.lake: Still creating... [20s elapsed]
+azurerm_storage_account.lake: Creation complete after 27s [id=/subscriptions/.../providers/Microsoft.Storage/storageAccounts/stanalyticsdevweu01]
+
+Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+lake_id = "/subscriptions/.../providers/Microsoft.Storage/storageAccounts/stanalyticsdevweu01"</code></pre>
+</div>
+
+<p>
+  Note the <code>[id=...]</code> on each completion line. That is the moment the resource's real Azure resource
+  ID is written into state — the mapping that makes all future plans possible.
+</p>
+
+<h3 id="failed-apply">What happens when an apply fails halfway</h3>
+
+<div class="callout callout-important">
+  <div class="callout-title">This is not a disaster, and it is not a rollback</div>
+  <p>
+    Terraform has <strong>no rollback</strong>. If resource 7 of 12 fails, resources 1–6 exist and are recorded
+    in state; 8–12 were never attempted (or were attempted in parallel and may partially exist). Terraform
+    stops, writes state, and reports the error.
+  </p>
+  <p style="margin-bottom:0">
+    The recovery is to fix the cause and run <code>apply</code> again. Because the operation is declarative and
+    state is accurate, the second run creates only what is missing. The genuinely dangerous case is a resource
+    that was created in Azure but whose state write failed — you then get “already exists” on retry, which you
+    resolve with <code>import</code> (Lesson 16).
+  </p>
+</div>
+
+<h2 id="destroy">terraform destroy</h2>
+
+<p>
+  <code>destroy</code> walks the graph in <em>reverse</em> dependency order and deletes everything in state.
+  It is equivalent to <code>terraform apply -destroy</code>.
+</p>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">terraform plan -destroy -out=tfdestroy   # review first — always
+terraform apply tfdestroy</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Destroy is for ephemeral environments</div>
+  <p>
+    In a dev or PR-preview environment, destroying nightly is excellent practice — it keeps costs down and
+    proves your configuration can build from nothing. In production, <code>destroy</code> is essentially never
+    run, and the sensible controls are: <code>prevent_destroy</code> lifecycle rules on data-bearing resources
+    (Lesson 15), Azure resource locks, and a pipeline that has no destroy path at all.
+  </p>
+  <p style="margin-bottom:0">
+    Note also that Azure soft-delete features interact with this. Destroying a Key Vault with purge protection
+    enabled leaves it soft-deleted, and re-creating one with the same name will fail until it is purged — one
+    of the most common “destroy then apply” failures. Lesson 09.
+  </p>
+</div>
+
+<h2 id="other-commands">The rest of the CLI</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Command</th><th>What it is for</th></tr></thead>
+  <tbody>
+    <tr><td><code>terraform show</code></td><td>Human-readable dump of current state, or of a saved plan file. <code>-json</code> for machine parsing.</td></tr>
+    <tr><td><code>terraform output</code></td><td>Print output values. <code>-json</code> and <code>-raw</code> make it script-friendly — this is how a pipeline passes a storage account name to the next stage.</td></tr>
+    <tr><td><code>terraform console</code></td><td>An interactive REPL with your variables, locals and state loaded. The fastest way to learn HCL functions — used heavily in Lesson 03.</td></tr>
+    <tr><td><code>terraform state list / show / mv / rm</code></td><td>State inspection and surgery. Lesson 16.</td></tr>
+    <tr><td><code>terraform import</code></td><td>Bring an existing Azure resource under management. Lesson 16. Largely superseded by <code>import</code> blocks.</td></tr>
+    <tr><td><code>terraform providers</code></td><td>Show which providers each module requires — invaluable when debugging a version conflict.</td></tr>
+    <tr><td><code>terraform graph</code></td><td>Emit the dependency graph in DOT format. Rarely used, occasionally illuminating.</td></tr>
+    <tr><td><code>terraform test</code></td><td>Run <code>.tftest.hcl</code> test files. Lesson 19.</td></tr>
+    <tr><td><code>terraform workspace</code></td><td>Multiple states from one configuration. Lesson 17 explains why this is usually the wrong tool for environments.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-version">
+  <div class="callout-title">Deprecated commands you will still see in old material</div>
+  <ul style="margin-bottom:0">
+    <li><code>terraform taint</code> / <code>untaint</code> → replaced by <code>terraform apply -replace=ADDRESS</code>. The old commands mutated state directly; the flag goes through a reviewable plan instead.</li>
+    <li><code>terraform refresh</code> → replaced by <code>terraform apply -refresh-only</code>, which shows you the drift and asks before writing it to state.</li>
+  </ul>
+</div>
+
+<h2 id="files">Which files go in git</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">.gitignore</span></div>
+<pre><code class="language-bash"># Provider binaries and module cache — large, platform-specific, regenerable
+.terraform/
+
+# State: contains every attribute of every resource, in plaintext,
+# including secrets. Belongs in a remote backend, never in git.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Saved plans: contain the same sensitive values as state.
+*.tfplan
+tfplan
+
+# Variable files that may hold real values or secrets.
+# Commit env/*.tfvars if they contain only non-secret config — decide deliberately.
+*.auto.tfvars
+secrets.tfvars
+
+# Crash logs contain full request/response bodies.
+crash.log
+crash.*.log</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>File</th><th>Commit?</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><code>*.tf</code></td><td>✓ Yes</td><td>It is the source of truth.</td></tr>
+    <tr><td><code>.terraform.lock.hcl</code></td><td>✓ Yes</td><td>Reproducible provider versions across the team and CI.</td></tr>
+    <tr><td><code>env/dev.tfvars</code></td><td>Usually yes</td><td>Non-secret environment configuration is valuable in review. Secrets never go here — Lesson 09.</td></tr>
+    <tr><td><code>README.md</code></td><td>✓ Yes</td><td>Especially for modules — inputs, outputs, an example.</td></tr>
+    <tr><td><code>.terraform/</code></td><td>✗ No</td><td>Hundreds of megabytes of platform-specific binaries.</td></tr>
+    <tr><td><code>terraform.tfstate</code></td><td>✗ <strong>Never</strong></td><td>Plaintext secrets, no locking, guaranteed merge conflicts. Lesson 10.</td></tr>
+    <tr><td><code>tfplan</code></td><td>✗ No</td><td>Contains the same sensitive values as state.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">When must you re-run init?</span>
+  </div>
+  <div class="exercise-body">
+    <p>Which of these require <code>terraform init</code> before the next <code>plan</code> will work?</p>
+    <ol>
+      <li>You added a new <code>azurerm_storage_container</code> resource block.</li>
+      <li>You changed <code>version = "~&gt; 5.0"</code> to <code>version = "~&gt; 5.4"</code>.</li>
+      <li>You added a <code>module "storage" { source = "./modules/storage" }</code> block.</li>
+      <li>You changed the backend's <code>key</code> from <code>dev.tfstate</code> to <code>staging.tfstate</code>.</li>
+      <li>You cloned the repository onto a new laptop.</li>
+      <li>You changed a value in <code>dev.tfvars</code>.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>Yes:</strong> 2, 3, 4, 5.</p>
+      <ul>
+        <li><strong>2</strong> — the provider constraint changed, so providers must be re-resolved.</li>
+        <li><strong>3</strong> — new modules must be installed into <code>.terraform/modules/</code>.</li>
+        <li><strong>4</strong> — backend configuration changed; Terraform will also ask whether to migrate the existing state.</li>
+        <li><strong>5</strong> — <code>.terraform/</code> is gitignored, so no providers are present at all.</li>
+      </ul>
+      <p style="margin-bottom:0">
+        <strong>No:</strong> 1 and 6. Adding a resource of an already-installed provider needs nothing new, and
+        variable values are read at plan time.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Where does validate stop?</span>
+  </div>
+  <div class="exercise-body">
+    <p>A colleague says: “CI runs <code>terraform validate</code> on every PR, so we know the config is deployable.” Give three concrete counter-examples for an Azure data platform.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>Any three of:</p>
+      <ul>
+        <li>The storage account name is already taken by another Azure customer — names are globally unique, and only an API call reveals it.</li>
+        <li>The service principal lacks <code>Microsoft.Authorization/roleAssignments/write</code>, so every role assignment will fail at apply time.</li>
+        <li>An Azure Policy in the subscription denies storage accounts with public network access enabled.</li>
+        <li>The subnet CIDR overlaps an existing subnet in the VNet.</li>
+        <li>A Key Vault of the same name is soft-deleted from a previous destroy and blocks creation.</li>
+        <li>The referenced resource group does not exist because it lives in another state.</li>
+      </ul>
+      <p style="margin-bottom:0">
+        All of these appear at <code>plan</code> or <code>apply</code>, never at <code>validate</code>, because
+        <code>validate</code> makes no calls to Azure.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">A safe review-then-apply sequence</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      Write the exact command sequence to: apply the <code>prod</code> environment using
+      <code>env/prod.tfvars</code>, in a way that (a) a human reviews the plan before anything changes,
+      (b) exactly the reviewed change set is applied, (c) the run does not hang forever on a lock held by a
+      colleague but waits a reasonable time, and (d) you can programmatically check whether the plan would
+      destroy anything.
+    </p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">terraform init -backend-config=env/prod.backend.hcl
+
+terraform plan \
+  -var-file=env/prod.tfvars \
+  -out=tfplan.prod \
+  -lock-timeout=5m
+
+# (a) human review — readable form
+terraform show tfplan.prod
+
+# (d) machine check: list anything being deleted or replaced
+terraform show -json tfplan.prod \
+  | jq -r '.resource_changes[]
+           | select(.change.actions | index("delete"))
+           | .address'
+
+# (b) apply exactly what was reviewed
+terraform apply -lock-timeout=5m tfplan.prod</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Note that <code>-var-file</code> is <strong>not</strong> passed to <code>apply</code> when applying a saved
+        plan — the variable values are already baked into the plan file. Passing it is an error, and that error
+        confuses a lot of people the first time.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write a wrapper that makes the wrong-state mistake impossible</span>
+  </div>
+  <div class="exercise-body">
+    <p>Your team keeps forgetting <code>-reconfigure</code> when switching environments, and once planned dev against prod state. Write <code>tf.sh</code>, taking an environment and a command, that removes the possibility.</p>    <p style="margin-bottom:0">It must reject an unknown environment, always re-init against the correct backend, save plans to an environment-specific filename, and refuse to apply when no plan exists.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">tf.sh</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+ENV="${1:?usage: ./tf.sh &lt;dev|test|prod&gt; &lt;plan|apply|destroy-plan&gt;}"
+CMD="${2:?usage: ./tf.sh &lt;dev|test|prod&gt; &lt;plan|apply|destroy-plan&gt;}"
+
+case "$ENV" in
+  dev|test|prod) ;;
+  *) echo "unknown environment: $ENV" &gt;&amp;2; exit 1 ;;
+esac
+
+PLAN_FILE="tfplan.${ENV}"
+
+# -reconfigure every single time. The cached backend in .terraform/ is the trap.
+init() {
+  terraform init -reconfigure -backend-config="env/${ENV}.backend.hcl"
+}
+
+case "$CMD" in
+  plan)
+    init
+    terraform plan -var-file="env/${ENV}.tfvars" -out="$PLAN_FILE" -lock-timeout=5m
+    echo
+    echo "Review it:  terraform show $PLAN_FILE"
+    ;;
+
+  destroy-plan)
+    init
+    terraform plan -destroy -var-file="env/${ENV}.tfvars" -out="$PLAN_FILE" -lock-timeout=5m
+    ;;
+
+  apply)
+    [ -f "$PLAN_FILE" ] || {
+      echo "no $PLAN_FILE - run './tf.sh $ENV plan' first" &gt;&amp;2; exit 1; }
+    init
+    terraform apply -lock-timeout=5m "$PLAN_FILE"
+    rm -f "$PLAN_FILE"      # a consumed plan is stale; never re-apply it
+    ;;
+
+  *) echo "unknown command: $CMD" &gt;&amp;2; exit 1 ;;
+esac</code></pre>
+</div>    <p>Two details worth keeping. <code>-var-file</code> goes to <code>plan</code> but <strong>not</strong> to <code>apply</code> &mdash; the values are already baked into the saved plan, and passing it there is an error that confuses people the first time they meet it.</p>    <p style="margin-bottom:0">And deleting the plan file after a successful apply stops someone re-applying a stale change set tomorrow. A plan file is a snapshot, not a build artefact you keep.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Recover a half-failed apply</span>
+  </div>
+  <div class="exercise-body">
+    <p>An apply died partway through with a network timeout. Re-running now gives:</p><div class="code is-out">
+  <div class="code-head"><span class="fname">terminal</span></div>
+<pre><code class="language-bash">Error: A resource with the ID "/subscriptions/.../storageAccounts/stanalyticsdevweu01"
+already exists - to be managed via Terraform this resource needs to be imported
+into the State. Please see the resource documentation for
+"azurerm_storage_account" for more information.</code></pre>
+</div>    <p style="margin-bottom:0">Write the command sequence to diagnose and recover, with a comment explaining each step.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">recovery.sh</span></div>
+<pre><code class="language-bash"># 1 - What does Terraform believe it owns? The storage account will be ABSENT:
+#     it was created in Azure, but the state write never happened.
+terraform state list
+
+# 2 - Confirm the resource really is there.
+az storage account show \
+  --name stanalyticsdevweu01 \
+  --resource-group rg-analytics-dev-weu-01 \
+  --query '{id:id, state:provisioningState}' -o json
+
+# 3 - Adopt it with an import BLOCK rather than the CLI: previewable,
+#     reviewable in a PR, and it leaves a record in git.
+#     (written into imports.tf)
+#
+#     import {
+#       to = azurerm_storage_account.lake
+#       id = "/subscriptions/0000.../storageAccounts/stanalyticsdevweu01"
+#     }
+
+# 4 - The plan must show the import and NO other change to that resource.
+#     Anything else means your config does not match what was really created.
+terraform plan -out=tfplan
+terraform show tfplan
+
+# 5 - Apply: records the import, then creates whatever is still missing.
+terraform apply tfplan
+
+# 6 - Delete imports.tf once the import is recorded in state.</code></pre>
+</div>    <p style="margin-bottom:0">The idea to take away: this is <strong>not</strong> a corrupted deployment. State is written after each individual resource, so Terraform's record is accurate for everything it managed to write. The single resource that fell through the gap &mdash; created in Azure, missing from state &mdash; is precisely the case <code>import</code> exists for. Lesson 16 covers it properly.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">The pipeline that keeps producing different plans</span>
+  </div>
+  <div class="exercise-body">
+    <p>A team reports the following symptoms:</p>
+    <ul>
+      <li>Local plans are clean; the CI plan shows unexpected changes to resources nobody touched.</li>
+      <li>The problem started on a Tuesday and nobody changed any <code>.tf</code> file.</li>
+      <li>Their <code>.gitignore</code> contains <code>.terraform*</code>.</li>
+      <li>Their pipeline runs <code>terraform init &amp;&amp; terraform apply -auto-approve</code> on merge to main.</li>
+    </ul>
+    <p>Identify the two distinct problems and how you would fix each.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>Problem 1 — the lock file is being ignored.</strong></p>
+      <p>
+        The pattern <code>.terraform*</code> matches both <code>.terraform/</code> <em>and</em>
+        <code>.terraform.lock.hcl</code>. With no lock file committed, every <code>init</code> resolves the newest
+        version satisfying the constraint. On Tuesday a new <code>azurerm</code> minor release changed a default
+        or added a computed attribute, CI picked it up, local machines still had the old cached version — hence
+        divergent plans.
+      </p>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">fix</span></div>
+<pre><code class="language-bash"># .gitignore — be specific
+.terraform/
+
+# then commit the lock file, covering every platform CI and the team use
+terraform providers lock \
+  -platform=linux_amd64 \
+  -platform=darwin_arm64 \
+  -platform=windows_amd64
+git add .terraform.lock.hcl</code></pre>
+      </div>
+      <p><strong>Problem 2 — <code>apply -auto-approve</code> with no reviewed plan.</strong></p>
+      <p style="margin-bottom:0">
+        Even once versions are pinned, the pipeline computes a brand-new plan at apply time and approves it
+        automatically. Nobody ever sees what will happen. The fix is to plan on the pull request, publish the plan
+        as an artefact and as a PR comment, gate the apply on an environment approval, and apply the saved file:
+        <code>terraform apply tfplan</code>. Lesson 18 builds exactly this.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>Walk me through the core Terraform workflow and what each command does.</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>init</code> prepares the directory: initialises the backend and fetches existing state, installs
+        modules, resolves and downloads provider plugins, and writes the dependency lock file.
+        <code>validate</code> checks syntax and provider schema offline. <code>plan</code> refreshes state against
+        the real infrastructure, builds the dependency graph, and produces a change set — it modifies nothing.
+        <code>apply</code> takes the state lock and executes that change set in dependency order, writing state
+        after each resource. <code>destroy</code> does the same in reverse to remove everything in state.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is <code>.terraform.lock.hcl</code> and should it be committed?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        It records the exact provider versions selected during <code>init</code> plus checksums for each platform
+        package. It should absolutely be committed — it is what guarantees every developer and the pipeline use
+        the identical provider build, so plans are reproducible. Update it deliberately with
+        <code>terraform init -upgrade</code>, and use <code>terraform providers lock -platform=...</code> to include
+        hashes for every OS your team and CI run on. It does not pin the CLI version or module versions.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What does <code>terraform plan</code> actually do?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Three phases. It refreshes — reading every resource in state from the provider API to learn its current
+        real attributes. It evaluates variables, locals and data sources and builds the dependency graph. Then it
+        diffs configuration against the refreshed state, asking the provider for each resource whether a given
+        change can be applied in place or forces replacement. The result is a change set that can be printed and
+        optionally saved with <code>-out</code>. Plan writes no infrastructure changes, though it may write a
+        refreshed state.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why would you use <code>terraform plan -out</code> in a pipeline?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        To guarantee that what a human approved is exactly what gets applied. Without it, the apply step
+        re-plans, so any change to code or infrastructure between review and apply silently makes it into
+        production unreviewed. The saved plan also lets you inspect the change set as JSON for policy checks —
+        for example, failing the build if the plan destroys anything. The plan file contains sensitive values,
+        so it must be handled as a secret artefact.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What happens if <code>terraform apply</code> fails halfway through?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        There is no rollback. Terraform stops, keeps everything already created, and records it in state —
+        state is written after each individual resource, not once at the end. You fix the cause and re-run;
+        because the model is declarative, only the missing resources are created. The awkward case is a resource
+        created in Azure whose state write did not happen, which produces an “already exists” error on retry and
+        is resolved by importing it.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the difference between <code>validate</code> and <code>plan</code>?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>validate</code> is offline and needs no cloud credentials — it checks that the configuration is
+        internally consistent and matches provider schemas. <code>plan</code> authenticates to Azure, reads real
+        resource state and produces an actual change set. Validate proves the config is well-formed; plan proves
+        it is achievable against the current state of the subscription.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Someone suggests running <code>terraform apply -target</code> to speed up deployments. Your response?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        I would push back. <code>-target</code> is documented as an escape hatch for recovering from errors, not
+        a workflow. It applies a partial change set, leaving the rest of the configuration unreconciled, so state
+        can drift from configuration in ways that surprise the next person to run a full plan. If plans are slow
+        enough that this is tempting, the real fix is splitting state — smaller, independently applied
+        configurations with a smaller blast radius.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li><code>init</code> does four things: backend, modules, providers, lock file. Re-run it when <em>dependencies</em> change, not when configuration changes.</li>
+  <li>Commit <code>.terraform.lock.hcl</code>; ignore <code>.terraform/</code>. Confusing the two causes divergent plans between laptops and CI.</li>
+  <li><code>validate</code> is offline and proves well-formedness only. It cannot know about name collisions, permissions, quotas or policy.</li>
+  <li><code>plan</code> = refresh + graph + diff. Read the summary line, and treat <code>-/+</code> as a stop sign.</li>
+  <li>Saved plan files are how you guarantee the reviewed change is the applied change — and they are secrets.</li>
+  <li>There is no rollback. State is written per-resource, which is what makes a failed apply recoverable by simply re-running it.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

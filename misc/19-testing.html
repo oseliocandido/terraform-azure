@@ -1,0 +1,1117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>19 · Testing, scanning &amp; policy as code — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="19">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-production">Production</span>
+    <span>Part 20</span><span>·</span><span>~70 min</span><span>·</span><span>Requires Lesson 17</span>
+  </div>
+  <h1>Testing, scanning &amp; policy as code</h1>
+  <p class="lede">
+    Every tool here catches a different class of problem, and each has a boundary it cannot cross. Knowing
+    <em>what each one cannot catch</em> is more useful than knowing how to run them, because that is where the
+    incidents come from.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Place each tool on a spectrum from cheap-and-shallow to expensive-and-deep</li>
+      <li>Write native <code>terraform test</code> files, including mocked providers</li>
+      <li>Choose between static analysis, plan-time policy and cloud-side policy</li>
+      <li>State precisely what each tool cannot catch</li>
+      <li>Set up pre-commit hooks that make the whole thing automatic</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">terraform test</span><span class="pill">tflint</span><span class="pill">Checkov</span><span class="pill">OPA</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="pyramid">The spectrum</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    L1["<b>terraform fmt</b><br/>~0.1s · no cloud access<br/><i>formatting only</i>"]
+    L2["<b>terraform validate</b><br/>~1s · no cloud access<br/><i>syntax + provider schema</i>"]
+    L3["<b>tflint</b><br/>~2s · no cloud access<br/><i>provider-aware lint: invalid VM sizes,<br/>deprecated syntax, naming rules</i>"]
+    L4["<b>Checkov / Trivy</b><br/>~10s · no cloud access<br/><i>security misconfiguration in the HCL</i>"]
+    L5["<b>terraform test (plan mode)</b><br/>~seconds · reads Azure or mocks it<br/><i>does my module compute the right values?</i>"]
+    L6["<b>Policy on plan JSON</b><br/>~seconds · needs a real plan<br/><i>OPA/Conftest: what will ACTUALLY change</i>"]
+    L7["<b>terraform test (apply mode)</b><br/>~minutes · real Azure, real cost<br/><i>does it actually work?</i>"]
+    L8["<b>Azure Policy</b><br/>continuous · cloud-side<br/><i>catches everything, including<br/>changes Terraform never made</i>"]
+
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7 --> L8
+
+    style L1 fill:#e3f5ee,stroke:#1a7f5a
+    style L6 fill:#efedfd,stroke:#5c4ee5
+    style L8 fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>
+    Cheap and shallow at the top, expensive and deep at the bottom. Run everything above the line on every
+    commit; run the bottom two on a schedule or before release.
+  </figcaption>
+</figure>
+
+<div class="callout callout-important">
+  <div class="callout-title">The one that catches the most, per unit of effort</div>
+  <p style="margin-bottom:0">
+    <strong>Policy checks on the plan JSON.</strong> Static analysis reads your HCL and cannot resolve
+    variables, modules or computed values — so it misses anything conditional. A plan has all of that resolved
+    into concrete before/after values for exactly the resources that will change. If you adopt one thing from
+    this lesson, adopt that.
+  </p>
+</div>
+
+<h2 id="fmt-validate">fmt and validate</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">terraform fmt -check -recursive -diff    # CI: fails on unformatted files
+terraform validate                       # needs init; makes no cloud calls</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Tool</th><th>Catches</th><th>Cannot catch</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>fmt</code></td>
+      <td>Inconsistent indentation and alignment</td>
+      <td>Everything else. It has no opinion about naming, structure or security.</td>
+    </tr>
+    <tr>
+      <td><code>validate</code></td>
+      <td>Syntax errors, unknown or misspelled arguments, missing required arguments, type mismatches, undeclared references, duplicate addresses</td>
+      <td>Anything requiring Azure: name collisions, quota, permissions, policy denials, CIDR overlaps, cross-argument rules the provider only enforces at apply</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="tflint">tflint</h2>
+
+<p>
+  A linter that goes beyond schema validation. With the Azure ruleset it knows real Azure constraints —
+  invalid VM sizes, deprecated resource types, region names that do not exist.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">.tflint.hcl</span></div>
+<pre><code class="language-hcl">plugin "azurerm" {
+  enabled = true
+  version = "0.28.0"
+  source  = "github.com/terraform-linters/tflint-ruleset-azurerm"
+}
+
+# Built-in rules worth enabling explicitly
+rule "terraform_required_version"   { enabled = true }
+rule "terraform_required_providers" { enabled = true }
+rule "terraform_unused_declarations" { enabled = true }
+rule "terraform_documented_variables" { enabled = true }
+rule "terraform_documented_outputs"   { enabled = true }
+rule "terraform_naming_convention" {
+  enabled = true
+  format  = "snake_case"
+}
+rule "terraform_module_pinned_source" {
+  enabled = true
+  style   = "flexible"   # rejects ?ref=main; requires a tag or SHA
+}</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">running it</span></div>
+<pre><code class="language-bash">tflint --init          # download plugins
+tflint --recursive
+tflint --format=compact</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Catches</th><th>Cannot catch</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Invalid Azure values (a VM size that does not exist), deprecated syntax, unused variables and locals, undocumented variables, unpinned module sources, naming-convention violations</td>
+      <td>Anything requiring a plan or real state. It cannot know whether your storage account name is taken, whether the plan destroys something, or whether a conditional resolves to an insecure value.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="terraform-test">terraform test</h2>
+
+<p>
+  The native testing framework (Terraform 1.6+). Test files live in <code>tests/</code> or alongside the
+  module, named <code>*.tftest.hcl</code>. Each <code>run</code> block executes a plan or an apply and asserts
+  against the result.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/storage/tests/defaults.tftest.hcl</span></div>
+<pre><code class="language-hcl"># Values shared by every run block in this file.
+variables {
+  name                = "sttestanalytics001"
+  resource_group_name = "rg-test"
+  location            = "westeurope"
+}
+
+# ---------------------------------------------------------------
+# Run 1 · plan mode — fast, no resources created, no cost.
+#         Asserts on what the module WOULD create.
+# ---------------------------------------------------------------
+run "secure_by_default" {
+  command = plan
+
+  assert {
+    condition     = azurerm_storage_account.this.is_hns_enabled == true
+    error_message = "The storage module must always enable the hierarchical namespace."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.min_tls_version == "TLS1_2"
+    error_message = "TLS 1.2 must be enforced."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.allow_nested_items_to_be_public == false
+    error_message = "Public blob access must never be allowed."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.public_network_access_enabled == false
+    error_message = "Public network access must default to disabled."
+  }
+}
+
+# ---------------------------------------------------------------
+# Run 2 · the containers are created from the input map.
+# ---------------------------------------------------------------
+run "creates_requested_containers" {
+  command = plan
+
+  variables {
+    containers = {
+      raw    = { delete_after_days = 2555 }
+      bronze = {}
+      silver = {}
+      gold   = {}
+    }
+  }
+
+  assert {
+    condition     = length(azurerm_storage_data_lake_gen2_filesystem.this) == 4
+    error_message = "Expected four filesystems, one per requested container."
+  }
+
+  assert {
+    condition = alltrue([
+      for k in ["raw", "bronze", "silver", "gold"] :
+      contains(keys(azurerm_storage_data_lake_gen2_filesystem.this), k)
+    ])
+    error_message = "Every requested container must be created, keyed by name."
+  }
+}
+
+# ---------------------------------------------------------------
+# Run 3 · a variable validation rule must REJECT bad input.
+# ---------------------------------------------------------------
+run "rejects_invalid_name" {
+  command = plan
+
+  variables {
+    name = "ST-Invalid-Name"     # uppercase and hyphens
+  }
+
+  expect_failures = [
+    var.name,
+  ]
+}
+
+# ---------------------------------------------------------------
+# Run 4 · the lifecycle policy is only created when needed.
+# ---------------------------------------------------------------
+run "no_policy_without_rules" {
+  command = plan
+
+  variables {
+    containers = {
+      gold = {}     # no retention settings at all
+    }
+  }
+
+  assert {
+    condition     = length(azurerm_storage_management_policy.this) == 0
+    error_message = "No management policy should be created when no container has lifecycle rules."
+  }
+}</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">running tests</span></div>
+<pre><code class="language-bash">cd modules/storage
+terraform init
+terraform test
+
+# tests/defaults.tftest.hcl... in progress
+#   run "secure_by_default"... pass
+#   run "creates_requested_containers"... pass
+#   run "rejects_invalid_name"... pass
+#   run "no_policy_without_rules"... pass
+# tests/defaults.tftest.hcl... tearing down
+# tests/defaults.tftest.hcl... pass
+#
+# Success! 4 passed, 0 failed.
+
+terraform test -filter=tests/defaults.tftest.hcl -verbose</code></pre>
+</div>
+
+<h3 id="apply-tests">Apply-mode tests</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">tests/integration.tftest.hcl</span></div>
+<pre><code class="language-hcl"># command = apply CREATES REAL RESOURCES and destroys them afterwards.
+# It costs money and takes minutes. Run it on a schedule or before a
+# module release — not on every commit.
+
+run "setup" {
+  module {
+    source = "./tests/setup"    # a helper module creating the resource group
+  }
+}
+
+run "creates_a_working_lake" {
+  command = apply
+
+  variables {
+    name                = run.setup.storage_account_name
+    resource_group_name = run.setup.resource_group_name
+    location            = "westeurope"
+    containers          = { raw = {}, bronze = {} }
+  }
+
+  assert {
+    condition     = output.dfs_endpoint != ""
+    error_message = "The module must expose a DFS endpoint."
+  }
+
+  assert {
+    condition     = can(regex("^https://.*\\.dfs\\.core\\.windows\\.net/$", output.dfs_endpoint))
+    error_message = "The DFS endpoint must be a well-formed ADLS Gen2 URL."
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Apply-mode tests are real infrastructure</div>
+  <p style="margin-bottom:0">
+    They create resources in a real subscription and bill for them. Terraform destroys them at the end of the
+    file, but a crashed test run can leak resources — so use a dedicated sandbox subscription with a nightly
+    cleanup and a budget alert. Names must also be unique per run, or two concurrent CI jobs collide.
+  </p>
+</div>
+
+<h3 id="mocking">Mocked providers</h3>
+
+<p>
+  Terraform 1.7 added mocking, which lets you run <code>apply</code>-mode tests with no cloud access at all —
+  fast, free, and usable on a pull request from a fork.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">tests/mocked.tftest.hcl</span></div>
+<pre><code class="language-hcl">mock_provider "azurerm" {
+  # Give computed attributes plausible fake values so assertions can run.
+  mock_resource "azurerm_storage_account" {
+    defaults = {
+      id                   = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-test/providers/Microsoft.Storage/storageAccounts/sttest001"
+      primary_dfs_endpoint = "https://sttest001.dfs.core.windows.net/"
+    }
+  }
+}
+
+run "outputs_are_wired_correctly" {
+  command = apply     # no real Azure call — the provider is mocked
+
+  variables {
+    name                = "sttest001"
+    resource_group_name = "rg-test"
+    location            = "westeurope"
+    containers          = { raw = {}, gold = {} }
+  }
+
+  assert {
+    condition     = output.dfs_endpoint == "https://sttest001.dfs.core.windows.net/"
+    error_message = "The module must expose the storage account's DFS endpoint."
+  }
+
+  assert {
+    condition     = length(output.container_scopes) == 2
+    error_message = "One RBAC scope must be exposed per container."
+  }
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Catches</th><th>Cannot catch</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Wrong defaults, broken output wiring, conditional logic that produces the wrong resource count, validation rules that fail to reject bad input, regressions when refactoring a module</td>
+      <td><strong>Plan mode:</strong> anything the API decides — name collisions, quota, policy. <strong>Mocked mode:</strong> anything real, since the provider is fake; a mock will happily accept a configuration Azure would reject.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="security-scanning">Security scanning</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">the common tools</span></div>
+<pre><code class="language-bash"># Checkov — the broadest rule set for Terraform, with Azure coverage
+checkov -d terraform/ --framework terraform --compact
+
+# scan a PLAN instead of the HCL — far fewer false positives,
+# because variables and modules are resolved
+terraform show -json tfplan &gt; plan.json
+checkov -f plan.json --framework terraform_plan
+
+# Trivy (which absorbed tfsec) — fast, good Azure rules
+trivy config terraform/
+
+# suppress a specific finding, with a reason, at the resource
+# checkov:skip=CKV_AZURE_59:Public access required for the BI gateway; approved in TICKET-1234</code></pre>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">typical Azure findings</span></div>
+<pre class="plain">CKV_AZURE_59  Ensure that Storage accounts disallow public access
+CKV_AZURE_33  Ensure Storage logging is enabled for Queue service
+CKV_AZURE_44  Ensure Storage Account is using the latest version of TLS
+CKV_AZURE_43  Ensure Storage Account name follows naming rules
+CKV_AZURE_109 Ensure that Key Vault disables public network access
+CKV_AZURE_110 Ensure that Key Vault enables purge protection
+CKV_AZURE_42  Ensure the Key Vault has soft delete enabled
+CKV_AZURE_206 Ensure that Storage Accounts use replication</pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Catches</th><th>Cannot catch</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Known misconfiguration patterns: public blob access, weak TLS, missing encryption, no purge protection, over-broad network rules, missing diagnostic settings</td>
+      <td>Business-logic problems — the wrong container getting the wrong role is a perfectly secure configuration that is also completely wrong. Also anything requiring a plan: when scanning raw HCL it cannot resolve variables or module inputs, which is the main source of false positives and false negatives.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Scan the plan, not the HCL</div>
+  <p style="margin-bottom:0">
+    <code>public_network_access_enabled = var.allow_public</code> is unresolvable in static analysis — the tool
+    either guesses or skips. In the plan JSON it is a concrete <code>true</code> or <code>false</code> for the
+    specific environment being deployed. Scanning plans dramatically reduces both false positives and missed
+    findings, at the cost of needing cloud credentials to produce the plan.
+  </p>
+</div>
+
+<h2 id="policy-as-code">Policy as code</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Where it runs</th><th>Tool</th><th>Strength</th><th>Weakness</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Before apply</strong>, on the plan</td>
+      <td>OPA / Conftest, or a jq script (Lesson 18)</td>
+      <td>Blocks a bad change before it exists. Can express anything, including “no destroys”.</td>
+      <td>Only sees changes Terraform makes. A portal change bypasses it entirely.</td>
+    </tr>
+    <tr>
+      <td><strong>Before apply</strong>, managed</td>
+      <td>HCP Terraform Sentinel</td>
+      <td>Integrated, with cost estimation and a mature policy language</td>
+      <td>Requires HCP Terraform / Enterprise</td>
+    </tr>
+    <tr>
+      <td><strong>In the cloud</strong>, continuously</td>
+      <td>Azure Policy</td>
+      <td><strong>Catches everything</strong> — portal changes, other tools, other teams. Can deny at the ARM layer or auto-remediate.</td>
+      <td>Failures appear at apply time as opaque errors; feedback is late and the message is unhelpful</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">policy/deny-public-storage.rego</span></div>
+<pre><code class="language-bash">package terraform.analytics
+
+import rego.v1
+
+# Deny any storage account that will end up publicly reachable.
+deny contains msg if {
+    some change in input.resource_changes
+    change.type == "azurerm_storage_account"
+    "create" in change.change.actions
+    change.change.after.public_network_access_enabled == true
+
+    msg := sprintf(
+        "%s enables public network access. Use a private endpoint instead.",
+        [change.address],
+    )
+}
+
+# Deny role assignments at subscription scope.
+deny contains msg if {
+    some change in input.resource_changes
+    change.type == "azurerm_role_assignment"
+    "create" in change.change.actions
+    regex.match(`^/subscriptions/[^/]+$`, change.change.after.scope)
+
+    msg := sprintf(
+        "%s is scoped to the whole subscription. Scope to a resource group or resource.",
+        [change.address],
+    )
+}
+
+# Warn — do not block — on anything being destroyed.
+warn contains msg if {
+    some change in input.resource_changes
+    "delete" in change.change.actions
+
+    msg := sprintf("%s will be destroyed.", [change.address])
+}</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">running it</span></div>
+<pre><code class="language-bash">terraform show -json tfplan &gt; plan.json
+conftest test --policy policy/ plan.json</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Azure Policy is the backstop, not a replacement</div>
+  <p style="margin-bottom:0">
+    Plan-time policy gives fast, clear feedback but only governs what Terraform does. Azure Policy governs
+    <em>everything</em>, including a portal change at 2am — but the feedback is a deployment failure with an
+    opaque message, often minutes into an apply. Use both: plan-time policy for developer experience, Azure
+    Policy for actual enforcement. And if Azure Policy denies a deployment, the fix is to encode the same rule
+    at plan time so the next person finds out in ten seconds instead of ten minutes.
+  </p>
+</div>
+
+<h2 id="pre-commit">Pre-commit hooks</h2>
+
+<div class="code is-yaml">
+  <div class="code-head"><span class="fname">.pre-commit-config.yaml</span></div>
+<pre><code class="language-yaml">repos:
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.1
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+      - id: terraform_tflint
+        args: ["--args=--config=__GIT_WORKING_DIR__/.tflint.hcl"]
+      - id: terraform_docs
+        args: ["--hook-config=--path-to-file=README.md", "--hook-config=--add-to-existing-file=true"]
+      - id: terraform_checkov
+        args: ["--args=--quiet", "--args=--compact"]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks     # catches a committed secret BEFORE it reaches history</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">setup</span></div>
+<pre><code class="language-bash">pip install pre-commit
+pre-commit install
+pre-commit run --all-files    # first run, to fix everything at once</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Hooks are convenience; CI is enforcement</div>
+  <p style="margin-bottom:0">
+    Pre-commit hooks are trivially bypassed with <code>git commit --no-verify</code>, and a new joiner will not
+    have installed them. They exist to give <em>you</em> fast feedback. Every one of these checks must also run
+    in CI, where it cannot be skipped. Running them only locally is a common and comfortable mistake.
+  </p>
+</div>
+
+<h2 id="cost">Cost estimation</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">Infracost</span></div>
+<pre><code class="language-bash">infracost breakdown --path terraform/environments/prod
+
+# in CI, comment the cost DIFF on the pull request
+infracost diff --path terraform/environments/prod --format json --out-file infracost.json
+infracost comment github --path infracost.json --repo "$GITHUB_REPOSITORY" \
+  --pull-request "$PR_NUMBER" --github-token "$GITHUB_TOKEN"</code></pre>
+</div>
+
+<p>
+  Worth adding for a data platform specifically, because the expensive resources are easy to add by accident: a
+  Databricks workspace with an oversized default cluster, a Premium function plan, four private endpoints, or a
+  storage account switched from LRS to RAGZRS. A cost diff on the pull request makes those visible at review
+  time rather than on next month's invoice.
+</p>
+
+<h2 id="summary-table">What each tool cannot catch</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Tool</th><th>Blind spot</th></tr></thead>
+  <tbody>
+    <tr><td><code>fmt</code></td><td>Everything except whitespace.</td></tr>
+    <tr><td><code>validate</code></td><td>Anything requiring Azure. It never makes a network call.</td></tr>
+    <tr><td><code>tflint</code></td><td>Anything requiring a plan or state. It reads code, not consequences.</td></tr>
+    <tr><td>Checkov / Trivy on HCL</td><td>Unresolved variables and module inputs; business logic. A perfectly secure configuration granting the wrong team access passes cleanly.</td></tr>
+    <tr><td><code>terraform test</code> (plan)</td><td>Anything the API decides — name collisions, quota, policy denials, whether it actually works.</td></tr>
+    <tr><td><code>terraform test</code> (mocked)</td><td>Reality. A mock accepts configurations Azure would reject.</td></tr>
+    <tr><td><code>terraform test</code> (apply)</td><td>Production-scale problems, and anything that only appears with real data or real load.</td></tr>
+    <tr><td>Plan-time policy</td><td>Changes Terraform does not make — a portal edit, another team's tooling.</td></tr>
+    <tr><td>Azure Policy</td><td>Nothing structural, but feedback is late and the error messages are poor.</td></tr>
+    <tr><td><strong>All of them</strong></td><td><strong>“Is this the right architecture?”</strong> No tool reviews design. That is what the human reviewer in Lesson 17 is for.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Which tool catches it?</span>
+  </div>
+  <div class="exercise-body">
+    <p>Name the cheapest tool that catches each, or “none”:</p>
+    <ol>
+      <li><code>storage_acount_id</code> — a typo in an argument name.</li>
+      <li><code>container_access_type = "blob"</code> on a data lake container.</li>
+      <li>A storage account name already taken by another Azure customer.</li>
+      <li>A module refactor that silently stops creating the lifecycle policy.</li>
+      <li>Granting the BI team Contributor at subscription scope.</li>
+      <li>An engineer disabling a firewall rule in the portal.</li>
+      <li>Putting the gold layer in the same container as raw — a design mistake.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong><code>terraform validate</code></strong> — the provider schema has no such argument.</li>
+        <li><strong>Checkov or Trivy</strong> — a classic public-access rule. A plan-time policy would also catch it.</li>
+        <li><strong>None until apply.</strong> Only the Azure API knows. <code>validate</code> checks the character rules; global uniqueness needs a real call.</li>
+        <li><strong><code>terraform test</code></strong> — exactly the regression an assertion on the resource count catches, and nothing else would.</li>
+        <li><strong>Plan-time policy</strong> (OPA/Conftest or the jq gate from Lesson 18). Static analysis usually cannot resolve the scope expression; the plan has it concretely.</li>
+        <li><strong>Azure Policy</strong>, or scheduled drift detection. No pre-apply tool sees changes Terraform did not make.</li>
+        <li><strong>None.</strong> No tool reviews architecture. This needs a human, which is why code review is not optional.</li>
+      </ol>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Test the networking module</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write a <code>.tftest.hcl</code> for a networking module that asserts:</p>
+    <ul>
+      <li>Every subnet in the input is created.</li>
+      <li>Subnets are correctly carved from the VNet CIDR with <code>cidrsubnet()</code>.</li>
+      <li>Delegated subnets have exactly one delegation; others have none.</li>
+      <li>An overlapping subnet CIDR is rejected by validation.</li>
+      <li>No real Azure resources are created.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">modules/networking/tests/subnets.tftest.hcl</span></div>
+<pre><code class="language-hcl">variables {
+  name                = "vnet-test-weu-01"
+  resource_group_name = "rg-test"
+  location            = "westeurope"
+  vnet_cidr           = "10.10.0.0/16"
+
+  subnets = {
+    privatelink = { newbits = 8,  netnum = 1, delegation = null }
+    databricks  = { newbits = 8,  netnum = 2, delegation = "Microsoft.Databricks/workspaces" }
+    functions   = { newbits = 10, netnum = 16, delegation = "Microsoft.Web/serverFarms" }
+  }
+}
+
+run "creates_every_subnet" {
+  command = plan
+
+  assert {
+    condition     = length(azurerm_subnet.this) == 3
+    error_message = "One subnet must be created per entry in var.subnets."
+  }
+
+  assert {
+    condition = alltrue([
+      for k in keys(var.subnets) : contains(keys(azurerm_subnet.this), k)
+    ])
+    error_message = "Subnets must be keyed by their input name."
+  }
+}
+
+run "cidr_arithmetic_is_correct" {
+  command = plan
+
+  assert {
+    condition     = azurerm_subnet.this["privatelink"].address_prefixes[0] == "10.10.1.0/24"
+    error_message = "cidrsubnet(10.10.0.0/16, 8, 1) must yield 10.10.1.0/24."
+  }
+
+  assert {
+    condition     = azurerm_subnet.this["functions"].address_prefixes[0] == "10.10.4.0/26"
+    error_message = "cidrsubnet(10.10.0.0/16, 10, 16) must yield 10.10.4.0/26."
+  }
+}
+
+run "delegation_is_conditional" {
+  command = plan
+
+  assert {
+    condition     = length(azurerm_subnet.this["privatelink"].delegation) == 0
+    error_message = "A subnet with delegation = null must have no delegation block."
+  }
+
+  assert {
+    condition     = length(azurerm_subnet.this["databricks"].delegation) == 1
+    error_message = "A delegated subnet must have exactly one delegation block."
+  }
+
+  assert {
+    condition     = azurerm_subnet.this["databricks"].delegation[0].service_delegation[0].name == "Microsoft.Databricks/workspaces"
+    error_message = "The delegation must name the service given in the input."
+  }
+}
+
+run "rejects_invalid_cidr" {
+  command = plan
+
+  variables {
+    vnet_cidr = "not-a-cidr"
+  }
+
+  expect_failures = [
+    var.vnet_cidr,
+  ]
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Everything is <code>command = plan</code>, so nothing is created and no cost is incurred — these can run
+        on every commit. The <code>cidr_arithmetic_is_correct</code> run is the highest-value one: address-space
+        errors are cheap to make, silent until deployment, and expensive to fix afterwards because resizing a
+        subnet requires emptying it.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Test the storage module without touching Azure</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write <code>modules/storage/tests/defaults.tftest.hcl</code> asserting that the module is secure by default, creates one filesystem per requested container, creates no lifecycle policy when none is requested, and rejects an invalid storage account name.</p>    <p style="margin-bottom:0">Every run must be free and require no cloud credentials.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/storage/tests/defaults.tftest.hcl</span></div>
+<pre><code class="language-hcl"># Shared by every run block in this file.
+variables {
+  name                = "sttestanalytics001"
+  resource_group_name = "rg-test"
+  location            = "westeurope"
+  containers          = {}
+}
+
+# ---------------------------------------------------------------
+# command = plan: nothing is created, nothing is billed, no
+# credentials are needed. Runs on every commit.
+# ---------------------------------------------------------------
+run "secure_by_default" {
+  command = plan
+
+  assert {
+    condition     = azurerm_storage_account.this.is_hns_enabled == true
+    error_message = "The storage module must always enable the hierarchical namespace."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.min_tls_version == "TLS1_2"
+    error_message = "TLS 1.2 must be enforced."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.allow_nested_items_to_be_public == false
+    error_message = "Public blob access must never be permitted."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.public_network_access_enabled == false
+    error_message = "Public network access must default to disabled."
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.shared_access_key_enabled == false
+    error_message = "Shared key access must default to disabled."
+  }
+}
+
+run "creates_one_filesystem_per_container" {
+  command = plan
+
+  variables {
+    containers = {
+      raw    = { delete_after_days = 2555 }
+      bronze = {}
+      silver = {}
+      gold   = {}
+    }
+  }
+
+  assert {
+    condition     = length(azurerm_storage_data_lake_gen2_filesystem.this) == 4
+    error_message = "Expected one filesystem per requested container."
+  }
+
+  assert {
+    condition = alltrue([
+      for k in ["raw", "bronze", "silver", "gold"] :
+      contains(keys(azurerm_storage_data_lake_gen2_filesystem.this), k)
+    ])
+    error_message = "Filesystems must be keyed by container name, not by index."
+  }
+}
+
+run "no_policy_when_no_rules" {
+  command = plan
+
+  variables {
+    containers = {
+      gold = {}     # no retention settings at all
+    }
+  }
+
+  assert {
+    condition     = length(azurerm_storage_management_policy.this) == 0
+    error_message = "A management policy must not be created when no container has lifecycle rules."
+  }
+}
+
+# expect_failures asserts that a VALIDATION REJECTS bad input - the test
+# passes when the named object fails.
+run "rejects_invalid_name" {
+  command = plan
+
+  variables {
+    name = "ST-Invalid-Name"    # uppercase and hyphens
+  }
+
+  expect_failures = [
+    var.name,
+  ]
+}</code></pre>
+</div>    <p><code>expect_failures</code> is the part people do not discover on their own. Without it there is no way to test that your <code>validation</code> blocks actually reject bad input &mdash; and an unvalidated validation rule is a comment.</p>    <p style="margin-bottom:0">The <code>no_policy_when_no_rules</code> run is the highest-value one. It pins conditional-creation logic that is easy to break during a refactor and produces no error &mdash; just a silently missing policy nobody notices until a storage bill arrives.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Test outputs with a mocked provider</span>
+  </div>
+  <div class="exercise-body">
+    <p>Plan-mode tests cannot assert on outputs that depend on computed attributes, because those are unknown until apply. Write a test using a mocked provider so you can assert on them with no cloud access at all.</p>    <p style="margin-bottom:0">Assert the DFS endpoint is wired through correctly and that one RBAC scope is exposed per container.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/storage/tests/mocked.tftest.hcl</span></div>
+<pre><code class="language-hcl"># Terraform 1.7+. The provider is replaced entirely, so command = apply
+# creates nothing real - it is fast, free, and safe on a fork's pull request.
+mock_provider "azurerm" {
+  # Give computed attributes plausible values so assertions can run.
+  mock_resource "azurerm_storage_account" {
+    defaults = {
+      id                   = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-test/providers/Microsoft.Storage/storageAccounts/sttest001"
+      primary_dfs_endpoint = "https://sttest001.dfs.core.windows.net/"
+      primary_blob_endpoint = "https://sttest001.blob.core.windows.net/"
+    }
+  }
+}
+
+variables {
+  name                = "sttest001"
+  resource_group_name = "rg-test"
+  location            = "westeurope"
+}
+
+run "outputs_are_wired_correctly" {
+  command = apply     # no real Azure call: the provider is a mock
+
+  variables {
+    containers = {
+      raw  = {}
+      gold = {}
+    }
+  }
+
+  assert {
+    condition     = output.dfs_endpoint == "https://sttest001.dfs.core.windows.net/"
+    error_message = "The module must expose the storage account's DFS endpoint."
+  }
+
+  assert {
+    condition     = length(output.container_scopes) == 2
+    error_message = "One RBAC scope must be exposed per container."
+  }
+
+  assert {
+    condition = alltrue([
+      for scope in values(output.container_scopes) :
+      can(regex("/blobServices/default/containers/[a-z0-9-]+$", scope))
+    ])
+    error_message = "container_scopes must be container-level RBAC scopes, not account-level."
+  }
+}
+
+run "module_never_outputs_a_secret" {
+  command = apply
+
+  # A regression guard: someone adding an access-key output would copy a
+  # credential into every caller's state.
+  assert {
+    condition     = !can(output.primary_access_key)
+    error_message = "The storage module must not output an access key."
+  }
+}</code></pre>
+</div>    <p>The last assertion is the kind worth stealing. Security scanners flag over-permission but have no opinion about a module quietly starting to export a credential; a test can pin that as a property of the module's interface.</p>    <p style="margin-bottom:0">Know the boundary, though: a mock accepts configurations Azure would reject. It verifies your <em>logic</em> &mdash; defaults, output wiring, resource counts &mdash; and nothing about whether the resource can actually be created. Keep a small number of real apply-mode tests running on a schedule against a sandbox subscription for that.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Every check passed, production broke</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      A change passes <code>fmt</code>, <code>validate</code>, <code>tflint</code>, Checkov and
+      <code>terraform test</code>. It is applied to production. Databricks jobs immediately fail with
+      <code>403 AuthorizationPermissionMismatch</code> reading the silver layer.
+    </p>
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">the change</span></div>
+<pre><code class="language-hcl"> locals {
+   databricks_access = {
+     raw    = "Storage Blob Data Reader"
+-    bronze = "Storage Blob Data Contributor"
+-    silver = "Storage Blob Data Contributor"
+-    gold   = "Storage Blob Data Contributor"
++    bronze = "Storage Blob Data Reader"
++    silver = "Storage Blob Data Reader"
++    gold   = "Storage Blob Data Reader"
+   }
+ }</code></pre>
+    </div>
+    <p>Why did every tool miss it, and what would have caught it?</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>Why each tool missed it:</strong></p>
+      <ul>
+        <li><strong><code>validate</code></strong> — the configuration is syntactically perfect and schema-valid. <code>Storage Blob Data Reader</code> is a real role name.</li>
+        <li><strong><code>tflint</code></strong> — no lint rule is violated. Both role names are legitimate.</li>
+        <li><strong>Checkov</strong> — the change makes permissions <em>narrower</em>. Security scanners flag over-permission, never under-permission. From a security standpoint this change is an improvement.</li>
+        <li><strong><code>terraform test</code></strong> — unless someone wrote an assertion on the specific role granted per layer, there is nothing to fail. Tests assert what you thought to assert.</li>
+        <li><strong>Plan-time policy</strong> — same: a policy denying over-broad roles has no opinion on roles that are too narrow.</li>
+      </ul>
+      <p>
+        <strong>The root cause is that this is a business-logic error, not a security or syntax error.</strong>
+        Downgrading Databricks to read-only on the curated layers is a legitimate-looking, secure-looking change
+        that breaks the platform's actual function.
+      </p>
+      <p><strong>What would have caught it:</strong></p>
+      <ol>
+        <li>
+          <strong>A test asserting intended behaviour, not just security posture.</strong> This is the real
+          answer:
+          <div class="code is-hcl" style="margin-top:10px">
+            <div class="code-head"><span class="fname">the missing assertion</span></div>
+<pre><code class="language-hcl">run "databricks_can_write_curated_layers" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for layer in ["bronze", "silver", "gold"] :
+      azurerm_role_assignment.databricks_layers[layer].role_definition_name == "Storage Blob Data Contributor"
+    ])
+    error_message = "Databricks must retain write access to bronze, silver and gold; raw is read-only by design."
+  }
+}</code></pre>
+          </div>
+        </li>
+        <li><strong>A human reviewer who understands the platform.</strong> The plan would have shown four role assignments being replaced — obvious to anyone who knows Databricks writes to silver.</li>
+        <li><strong>A smoke test after apply.</strong> A trivial job writing a file to silver and reading it back, run post-deploy, fails in seconds and can trigger a rollback.</li>
+      </ol>
+      <div class="callout callout-important" style="margin-top:16px;margin-bottom:0">
+        <div class="callout-title">The general lesson</div>
+        <p style="margin-bottom:0">
+          Automated tools verify <em>properties you thought to state</em>. They cannot verify intent. Tests
+          should assert what the platform is <strong>supposed to do</strong> — “Databricks can write silver” —
+          not only what it must not do. And no amount of tooling removes the need for a reviewer who understands
+          the system.
+        </p>
+      </div>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>How do you test Terraform code?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        In layers, cheapest first. <code>fmt</code> and <code>validate</code> for formatting and schema.
+        <code>tflint</code> with the Azure ruleset for provider-aware lint and unpinned module sources. Security
+        scanning with Checkov or Trivy — ideally against the plan JSON rather than raw HCL, so variables and
+        module inputs are resolved. Native <code>terraform test</code> in plan mode for module logic, which is
+        fast and free, plus mocked providers for apply-mode assertions with no cloud access. Apply-mode
+        integration tests against a sandbox subscription on a schedule rather than every commit. And policy as
+        code on the plan to block bad changes before they exist.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What can <code>terraform validate</code> not catch?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Anything requiring Azure, because it makes no network calls. A globally-taken storage account name,
+        insufficient RBAC on the deployment principal, regional quota, an Azure Policy that denies the
+        deployment, an overlapping subnet CIDR, or cross-argument rules the provider only enforces at apply time.
+        It proves the configuration is well-formed; only <code>plan</code> proves it is achievable, and only
+        <code>apply</code> proves it works.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is policy as code, and where should it run?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Encoding organisational rules as executable checks rather than documentation. It runs in two places, and
+        you want both. Before apply, against the plan JSON — with OPA/Conftest or Sentinel — which gives fast,
+        precise feedback and can block a change before it exists, including rules like “this plan must not
+        destroy anything”. And in the cloud, with Azure Policy, which catches everything including portal changes
+        and other teams' tooling, but reports failures late and with poor error messages. Plan-time policy is for
+        developer experience; Azure Policy is the actual enforcement boundary.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why scan the plan rather than the HCL?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because static analysis cannot resolve variables, module inputs or computed values. A line like
+        <code>public_network_access_enabled = var.allow_public</code> is unknowable in the source — the scanner
+        either guesses or skips it, producing both false positives and missed findings. In the plan JSON that
+        value is a concrete boolean for the specific environment being deployed, along with the exact set of
+        resources that will change. The trade-off is that producing a plan requires credentials and state access,
+        so it happens later in the pipeline.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Are pre-commit hooks enough?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        No. They are bypassable with <code>git commit --no-verify</code> and a new joiner will not have installed
+        them, so they are a developer convenience for fast feedback rather than a control. Every check in the
+        hooks must also run in CI where it cannot be skipped. Running them only locally is a common mistake
+        because it feels like coverage.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What can no tool catch?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Whether the architecture is right, and whether a change matches intent. A configuration granting the
+        wrong team access to the wrong data is syntactically valid, schema-valid, lint-clean and often
+        <em>more</em> secure by a scanner's measure. Tools verify properties someone thought to state, which is
+        why tests should assert what the platform is supposed to do — “Databricks can write to silver” — and not
+        only what it must not do. And it is why human code review, by someone who understands the system, is not
+        optional.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Run cheap checks on every commit; expensive ones on a schedule. The order matters more than the tools.</li>
+  <li>Policy on the plan JSON is the highest-value single addition — it sees resolved values and actual changes.</li>
+  <li><code>terraform test</code> in plan mode is fast and free. Mocked providers extend that to apply-mode assertions.</li>
+  <li>Security scanners flag over-permission, never under-permission. Test intent, not only posture.</li>
+  <li>Pre-commit hooks are convenience; CI is enforcement. Run everything in both.</li>
+  <li>No tool reviews architecture. That is what a human reviewer is for.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

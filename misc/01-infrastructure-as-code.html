@@ -1,0 +1,1066 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · Infrastructure as Code &amp; Terraform's architecture — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="01">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-beginner">Beginner</span>
+    <span>Part 1</span><span>·</span><span>~45 min</span><span>·</span><span>No prerequisites</span>
+  </div>
+  <h1>Infrastructure as Code &amp; Terraform's architecture</h1>
+  <p class="lede">
+    Before any syntax: what problem Terraform solves, what it actually <em>is</em> (four separate things people
+    all call “Terraform”), and how it compares to the alternatives you will be asked about — Bicep, Ansible
+    and Pulumi.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain declarative infrastructure in terms of <em>desired state reconciliation</em>, not “config files”</li>
+      <li>Distinguish the Terraform <strong>language</strong>, <strong>CLI</strong>, <strong>provider</strong> and <strong>state</strong> — and say which one a given error comes from</li>
+      <li>Draw the path from a <code>.tf</code> file to a real Azure resource</li>
+      <li>Justify choosing Terraform over Bicep, Ansible or Pulumi in an interview — and say when you would not</li>
+      <li>Name the five core configuration constructs and what each is for</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Concepts only</span>
+      <span class="pill">No Azure subscription needed</span>
+      <span class="pill">Terraform 1.16 · azurerm 5.x</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="the-problem">The problem, in data engineering terms</h2>
+
+<p>
+  You have built a data platform in the Azure portal. It works. It contains, roughly:
+  a resource group, an ADLS Gen2 storage account with four containers, a Key Vault holding six secrets, a
+  Databricks workspace injected into a VNet with three subnets, two network security groups, four private
+  endpoints, four private DNS zones with their virtual network links, a function app with its own storage
+  account and service plan, and eleven role assignments gluing those identities to those resources.
+</p>
+
+<p>Now answer these questions:</p>
+
+<ul>
+  <li>Reproduce it exactly in a second subscription for staging. How long, and how confident are you that it is identical?</li>
+  <li>Somebody changed a firewall rule on the storage account three weeks ago. Who, when, and why?</li>
+  <li>A role assignment is missing in prod but present in dev. Which one?</li>
+  <li>Delete the whole thing cleanly, in dependency order, leaving nothing orphaned.</li>
+  <li>Onboard a new engineer. Where is the platform <em>described</em>?</li>
+</ul>
+
+<p>
+  Click-ops answers all of these badly. Infrastructure as Code answers all of them with the same primitive:
+  <strong>the infrastructure has a source-controlled definition, and a tool makes reality match that definition.</strong>
+  Reproduction is <code>apply</code> in another subscription. History is <code>git log</code>. Drift is a diff.
+  Teardown is <code>destroy</code>. Onboarding is “read the repo”.
+</p>
+
+<div class="callout callout-note">
+  <div class="callout-title">The real payoff</div>
+  <p style="margin-bottom:0">
+    The value of IaC is not that you type instead of click. It is that infrastructure becomes reviewable.
+    A change to production networking becomes a pull request that a colleague can read, question and approve
+    <em>before</em> it exists — which is the only control that actually scales.
+  </p>
+</div>
+
+<h2 id="declarative-vs-imperative">Declarative vs imperative</h2>
+
+<p>
+  This distinction is the one interviewers ask about and the one most people explain shallowly. The shallow
+  version is “imperative says how, declarative says what”. True, but it misses the mechanism.
+</p>
+
+<p>An <strong>imperative</strong> script describes a sequence of actions:</p>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">imperative.sh</span></div>
+<pre><code class="language-bash">az group create --name rg-analytics-dev-weu-01 --location westeurope
+az storage account create \
+  --name stanalyticsdevweu01 \
+  --resource-group rg-analytics-dev-weu-01 \
+  --sku Standard_LRS \
+  --enable-hierarchical-namespace true</code></pre>
+</div>
+
+<p>
+  Run it once: you get a resource group and a storage account. Run it <em>twice</em>: the second run errors,
+  because the resource group already exists. The script encodes actions, and actions are not repeatable.
+  To make it repeatable you must write the checks yourself — “does it exist? if not, create; if yes, does it
+  match? if not, update which properties?” — and that conditional logic is the part that grows without limit.
+</p>
+
+<p>A <strong>declarative</strong> configuration describes an end state:</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">declarative.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_resource_group" "analytics" {
+  name     = "rg-analytics-dev-weu-01"
+  location = "westeurope"
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                     = "stanalyticsdevweu01"
+  resource_group_name      = azurerm_resource_group.analytics.name
+  location                 = azurerm_resource_group.analytics.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  is_hns_enabled           = true
+}</code></pre>
+</div>
+
+<p>
+  This says nothing about creating anything. It says: <em>when Terraform is finished, a resource group with
+  this name and a storage account with these properties should exist.</em> Terraform is responsible for
+  working out the actions.
+</p>
+
+<h3 id="reconciliation">The mechanism: three-way reconciliation</h3>
+
+<p>
+  Here is the part that matters. Terraform does not compare two things, it compares <strong>three</strong>:
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    CFG["<b>Configuration</b><br/>your .tf files<br/><i>what you want</i>"]
+    ST["<b>State</b><br/>terraform.tfstate<br/><i>what Terraform made</i>"]
+    REAL["<b>Reality</b><br/>Azure right now<br/><i>what actually exists</i>"]
+
+    ST -->|"refresh:<br/>read each resource<br/>via the Azure API"| REAL
+    REAL -->|"updates"| ST
+    CFG -->|"compare"| DIFF{{"Plan"}}
+    ST -->|"compare"| DIFF
+    DIFF --> ACT["create / update /<br/>replace / destroy"]
+    ACT --> REAL
+
+    style CFG fill:#efedfd,stroke:#5c4ee5
+    style ST fill:#e3f5ee,stroke:#1a7f5a
+    style REAL fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>
+    Terraform's core loop. State is what makes the comparison possible — remove it and Terraform has no idea
+    which Azure resources are “its”.
+  </figcaption>
+</figure>
+
+<p>The three inputs give three different meanings to a difference:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Difference between…</th><th>Means</th><th>Terraform's response</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Configuration and state</td>
+      <td>You changed the code</td>
+      <td>Plan an update, replacement, creation or destruction</td>
+    </tr>
+    <tr>
+      <td>State and reality</td>
+      <td><strong>Drift</strong> — somebody changed Azure outside Terraform</td>
+      <td>Refresh state, then plan to push reality back toward the configuration</td>
+    </tr>
+    <tr>
+      <td>Configuration and reality, with nothing in state</td>
+      <td>The resource exists but Terraform does not know about it</td>
+      <td>Plan to <em>create</em> it — and fail with “already exists”. This is the classic brownfield problem, solved by <code>import</code> (Lesson 16).</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  Because the configuration describes an end state rather than actions, applying it twice with no code change
+  produces no change at all. That property is <strong>idempotence</strong>, and it is what makes it safe to run
+  the same pipeline on every merge.
+</p>
+
+<div class="callout callout-important">
+  <div class="callout-title">Mental model to carry through the whole course</div>
+  <p style="margin-bottom:0">
+    Terraform is a <strong>reconciliation engine over a dependency graph</strong>. Your <code>.tf</code> files
+    are not a program that runs top to bottom — they are a set of nodes and the references between them are
+    the edges. Terraform builds the graph, walks it in dependency order, and calls provider APIs to close the
+    gap between state and configuration. Every confusing Terraform behaviour you will hit makes sense once you
+    ask “what does the graph look like, and what is in state?”
+  </p>
+</div>
+
+<h2 id="what-terraform-is">What “Terraform” actually is — four separate things</h2>
+
+<p>
+  People say “Terraform” for four different components. Being precise about which one you mean is genuinely
+  useful, because it tells you where a problem lives and which documentation to read.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph YOU["What you write"]
+        HCL["<b>1 · Terraform language (HCL)</b><br/>.tf files — declarative configuration<br/>Owned by HashiCorp"]
+    end
+
+    subgraph CORE["What runs it"]
+        CLI["<b>2 · Terraform CLI / core</b><br/>parses config, builds the dependency graph,<br/>computes the diff, manages state<br/><i>knows nothing about Azure</i>"]
+    end
+
+    subgraph PLUG["What talks to the cloud"]
+        PROV["<b>3 · Provider plugin (azurerm)</b><br/>a separate binary downloaded by 'terraform init'<br/>maps resource types to REST calls<br/><i>knows nothing about your config syntax</i>"]
+    end
+
+    subgraph REMOTE["What is remembered"]
+        STATE["<b>4 · State</b><br/>JSON mapping config addresses to real resource IDs<br/>stored locally or in a backend"]
+    end
+
+    HCL --> CLI
+    CLI <-->|"gRPC over<br/>a local socket"| PROV
+    CLI <--> STATE
+    PROV -->|"HTTPS + OAuth token"| ARM["Azure Resource Manager API<br/>management.azure.com"]
+    ARM --> RES["Real Azure resources"]
+
+    style HCL fill:#efedfd,stroke:#5c4ee5
+    style CLI fill:#efedfd,stroke:#5c4ee5
+    style PROV fill:#e6f2fb,stroke:#0078d4
+    style STATE fill:#e3f5ee,stroke:#1a7f5a
+    style ARM fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>The four components, and the boundary each error message belongs to.</figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Component</th><th>What it is</th><th>An error from it looks like</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Language</strong></td>
+      <td>HCL — the syntax and semantics of <code>.tf</code> files. Blocks, expressions, functions, the type system.</td>
+      <td><code>Invalid expression</code>, <code>Unsupported argument</code>, <code>Invalid function argument</code></td>
+    </tr>
+    <tr>
+      <td><strong>CLI / core</strong></td>
+      <td>The <code>terraform</code> binary. Graph construction, diffing, state management, concurrency. Cloud-agnostic.</td>
+      <td><code>Cycle: ...</code>, <code>Error acquiring the state lock</code>, <code>Error: Invalid count argument</code></td>
+    </tr>
+    <tr>
+      <td><strong>Provider</strong></td>
+      <td>A plugin binary (here <code>terraform-provider-azurerm</code>). Defines resource types and translates them into API calls.</td>
+      <td><code>Error: creating Storage Account: unexpected status 409</code>, <code>Error: Insufficient features blocks</code></td>
+    </tr>
+    <tr>
+      <td><strong>State</strong></td>
+      <td>A JSON document recording which real resource each configuration address corresponds to, plus a cached copy of its attributes.</td>
+      <td><code>Resource already managed by Terraform</code>, <code>Instance ... does not exist in state</code></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Why this split exists at all</div>
+  <p style="margin-bottom:0">
+    HashiCorp does not maintain most providers. The plugin boundary means AWS, Azure, Databricks, Snowflake,
+    Datadog, GitHub and several thousand others can each ship their own binary on their own release schedule,
+    while Terraform core stays the same. It is also why providers version independently of the CLI — and why
+    you pin them separately, as Lesson 04 covers.
+  </p>
+</div>
+
+<h2 id="core-constructs">The five core constructs</h2>
+
+<p>
+  You will meet all of these properly over the next few lessons. Here they are together so the vocabulary is
+  in place — this is the whole configuration language in one table.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Construct</th><th>Purpose</th><th>Goes in state?</th><th>Azure example</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>resource</code></td>
+      <td>Something Terraform <strong>creates and owns</strong>. The only construct that changes your cloud.</td>
+      <td>Yes</td>
+      <td>An ADLS Gen2 storage account this configuration is responsible for</td>
+    </tr>
+    <tr>
+      <td><code>data</code></td>
+      <td>Something Terraform <strong>reads but does not own</strong>. Read-only lookup at plan time.</td>
+      <td>Yes (cached), but never created or destroyed</td>
+      <td>A pre-existing VNet managed by the platform team, or your own tenant ID</td>
+    </tr>
+    <tr>
+      <td><code>variable</code></td>
+      <td>An <strong>input</strong> to the configuration. Set per environment.</td>
+      <td>No (but values can leak into state via the resources that use them)</td>
+      <td><code>environment = "prod"</code>, <code>location = "westeurope"</code></td>
+    </tr>
+    <tr>
+      <td><code>output</code></td>
+      <td>A <strong>return value</strong> — exposed to the CLI, to CI, and to a parent module.</td>
+      <td>Yes</td>
+      <td>The storage account ID that the Databricks module needs</td>
+    </tr>
+    <tr>
+      <td><code>locals</code></td>
+      <td>A named intermediate <strong>expression</strong>. Not an input, not an output — just naming a value so you don't repeat it.</td>
+      <td>No</td>
+      <td>A computed name prefix, or a merged tag map</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  Two more block types complete the picture: <code>provider</code> (configure a plugin — Lesson 04) and
+  <code>module</code> (call another directory of configuration — Lesson 14). Plus <code>terraform</code>
+  itself, the settings block where you pin versions and declare a backend.
+</p>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · resource vs data source</div>
+  <p>
+    A very common beginner error is using a <code>resource</code> block for something that already exists and
+    is owned by another team. If you write <code>resource "azurerm_resource_group" "shared"</code> for a
+    resource group the platform team created, Terraform will try to create it, fail on the name conflict —
+    and worse, if you <em>do</em> get it into state and later remove the block, Terraform will happily
+    <strong>destroy someone else's resource group</strong>.
+  </p>
+  <p style="margin-bottom:0">
+    Rule: <code>resource</code> means “this configuration owns the lifecycle of this thing”.
+    <code>data</code> means “this thing exists; tell me about it”.
+  </p>
+</div>
+
+<h2 id="a-first-look">A first look at a complete configuration</h2>
+
+<p>
+  You are not expected to understand every line yet — Lessons 03 to 05 build this up properly. Read it for
+  shape, and notice that nothing in it describes an <em>order</em> of operations.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">main.tf — a minimal but complete configuration</span></div>
+<pre><code class="language-hcl"># Settings block: which Terraform version, which providers, where state lives.
+terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~&gt; 5.0"
+    }
+  }
+}
+
+# Provider block: configure the azurerm plugin.
+provider "azurerm" {
+  features {}
+  subscription_id = var.subscription_id
+}
+
+# An input.
+variable "subscription_id" {
+  type        = string
+  description = "Target Azure subscription ID."
+}
+
+# A named intermediate value.
+locals {
+  workload = "analytics"
+  env      = "dev"
+  tags = {
+    workload    = local.workload
+    environment = local.env
+    managed_by  = "terraform"
+  }
+}
+
+# A data source: read something that already exists.
+data "azurerm_client_config" "current" {}
+
+# Resources: things this configuration owns.
+resource "azurerm_resource_group" "analytics" {
+  name     = "rg-${local.workload}-${local.env}-weu-01"
+  location = "westeurope"
+  tags     = local.tags
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                     = "st${local.workload}${local.env}weu01"
+  resource_group_name      = azurerm_resource_group.analytics.name
+  location                 = azurerm_resource_group.analytics.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  is_hns_enabled           = true       # this is what makes it ADLS Gen2
+  tags                     = local.tags
+}
+
+# An output: a value other configurations or humans need.
+output "lake_id" {
+  description = "Resource ID of the data lake storage account."
+  value       = azurerm_storage_account.lake.id
+}</code></pre>
+</div>
+
+<h3 id="what-the-graph-looks-like">What Terraform makes of that</h3>
+
+<p>
+  Terraform reads the whole directory, notices that <code>azurerm_storage_account.lake</code> mentions
+  <code>azurerm_resource_group.analytics.name</code>, and derives an edge. It never needed to be told the
+  order:
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    V["var.subscription_id"] --> P["provider.azurerm"]
+    L["local.tags"] --> RG["azurerm_resource_group.analytics"]
+    L --> SA["azurerm_storage_account.lake"]
+    P --> RG
+    P --> SA
+    RG -->|"referenced via<br/>.name and .location"| SA
+    SA --> O["output.lake_id"]
+    D["data.azurerm_client_config.current"]
+
+    style RG fill:#e6f2fb,stroke:#0078d4
+    style SA fill:#e6f2fb,stroke:#0078d4
+    style O fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>
+    The dependency graph derived from the file above. The resource group must exist before the storage
+    account, because the storage account's arguments cannot be computed until it does.
+  </figcaption>
+</figure>
+
+<p>
+  This is also why Terraform can parallelise: <code>data.azurerm_client_config.current</code> has no edges to
+  the others, so it is resolved concurrently. By default Terraform walks the graph with ten concurrent
+  operations.
+</p>
+
+<h2 id="comparisons">Terraform vs the alternatives</h2>
+
+<p>
+  You will be asked to justify this choice. Answering “Terraform is multi-cloud” is a weak answer — most
+  companies are not meaningfully multi-cloud, and interviewers know it. Here are the honest comparisons.
+</p>
+
+<h3 id="vs-bicep">Terraform vs ARM templates and Bicep</h3>
+
+<p>
+  <strong>ARM templates</strong> are Azure's native JSON deployment format. <strong>Bicep</strong> is a
+  friendlier language that transpiles to ARM. Both are executed by Azure Resource Manager itself.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Terraform</th><th>Bicep / ARM</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Who executes the deployment</td>
+      <td>The Terraform CLI on your machine or runner, calling ARM resource by resource</td>
+      <td>ARM itself — you submit a template and Azure orchestrates it</td>
+    </tr>
+    <tr>
+      <td>State</td>
+      <td>Explicit state file you must store and protect</td>
+      <td><strong>No state file.</strong> ARM reads live resource state at deployment time</td>
+    </tr>
+    <tr>
+      <td>Preview of changes</td>
+      <td><code>terraform plan</code> — mature, precise, shows replacements</td>
+      <td><code>what-if</code> — good, but historically less reliable on some resource types</td>
+    </tr>
+    <tr>
+      <td>Deleting resources</td>
+      <td>Remove the block → Terraform destroys it</td>
+      <td>Removing from a template does nothing unless you use <em>complete</em> mode deployment, which is blunt and risky</td>
+    </tr>
+    <tr>
+      <td>New Azure features</td>
+      <td>Lag of days to months while the provider adds support</td>
+      <td>Available immediately — it is the native API surface</td>
+    </tr>
+    <tr>
+      <td>Non-Azure resources</td>
+      <td>Same tool and same graph for Databricks objects, Snowflake, GitHub, Datadog…</td>
+      <td>Azure only</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">The honest data-engineering answer</div>
+  <p style="margin-bottom:0">
+    For a pure-Azure data platform, the strongest argument for Terraform is <strong>not</strong> multi-cloud —
+    it is that a data platform is never only Azure resources. You also need Databricks workspace objects
+    (clusters, jobs, Unity Catalog grants), maybe Snowflake, maybe Kafka topics, maybe GitHub repos and
+    service connections. Terraform expresses all of those in <em>one dependency graph</em>, so “create the
+    storage account, then grant the access connector on it, then register it as a Unity Catalog external
+    location” is a single plan. Bicep stops at the Azure boundary and you glue the rest together with scripts.
+  </p>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">When Bicep is the better choice</div>
+  <p style="margin-bottom:0">
+    If your team is Azure-only, already fluent in ARM, deploys nothing outside Azure, and does not want to
+    operate a state backend, Bicep is a perfectly sound choice — and it will support brand-new Azure features
+    before <code>azurerm</code> does. Saying this in an interview signals judgement rather than tool loyalty.
+  </p>
+</div>
+
+<h3 id="vs-ansible">Terraform vs Ansible</h3>
+
+<p>
+  These are often presented as competitors. They mostly are not — they operate at different layers.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph PROV["Provisioning — Terraform's layer"]
+        direction LR
+        A1["Create the VNet"] --> A2["Create the storage account"] --> A3["Create the VM / workspace"]
+    end
+    subgraph CONF["Configuration — Ansible's layer"]
+        direction LR
+        B1["Install packages"] --> B2["Write config files"] --> B3["Start services"]
+    end
+    PROV --> CONF
+
+    style PROV fill:#efedfd,stroke:#5c4ee5
+    style CONF fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>The conventional split: Terraform builds the boxes, Ansible configures what runs inside them.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Terraform</strong> is declarative and stateful. It knows what it created and can destroy it precisely.</li>
+  <li><strong>Ansible</strong> is procedural with idempotent modules, and <strong>stateless</strong>. It describes tasks to run against hosts. It has Azure modules and <em>can</em> create a storage account, but it has no record of what it made, so it cannot tell you “these 40 resources are mine” or reliably tear them down.</li>
+</ul>
+
+<p>
+  For a modern Azure data platform the Ansible layer is often absent entirely — Databricks compute is managed
+  by Databricks, Functions are PaaS, and there are no VMs to configure. In that world you use Terraform and
+  stop.
+</p>
+
+<h3 id="vs-pulumi">Terraform vs Pulumi</h3>
+
+<p>
+  Pulumi lets you define infrastructure in TypeScript, Python, Go or C#. It has a state file, a preview step
+  and a resource graph, so the model is genuinely similar — many Pulumi providers are generated from the
+  Terraform ones.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Terraform</th><th>Pulumi</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Language</td>
+      <td>HCL — a purpose-built configuration DSL</td>
+      <td>General-purpose languages with a real type system, IDE support, unit-testing frameworks</td>
+    </tr>
+    <tr>
+      <td>Ceiling on complexity</td>
+      <td>Deliberately low. No arbitrary loops, no I/O, no classes. HCL pushes back when configuration gets clever.</td>
+      <td>Unbounded. You can write a class hierarchy that generates your infrastructure — for better and for worse.</td>
+    </tr>
+    <tr>
+      <td>Readability by non-authors</td>
+      <td>High. There is one obvious way to express a resource; a plan is easy to correlate to code.</td>
+      <td>Depends entirely on discipline. Abstractions can make it hard to see what will actually be created.</td>
+    </tr>
+    <tr>
+      <td>Hiring and ecosystem</td>
+      <td>Very large. Most Azure/data engineering job specs say “Terraform”.</td>
+      <td>Smaller, though growing.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  HCL's limitations are the feature. Infrastructure code is read far more often than it is written, usually
+  under time pressure during an incident, and often by someone who did not write it.
+</p>
+
+<h2 id="where-terraform-struggles">Where Terraform is a poor fit</h2>
+
+<p>
+  Rule 4 of good engineering judgement: do not pretend the tool manages everything equally well. Terraform is
+  weakest at:
+</p>
+
+<ul>
+  <li>
+    <strong>Data-plane operations.</strong> Terraform is a control-plane tool. Creating a storage container is
+    natural; uploading a thousand files into it, or running a Spark job, is not. Note that some things straddle
+    this line awkwardly — Lesson 06 covers why creating a container can fail with a firewall error even though
+    creating the storage account succeeded.
+  </li>
+  <li>
+    <strong>Anything that changes on its own.</strong> Autoscaling node counts, tokens that rotate, tags applied
+    by Azure Policy. Terraform will see them as drift on every plan unless you use <code>ignore_changes</code>
+    (Lesson 15).
+  </li>
+  <li>
+    <strong>Imperative sequences with side effects.</strong> Database migrations, one-off backfills, “run this,
+    check the output, then run that”. Terraform has provisioners for this and the documentation itself calls
+    them a last resort.
+  </li>
+  <li>
+    <strong>Brand-new Azure features.</strong> The provider must add support first. Escape hatches exist
+    (the <code>azapi</code> provider talks to the raw ARM API), but they are escape hatches.
+  </li>
+  <li>
+    <strong>Secret material.</strong> Terraform can create a Key Vault secret, but the value passes through and
+    is stored in state in plaintext. Lesson 09 is entirely about this problem.
+  </li>
+</ul>
+
+<h2 id="mistakes">Common mistakes at this stage</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Mistake 1 · “Terraform files run top to bottom”</div>
+  <p style="margin-bottom:0">
+    They do not. Order within a file is irrelevant; ordering comes only from references. Splitting a
+    configuration across <code>main.tf</code>, <code>variables.tf</code> and <code>outputs.tf</code> is purely
+    a human convention — Terraform concatenates every <code>.tf</code> file in the directory and treats them
+    as one configuration.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Mistake 2 · Treating state as a cache you can delete</div>
+  <p style="margin-bottom:0">
+    State is not a cache. It is the only record connecting your code to real resource IDs. Delete it and
+    Terraform believes it has created nothing, so the next <code>apply</code> tries to create everything again —
+    and where names are globally unique (storage accounts, key vaults) it will fail halfway, leaving you with a
+    partial deployment and no state. Lesson 10.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Mistake 3 · Editing in the portal “just this once”</div>
+  <p style="margin-bottom:0">
+    A portal change that Terraform does not know about is drift. Depending on the resource, the next apply
+    will silently revert it — or, if the property forces replacement, <em>destroy and recreate</em> the resource.
+    Doing this to a storage account with data in it is how people learn this lesson permanently.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Classify the failure</span>
+  </div>
+  <div class="exercise-body">
+    <p>For each error, say which of the four components it comes from — language, CLI/core, provider, or state:</p>
+    <ol>
+      <li><code>Error: Cycle: azurerm_subnet.a, azurerm_network_security_group.b</code></li>
+      <li><code>Error: creating Storage Account: StorageAccountAlreadyTaken</code></li>
+      <li><code>Error: Unsupported argument — An argument named "enable_rbac_authorization" is not expected here.</code></li>
+      <li><code>Error: Resource already managed by Terraform</code></li>
+      <li><code>Error: Invalid function argument — call to function "cidrsubnet" failed</code></li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong>CLI / core.</strong> Cycle detection happens in graph construction, before any provider is called. Azure knows nothing about it.</li>
+        <li><strong>Provider.</strong> The provider made a real API call and Azure rejected it — storage account names are globally unique across all of Azure.</li>
+        <li><strong>Language + provider schema.</strong> The parser checks your arguments against the schema the provider advertises. This specific one is the v4→v5 rename: it is now <code>rbac_authorization_enabled</code>.</li>
+        <li><strong>State.</strong> Nothing was sent to Azure; core found an existing entry at that address.</li>
+        <li><strong>Language.</strong> A built-in function evaluated during expression evaluation, entirely inside core.</li>
+      </ol>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Three-way diff</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      A storage account exists in Azure. It is in Terraform state. Its configuration says
+      <code>account_replication_type = "LRS"</code>, state records <code>"LRS"</code>, but a colleague changed
+      it to <code>"GRS"</code> in the portal this morning.
+    </p>
+    <p>What will <code>terraform plan</code> show, and what will <code>terraform apply</code> do?</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        During the refresh phase Terraform reads the real resource and updates its in-memory state to
+        <code>"GRS"</code>. It then compares that against the configuration, which still says <code>"LRS"</code>,
+        and reports an in-place update:
+      </p>
+      <div class="code is-out">
+        <div class="code-head"><span class="fname">plan output</span></div>
+<pre><code class="language-bash">  ~ resource "azurerm_storage_account" "lake" {
+      ~ account_replication_type = "GRS" -&gt; "LRS"
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        <code>apply</code> reverts the colleague's change. This is the intended behaviour — the configuration is
+        the source of truth — but it is also why manual portal edits are dangerous: nobody is warned unless
+        somebody looks at a plan.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Choose the construct</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      Your team owns a data lake. The VNet it must connect to is owned by the central platform team and is
+      created by a different Terraform repository. Your configuration needs the VNet's ID to place a private
+      endpoint's subnet reference.
+    </p>
+    <p>
+      Which construct do you use for the VNet, and what would go wrong with the other one? Write the block
+      type and explain the failure mode in two sentences.
+    </p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        Use a <strong>data source</strong>: <code>data "azurerm_virtual_network" "platform" { ... }</code>.
+        You need to read the VNet, not own it.
+      </p>
+      <p>
+        If you used <code>resource "azurerm_virtual_network"</code> instead, the first apply would fail because
+        the VNet already exists. And if you resolved that by importing it into your state, you would now have
+        <em>two</em> Terraform configurations that each believe they own the same VNet — their applies would
+        fight, and deleting the block from yours would destroy the platform team's network.
+      </p>
+      <p style="margin-bottom:0">
+        A third option, better still at scale, is a <code>terraform_remote_state</code> data source or a
+        published output — covered in Lesson 10.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Translate the imperative script into HCL</span>
+  </div>
+  <div class="exercise-body">
+    <p>A colleague stands up their dev lake with this shell script. Rewrite it as a complete, runnable Terraform configuration.</p><div class="code is-sh">
+  <div class="code-head"><span class="fname">setup.sh</span></div>
+<pre><code class="language-bash">az group create --name rg-analytics-dev-weu-01 --location westeurope
+
+az storage account create \
+  --name stanalyticsdevweu01 \
+  --resource-group rg-analytics-dev-weu-01 \
+  --location westeurope \
+  --sku Standard_LRS --kind StorageV2 \
+  --enable-hierarchical-namespace true \
+  --min-tls-version TLS1_2
+
+az storage container create --name raw \
+  --account-name stanalyticsdevweu01 --auth-mode login</code></pre>
+</div>    <p style="margin-bottom:0">Two constraints: no literal string may appear twice, and the result must be safely re-runnable.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">main.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~&gt; 5.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+
+locals {
+  suffix   = "analytics-dev-weu-01"
+  location = "westeurope"
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = "rg-${local.suffix}"
+  location = local.location
+}
+
+resource "azurerm_storage_account" "lake" {
+  name = "stanalyticsdevweu01"
+
+  # References, not repeated literals. These ARE the dependency edges.
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = "LRS"
+  is_hns_enabled           = true
+  min_tls_version          = "TLS1_2"
+}
+
+resource "azurerm_storage_container" "raw" {
+  name               = "raw"
+  storage_account_id = azurerm_storage_account.lake.id
+}</code></pre>
+</div>    <p>Three things the translation buys you that the script did not have. It is <strong>idempotent</strong> &mdash; running it twice is a no-op rather than an error. It has a real <strong>dependency graph</strong>, because the storage account references the resource group instead of repeating its name, so Terraform works out the ordering itself. And it is <strong>reversible</strong>: <code>terraform destroy</code> removes all three in the correct order, which the script has no equivalent of.</p>    <p style="margin-bottom:0">Incidentally, <code>--auth-mode login</code> on the last line is the control-plane/data-plane split showing through &mdash; creating a container is a data-plane call needing different authentication from the two commands above it. Lesson 06.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Model a resource another team owns</span>
+  </div>
+  <div class="exercise-body">
+    <p>Extend that configuration so the storage account restricts access to a subnet the platform team owns: <code>snet-shared-dev-weu-01</code>, in VNet <code>vnet-shared-dev-weu-01</code>, resource group <code>rg-network-dev-weu-01</code>.</p>    <p style="margin-bottom:0">You must not be able to modify or destroy their subnet. Write the blocks, then say in one sentence what would go wrong with the alternative.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">network.tf</span></div>
+<pre><code class="language-hcl"># A DATA source: read it, never own it. Deleting this block from the
+# configuration cannot delete the platform team's subnet.
+data "azurerm_subnet" "shared" {
+  name                 = "snet-shared-dev-weu-01"
+  virtual_network_name = "vnet-shared-dev-weu-01"
+  resource_group_name  = "rg-network-dev-weu-01"
+}
+
+resource "azurerm_storage_account" "lake" {
+  # ... as before ...
+
+  network_rules {
+    default_action             = "Deny"
+    bypass                     = ["AzureServices"]
+    virtual_network_subnet_ids = [data.azurerm_subnet.shared.id]
+  }
+}</code></pre>
+</div>    <p><strong>What goes wrong with a <code>resource</code> block instead:</strong> the first apply fails because the subnet already exists &mdash; and if you resolved that by importing it, your configuration would now claim ownership of another team's subnet, so removing the block later would <em>destroy</em> it and break every workload attached to it.</p>    <p style="margin-bottom:0">Worth noticing: adding <code>default_action = "Deny"</code> in the same apply that creates a container is exactly what produces the 403 in Lesson 06 &mdash; your own runner is now outside the firewall it just built.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Why does this not do what its author expected?</span>
+  </div>
+  <div class="exercise-body">
+    <p>An engineer writes this and complains that Terraform “ignores the order”:</p>
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                     = "stanalyticsdevweu01"
+  resource_group_name      = "rg-analytics-dev-weu-01"
+  location                 = "westeurope"
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = "rg-analytics-dev-weu-01"
+  location = "westeurope"
+}</code></pre>
+    </div>
+    <p>
+      They report: <em>“Terraform tried to create the storage account first and failed with</em>
+      <code>Resource group 'rg-analytics-dev-weu-01' could not be found</code><em>. But the resource group is
+      right there in the file.”</em>
+    </p>
+    <p>Explain the cause and give the one-line fix.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <code>resource_group_name</code> is a <strong>hardcoded string literal</strong>, not a reference. Terraform
+        builds its dependency graph from references between addresses. Because nothing in the storage account
+        block mentions <code>azurerm_resource_group.analytics</code>, the graph has two independent nodes and
+        Terraform is free to create them in parallel — which it does, ten at a time.
+      </p>
+      <p>The string happening to match the resource group's name is invisible to Terraform. The fix:</p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">fixed.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                     = "stanalyticsdevweu01"
+  resource_group_name      = azurerm_resource_group.analytics.name   # reference, not literal
+  location                 = azurerm_resource_group.analytics.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        This is the single most important habit in Terraform: <strong>reference, don't repeat</strong>. Every
+        literal you replace with a reference adds a correct edge to the graph. Lesson 05 covers this as
+        implicit vs explicit dependencies.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is Infrastructure as Code, and what does it actually buy you?</summary>
+    <div class="details-body">
+      <p>
+        Defining infrastructure in machine-readable files kept under version control, with a tool responsible
+        for making the real environment match. The benefits are reproducibility (the same definition deploys to
+        dev, staging and prod), auditability (git history answers “who changed the firewall and why”),
+        reviewability (infrastructure changes go through pull request before they exist), disaster recovery, and
+        drift detection.
+      </p>
+      <p style="margin-bottom:0">
+        The one I would lead with is <strong>reviewability</strong> — it is the benefit that changes how a team
+        works, not just how fast an individual is.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Explain declarative vs imperative infrastructure.</summary>
+    <div class="details-body">
+      <p>
+        Imperative code specifies a sequence of actions; the author owns the ordering and the “does it already
+        exist?” logic, and re-running is generally not safe. Declarative code specifies a desired end state; the
+        engine computes the actions by diffing desired state against current state, which makes it idempotent.
+      </p>
+      <p style="margin-bottom:0">
+        The detail worth adding: Terraform's diff is <strong>three-way</strong> — configuration, state, and real
+        infrastructure. That third input is what lets it distinguish “you changed the code” from “someone changed
+        the cloud”.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Terraform or Bicep for an Azure-only platform?</summary>
+    <div class="details-body">
+      <p>
+        Both are defensible. Bicep is native, needs no state file, and supports new Azure features on day one.
+        Terraform gives a stronger plan/destroy story, and — the argument I would actually make for a data
+        platform — it puts non-Azure resources in the same dependency graph. Databricks Unity Catalog objects,
+        Snowflake, Kafka and GitHub can be provisioned in the same plan as the storage account they depend on.
+      </p>
+      <p style="margin-bottom:0">
+        I would choose Bicep for an Azure-only team that does not want to operate a state backend, and Terraform
+        as soon as the platform crosses a provider boundary or the team already has Terraform skills.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Is Terraform a replacement for Ansible?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        No — different layers. Terraform provisions infrastructure declaratively and keeps state, so it knows
+        exactly what it owns and can destroy it. Ansible configures software on hosts procedurally with
+        idempotent modules and keeps no state. They are commonly used together, though for a PaaS-based Azure
+        data platform there is often no Ansible layer at all, since there are no VMs to configure.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What are the main components of Terraform's architecture?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Four. The <strong>configuration language</strong> (HCL). <strong>Terraform core</strong>, which parses
+        configuration, builds a dependency graph, computes the diff and manages state — and is entirely
+        cloud-agnostic. <strong>Provider plugins</strong>, separate binaries downloaded during <code>init</code>,
+        which translate resource types into API calls and communicate with core over gRPC. And <strong>state</strong>,
+        the JSON record mapping configuration addresses to real resource IDs.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the difference between a resource and a data source?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A <code>resource</code> is something Terraform creates, updates and destroys — it owns the lifecycle. A
+        <code>data</code> source is a read-only lookup of something that already exists, resolved during plan and
+        used to feed values into resources. Data sources never create or destroy anything. Practically: use a data
+        source for anything another team owns, so that removing it from your configuration cannot delete it.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Give an example of something Terraform handles badly.</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Anything with a life of its own or living on the data plane. Autoscaled node counts and rotated tokens
+        show up as drift on every plan. Uploading data, running jobs, or performing ordered operations with side
+        effects fits provisioners badly — HashiCorp themselves call those a last resort. And secrets pass through
+        state in plaintext, so creating a Key Vault secret with a real value in Terraform means that value now
+        lives in your state file.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Terraform reconciles three things: <strong>configuration</strong>, <strong>state</strong> and <strong>reality</strong>. Almost every surprising behaviour is explained by asking which of the three is out of step.</li>
+  <li>“Terraform” means four separable components — language, core, provider, state. Knowing which one an error came from tells you where to look.</li>
+  <li>Order comes from <strong>references</strong>, not from file layout. Hardcoded strings create silent, missing edges.</li>
+  <li><code>resource</code> = you own it. <code>data</code> = you read it. Getting this wrong can destroy another team's infrastructure.</li>
+  <li>Terraform's advantage for a data platform is one graph across Azure <em>and</em> Databricks <em>and</em> everything else — not “multi-cloud”.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 · Your first Azure infrastructure — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="05">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-beginner">Beginner</span>
+    <span>Part 4</span><span>·</span><span>~55 min</span><span>·</span><span>Requires Lesson 04</span>
+  </div>
+  <h1>Your first Azure infrastructure</h1>
+  <p class="lede">
+    Resource group → storage account → container. Three resources, and everything important about Terraform is
+    visible in them: naming rules, resource IDs, the dependency graph, what lands in state, and the difference
+    between a change that updates and a change that destroys.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain what a resource group is and what its <code>location</code> actually controls</li>
+      <li>Apply Azure naming conventions, and handle the resources that cannot follow them</li>
+      <li>Read an Azure resource ID and say what each segment means</li>
+      <li>Trace one resource from HCL → provider → ARM API → Azure → state</li>
+      <li>Distinguish implicit from explicit dependencies, and know why <code>depends_on</code> is a last resort</li>
+      <li>Predict which argument changes force replacement</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Resource groups</span><span class="pill">Resource IDs</span><span class="pill">Dependencies</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="resource-groups">Resource groups</h2>
+
+<p>
+  A resource group is a named container inside a subscription. Three properties matter to you as a Terraform
+  author:
+</p>
+
+<ul>
+  <li><strong>It is a lifecycle boundary.</strong> Deleting the resource group deletes everything inside it, in the right order, without you specifying anything. This is why ephemeral environments are usually one resource group.</li>
+  <li><strong>It is the most common RBAC scope.</strong> “The data engineering team are Contributors on <code>rg-analytics-dev</code>” is the typical unit of permission.</li>
+  <li><strong>Its <code>location</code> is not where its resources live.</strong> This surprises everyone. A resource group in <code>westeurope</code> can hold a storage account in <code>northeurope</code>. The RG's location only determines where <em>its own metadata</em> is stored.</li>
+</ul>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">main.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_resource_group" "analytics" {
+  name     = "rg-analytics-dev-weu-01"
+  location = "westeurope"
+
+  tags = {
+    workload    = "analytics"
+    environment = "dev"
+    managed_by  = "terraform"
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Practical consequence of RG location</div>
+  <p style="margin-bottom:0">
+    In practice you should still put resources in the same region as their resource group — mixing regions
+    within one RG makes the platform harder to reason about and can create cross-region data-transfer charges.
+    But when a service is unavailable in your primary region, it is completely legitimate to place it elsewhere
+    in the same RG. The exception is disaster recovery planning: if the RG's metadata region has an outage, you
+    cannot perform management-plane operations on it, though the resources themselves keep serving traffic.
+  </p>
+</div>
+
+<h3 id="regions">Azure regions</h3>
+
+<p>
+  The <code>location</code> argument accepts either the display name or the internal name, case-insensitively —
+  <code>"West Europe"</code>, <code>"westeurope"</code> and <code>"WestEurope"</code> are all accepted and all
+  normalise to the same thing.
+</p>
+
+<div class="callout callout-important">
+  <div class="callout-title">Pick one form and use it everywhere</div>
+  <p style="margin-bottom:0">
+    Mixing forms across a codebase produces no functional difference but makes <code>grep</code> unreliable and
+    can create noisy diffs when a provider version changes its normalisation. Standardise on the lowercase,
+    no-space form (<code>westeurope</code>) — it is what the API returns, so it never produces a plan diff.
+  </p>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">location.tf — never hardcode it twice</span></div>
+<pre><code class="language-hcl">variable "location" {
+  type        = string
+  description = "Azure region for all resources in this deployment."
+  default     = "westeurope"
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = "rg-analytics-dev-weu-01"
+  location = var.location
+}
+
+resource "azurerm_storage_account" "lake" {
+  # Reference the RG's location rather than var.location again.
+  # This makes it structurally impossible for them to drift apart.
+  location            = azurerm_resource_group.analytics.location
+  resource_group_name = azurerm_resource_group.analytics.name
+  # ...
+}</code></pre>
+</div>
+
+<h2 id="naming">Naming conventions</h2>
+
+<p>
+  Microsoft's Cloud Adoption Framework recommends
+  <code>&lt;resource-type&gt;-&lt;workload&gt;-&lt;environment&gt;-&lt;region&gt;-&lt;instance&gt;</code>.
+  It is not enforced by Azure, but a consistent scheme is what lets you write cost queries, policy assignments
+  and access reviews that actually work.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Resource</th><th>Prefix</th><th>Example</th><th>Constraints</th></tr></thead>
+  <tbody>
+    <tr><td>Resource group</td><td><code>rg-</code></td><td><code>rg-analytics-dev-weu-01</code></td><td>1–90 chars; alphanumerics, <code>_ - . ( )</code></td></tr>
+    <tr><td>Storage account</td><td><code>st</code></td><td><code>stanalyticsdevweu01</code></td><td><strong>3–24 chars, lowercase letters and digits only, globally unique</strong></td></tr>
+    <tr><td>Key Vault</td><td><code>kv-</code></td><td><code>kv-analytics-dev-weu-01</code></td><td>3–24 chars, alphanumerics and hyphens, must start with a letter, <strong>globally unique</strong></td></tr>
+    <tr><td>Virtual network</td><td><code>vnet-</code></td><td><code>vnet-analytics-dev-weu-01</code></td><td>2–64 chars</td></tr>
+    <tr><td>Subnet</td><td><code>snet-</code></td><td><code>snet-privatelink-dev-weu-01</code></td><td>Unique within the VNet</td></tr>
+    <tr><td>Network security group</td><td><code>nsg-</code></td><td><code>nsg-databricks-dev-weu-01</code></td><td>1–80 chars</td></tr>
+    <tr><td>Private endpoint</td><td><code>pe-</code></td><td><code>pe-lake-blob-dev-weu-01</code></td><td>1–80 chars</td></tr>
+    <tr><td>Databricks workspace</td><td><code>dbw-</code></td><td><code>dbw-analytics-dev-weu-01</code></td><td>3–64 chars</td></tr>
+    <tr><td>Function app</td><td><code>func-</code></td><td><code>func-ingest-dev-weu-01</code></td><td><strong>Globally unique</strong> (it becomes a hostname); keep under 32 chars to avoid host ID collisions</td></tr>
+    <tr><td>App Service plan</td><td><code>asp-</code></td><td><code>asp-analytics-dev-weu-01</code></td><td>1–40 chars</td></tr>
+    <tr><td>User-assigned identity</td><td><code>id-</code></td><td><code>id-ingest-dev-weu-01</code></td><td>3–128 chars</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Three resources are globally unique across all of Azure</div>
+  <p>
+    Storage accounts, Key Vaults and Function Apps get a DNS name, so their names must be unique across
+    <em>every Azure customer in the world</em>, not just your subscription. <code>stdatalake01</code> was taken
+    years ago.
+  </p>
+  <p style="margin-bottom:0">
+    This is also why the failure appears only at <code>apply</code>: <code>validate</code> can check the regex,
+    but only the API knows whether the name is available.
+  </p>
+</div>
+
+<h3 id="name-generation">Generating names consistently</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">naming.tf — the pattern used for the rest of this course</span></div>
+<pre><code class="language-hcl">locals {
+  workload = "analytics"
+  env      = "dev"
+  region   = "weu"
+  instance = "01"
+
+  # Standard pattern for resources that allow hyphens.
+  suffix = "${local.workload}-${local.env}-${local.region}-${local.instance}"
+
+  # Storage accounts allow neither hyphens nor uppercase, and cap at 24 chars.
+  # substr() guarantees we never exceed the limit as workload names grow.
+  sa_name = substr(
+    lower(replace("st${local.suffix}", "-", "")),
+    0, 24
+  )
+  # → "stanalyticsdevweu01"
+
+  common_tags = {
+    workload    = local.workload
+    environment = local.env
+    managed_by  = "terraform"
+    repository  = "contoso/analytics-platform"
+  }
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = "rg-${local.suffix}"      # rg-analytics-dev-weu-01
+  location = var.location
+  tags     = local.common_tags
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">When global uniqueness needs help</div>
+  <p style="margin-bottom:0">
+    If <code>stanalyticsdevweu01</code> is taken, add a deterministic suffix rather than a random one where you
+    can — for example the last six characters of the subscription ID, which is stable across applies. A
+    <code>random_string</code> resource also works, but remember its value lives in state: lose the state and
+    the next apply generates a different name and tries to build a whole new storage account.
+  </p>
+</div>
+
+<h2 id="building">Building the stack</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">main.tf — complete and runnable</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~&gt; 5.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = true
+    }
+  }
+}
+
+variable "location" {
+  type    = string
+  default = "westeurope"
+}
+
+locals {
+  suffix  = "analytics-dev-weu-01"
+  sa_name = "stanalyticsdevweu01"
+
+  common_tags = {
+    workload    = "analytics"
+    environment = "dev"
+    managed_by  = "terraform"
+  }
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = "rg-${local.suffix}"
+  location = var.location
+  tags     = local.common_tags
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                = local.sa_name
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  account_kind             = "StorageV2"
+
+  # This single argument is what makes it ADLS Gen2 rather than flat blob
+  # storage. It cannot be changed later — see the replacement section below.
+  is_hns_enabled = true
+
+  # Security posture. Lesson 06 explains each of these properly.
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+
+  tags = local.common_tags
+}
+
+resource "azurerm_storage_container" "raw" {
+  name                  = "raw"
+  storage_account_id    = azurerm_storage_account.lake.id
+  container_access_type = "private"
+}
+
+output "resource_group_name" {
+  value = azurerm_resource_group.analytics.name
+}
+
+output "lake_dfs_endpoint" {
+  description = "ADLS Gen2 endpoint used by Spark and other analytics engines."
+  value       = azurerm_storage_account.lake.primary_dfs_endpoint
+}</code></pre>
+</div>
+
+<div class="callout callout-version">
+  <div class="callout-title">⚠ v4 → v5: <code>storage_account_id</code></div>
+  <p style="margin-bottom:0">
+    In v3 and v4 the container took <code>storage_account_name = azurerm_storage_account.lake.name</code>.
+    In v5 that argument is <strong>removed</strong> and <code>storage_account_id</code> is required. Older
+    tutorials will fail with <code>Unsupported argument</code>. Note also that migrating an existing v4
+    configuration to the new argument was a known pain point — the provider added a migration path in 4.20, but
+    doing it carelessly on earlier versions forced container replacement, which deletes data.
+  </p>
+</div>
+
+<h2 id="connect">Code → provider → Azure → state</h2>
+
+<p>
+  This is the chain you need to hold in your head for every resource you ever write. Take the storage account
+  above and follow it all the way through.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    A["<b>1 · HCL</b><br/>resource azurerm_storage_account.lake<br/>is_hns_enabled = true"]
+    B["<b>2 · Terraform core</b><br/>resolves references, builds the graph,<br/>produces a planned new state<br/>for this resource address"]
+    C["<b>3 · azurerm provider</b><br/>maps arguments onto the<br/>Microsoft.Storage/storageAccounts<br/>API contract"]
+    D["<b>4 · ARM API</b><br/>PUT /subscriptions/{sub}/resourceGroups/{rg}<br/>/providers/Microsoft.Storage/storageAccounts/{name}<br/>?api-version=2023-05-01"]
+    E["<b>5 · Azure</b><br/>creates the account with the<br/>hierarchical namespace enabled,<br/>allocates blob/dfs/file endpoints"]
+    F["<b>6 · Response</b><br/>full resource JSON:<br/>id, provisioningState, primaryEndpoints…"]
+    G["<b>7 · State</b><br/>the resource address is bound to the real<br/>resource ID, and every attribute is cached"]
+
+    A --> B --> C --> D --> E --> F --> G
+    G -.->|"next plan reads this<br/>and calls GET to refresh"| D
+
+    style A fill:#efedfd,stroke:#5c4ee5
+    style D fill:#e6f2fb,stroke:#0078d4
+    style G fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>The full round trip for one resource. Every Terraform resource follows exactly this shape.</figcaption>
+</figure>
+
+<h3 id="what-plan-does">What <code>terraform plan</code> shows</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">terraform plan (first run, nothing exists)</span></div>
+<pre><code class="language-bash">Terraform will perform the following actions:
+
+  # azurerm_resource_group.analytics will be created
+  + resource "azurerm_resource_group" "analytics" {
+      + id       = (known after apply)
+      + location = "westeurope"
+      + name     = "rg-analytics-dev-weu-01"
+      + tags     = {
+          + "environment" = "dev"
+          + "managed_by"  = "terraform"
+          + "workload"    = "analytics"
+        }
+    }
+
+  # azurerm_storage_account.lake will be created
+  + resource "azurerm_storage_account" "lake" {
+      + account_kind                    = "StorageV2"
+      + account_replication_type        = "LRS"
+      + account_tier                    = "Standard"
+      + allow_nested_items_to_be_public = false
+      + https_traffic_only_enabled      = true
+      + id                              = (known after apply)
+      + is_hns_enabled                  = true
+      + location                        = "westeurope"
+      + min_tls_version                 = "TLS1_2"
+      + name                            = "stanalyticsdevweu01"
+      + primary_access_key              = (sensitive value)
+      + primary_blob_endpoint           = (known after apply)
+      + primary_dfs_endpoint            = (known after apply)
+      + resource_group_name             = "rg-analytics-dev-weu-01"
+      # (37 unchanged attributes hidden)
+    }
+
+  # azurerm_storage_container.raw will be created
+  + resource "azurerm_storage_container" "raw" {
+      + container_access_type = "private"
+      + id                    = (known after apply)
+      + name                  = "raw"
+      + storage_account_id    = (known after apply)
+    }
+
+Plan: 3 to add, 0 to change, 0 to destroy.</code></pre>
+</div>
+
+<p>Three things in that output are worth pausing on:</p>
+
+<ul>
+  <li>
+    <strong><code>(known after apply)</code></strong> — Terraform cannot know the resource ID or the endpoint
+    URLs until Azure responds. Note that <code>storage_account_id</code> on the container is unknown for exactly
+    this reason: it depends on a resource that does not exist yet. That unknown is the dependency edge, made
+    visible.
+  </li>
+  <li>
+    <strong><code>(sensitive value)</code></strong> — the provider marks <code>primary_access_key</code>
+    sensitive so it is redacted from output. It will still be written to state in plaintext. Lesson 09.
+  </li>
+  <li>
+    <strong><code>resource_group_name = "rg-analytics-dev-weu-01"</code></strong> is <em>known</em>, even though
+    the resource group does not exist yet — because the name is a literal in the configuration, not a computed
+    attribute. Terraform still orders the operations correctly, because the reference creates the edge
+    regardless of whether the value is known.
+  </li>
+</ul>
+
+<h3 id="what-state-holds">What ends up in state</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">terraform.tfstate (abridged)</span></div>
+<pre><code class="language-json">{
+  "version": 4,
+  "terraform_version": "1.16.1",
+  "serial": 3,
+  "lineage": "8f2c1e4a-...",
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "lake",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 4,
+          "attributes": {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-analytics-dev-weu-01/providers/Microsoft.Storage/storageAccounts/stanalyticsdevweu01",
+            "name": "stanalyticsdevweu01",
+            "is_hns_enabled": true,
+            "primary_dfs_endpoint": "https://stanalyticsdevweu01.dfs.core.windows.net/",
+            "primary_access_key": "REDACTED-BUT-PLAINTEXT-IN-THE-REAL-FILE",
+            "...": "..."
+          },
+          "dependencies": [
+            "azurerm_resource_group.analytics"
+          ]
+        }
+      ]
+    }
+  ]
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Note what is in there</div>
+  <p style="margin-bottom:0">
+    <code>primary_access_key</code> — a credential granting full control of the storage account and all its
+    data — is stored in plaintext. Terraform redacts it from <em>console output</em>; it does not encrypt it in
+    <em>state</em>. This is the single strongest argument for a remote backend with encryption and tight access
+    control, and for using managed identities so the key is never needed at all. Lessons 09 and 10.
+  </p>
+</div>
+
+<h2 id="resource-ids">Reading an Azure resource ID</h2>
+
+<p>
+  Resource IDs matter more in Terraform than in the portal: they are what <code>import</code> takes, what
+  role assignment <code>scope</code> takes, and what appears throughout state.
+</p>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">anatomy of a resource ID</span></div>
+<pre class="plain">/subscriptions/00000000-0000-0000-0000-000000000000
+└─┬───────────┘└─┬────────────────────────────────┘
+  │              └── subscription GUID
+  └── always literal "subscriptions"
+
+/resourceGroups/rg-analytics-dev-weu-01
+                └── resource group name
+
+/providers/Microsoft.Storage/storageAccounts/stanalyticsdevweu01
+           └─┬──────────────┘└─┬───────────┘ └─┬───────────────┘
+             │                 │               └── resource name
+             │                 └── resource type (plural)
+             └── resource provider namespace
+
+/blobServices/default/containers/raw
+ └── child resource path — nested resources extend the parent's ID</pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">working with IDs</span></div>
+<pre><code class="language-hcl">locals {
+  # Every resource exports .id
+  lake_id = azurerm_storage_account.lake.id
+
+  # Scope a role assignment to a single container rather than the whole account
+  raw_container_scope = "${azurerm_storage_account.lake.id}/blobServices/default/containers/raw"
+}
+
+# Or use the parsed data source when you have an ID and need its parts
+data "azurerm_storage_account" "existing" {
+  name                = "stanalyticsdevweu01"
+  resource_group_name = "rg-analytics-dev-weu-01"
+}</code></pre>
+</div>
+
+<h2 id="dependencies">Dependencies</h2>
+
+<h3 id="implicit">Implicit dependencies — the default and the right one</h3>
+
+<p>
+  Any reference to another resource's attribute creates an edge. This is how 95% of ordering should be
+  expressed.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">implicit.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_container" "raw" {
+  name = "raw"
+
+  # This reference IS the dependency. Terraform reads it, sees the address
+  # azurerm_storage_account.lake, and adds the edge. Nothing else is needed.
+  storage_account_id = azurerm_storage_account.lake.id
+}</code></pre>
+</div>
+
+<h3 id="explicit">Explicit dependencies — <code>depends_on</code></h3>
+
+<p>
+  For genuine ordering requirements that involve <em>no data flow</em>. These exist, but they are rarer than
+  people think.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">legitimate depends_on</span></div>
+<pre><code class="language-hcl"># A role assignment granting the deployer permission to write data.
+resource "azurerm_role_assignment" "deployer_blob_contributor" {
+  scope                = azurerm_storage_account.lake.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# Creating a data-plane object requires that role to already be effective.
+# There is no attribute of the role assignment we need — so no reference
+# would otherwise exist, and Terraform could create these in parallel.
+resource "azurerm_storage_data_lake_gen2_filesystem" "bronze" {
+  name               = "bronze"
+  storage_account_id = azurerm_storage_account.lake.id
+
+  depends_on = [azurerm_role_assignment.deployer_blob_contributor]
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Why blanket <code>depends_on</code> is bad practice</div>
+  <p>Adding it “just to be safe” causes four concrete problems:</p>
+  <ol>
+    <li><strong>It serialises the graph.</strong> Terraform's parallelism disappears; applies get slower as the configuration grows.</li>
+    <li><strong>It is coarser than a reference.</strong> A <code>depends_on</code> on a module waits for <em>everything</em> in that module, not the one resource you cared about.</li>
+    <li><strong>It hides broken references.</strong> If ordering works only because of <code>depends_on</code>, someone has probably hardcoded a string where a reference belonged — and that literal will silently go stale.</li>
+    <li><strong>It can force unnecessary replacement.</strong> When a <code>depends_on</code> target is replaced, Terraform may conservatively treat downstream resources as needing replacement too, because it cannot reason about what the dependency provided.</li>
+  </ol>
+  <p style="margin-bottom:0">
+    The rule: reach for <code>depends_on</code> only when there is a real ordering requirement with no data
+    flowing between the resources. RBAC propagation before a data-plane operation is the classic legitimate
+    case in Azure.
+  </p>
+</div>
+
+<h2 id="replacement">Which changes destroy your data</h2>
+
+<p>
+  Every argument in a provider's schema is marked either updatable or <strong>ForceNew</strong>. Changing a
+  ForceNew argument means Terraform must delete the resource and create a new one — there is no in-place path.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Change</th><th>Result</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td><code>tags</code></td><td><code>~</code> update in place</td><td>Harmless</td></tr>
+    <tr><td><code>account_replication_type</code> LRS → GRS</td><td><code>~</code> update in place</td><td>Harmless; Azure starts replicating</td></tr>
+    <tr><td><code>access_tier</code> Hot → Cool</td><td><code>~</code> update in place</td><td>Changes billing; may incur early-deletion charges</td></tr>
+    <tr><td><code>name</code></td><td><code>-/+</code> <strong>replace</strong></td><td><strong>All data deleted.</strong> Azure has no rename.</td></tr>
+    <tr><td><code>location</code></td><td><code>-/+</code> <strong>replace</strong></td><td><strong>All data deleted.</strong> Resources cannot move between regions.</td></tr>
+    <tr><td><code>is_hns_enabled</code></td><td><code>-/+</code> <strong>replace</strong></td><td><strong>All data deleted.</strong> You cannot convert a flat account to ADLS Gen2 in place.</td></tr>
+    <tr><td><code>resource_group_name</code></td><td><code>-/+</code> <strong>replace</strong></td><td><strong>All data deleted.</strong></td></tr>
+    <tr><td><code>account_kind</code> Storage → StorageV2</td><td><code>~</code> update in place</td><td>An explicit exception the provider documents — an upgrade, not a replacement</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">what a replacement looks like — read this carefully</span></div>
+<pre><code class="language-bash">  # azurerm_storage_account.lake must be replaced
+-/+ resource "azurerm_storage_account" "lake" {
+      ~ id             = "/subscriptions/.../stanalyticsdevweu01" -&gt; (known after apply)
+      ~ is_hns_enabled = false -&gt; true # forces replacement
+        name           = "stanalyticsdevweu01"
+    }
+
+Plan: 1 to add, 0 to change, 1 to destroy.</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">The comment <code># forces replacement</code> is the most important text in any plan</div>
+  <p style="margin-bottom:0">
+    Terraform tells you exactly which argument triggered it. On a storage account holding your data lake, that
+    plan destroys everything and rebuilds an empty account — and because storage account names are globally
+    unique, the destroy must complete before the create, so there is a window where the name does not exist.
+    Lesson 15 covers <code>prevent_destroy</code> as a guard against applying this by accident.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Update or replace?</span>
+  </div>
+  <div class="exercise-body">
+    <p>For a deployed <code>azurerm_storage_account</code>, say whether each change is an in-place update or a replacement, and why:</p>
+    <ol>
+      <li>Adding a tag <code>cost_center = "DATA-01"</code></li>
+      <li>Changing <code>min_tls_version</code> from <code>"TLS1_2"</code> to <code>"TLS1_3"</code></li>
+      <li>Changing <code>location</code> from <code>"westeurope"</code> to <code>"northeurope"</code></li>
+      <li>Setting <code>is_hns_enabled = true</code> on an account created without it</li>
+      <li>Changing <code>account_replication_type</code> from <code>"LRS"</code> to <code>"GZRS"</code></li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong>Update.</strong> Tags are metadata; ARM supports a PATCH.</li>
+        <li><strong>Update.</strong> A settable property on the existing account.</li>
+        <li><strong>Replace.</strong> Region is fixed at creation — an Azure constraint, not a Terraform one. All data is lost.</li>
+        <li><strong>Replace.</strong> The hierarchical namespace is a fundamental storage-layer property chosen at creation. All data is lost. This is the one that catches people who start with a plain blob account and later decide they want ADLS Gen2.</li>
+        <li><strong>Update.</strong> Replication can be changed live; Azure begins replicating in the background.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        General heuristic: if Azure's own portal offers no way to change a setting after creation, Terraform will
+        need a replacement. When unsure, read the registry documentation — every ForceNew argument says
+        “Changing this forces a new resource to be created.”
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Build the medallion skeleton</span>
+  </div>
+  <div class="exercise-body">
+    <p>Extend the configuration in this lesson so that it also creates containers <code>bronze</code>, <code>silver</code> and <code>gold</code> alongside <code>raw</code>. Requirements:</p>
+    <ul>
+      <li>All four private.</li>
+      <li>No copy-pasted resource blocks.</li>
+      <li>Removing <code>silver</code> from the list later must not affect <code>gold</code>.</li>
+      <li>Output a map from container name to its <code>abfss://</code> URI.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">containers.tf</span></div>
+<pre><code class="language-hcl">variable "containers" {
+  type        = set(string)
+  description = "Medallion layers to create in the data lake."
+  default     = ["raw", "bronze", "silver", "gold"]
+}
+
+resource "azurerm_storage_container" "layers" {
+  for_each = var.containers
+
+  name                  = each.value
+  storage_account_id    = azurerm_storage_account.lake.id
+  container_access_type = "private"
+}
+
+output "abfss_paths" {
+  description = "abfss:// URI per medallion layer, for Spark configuration."
+  value = {
+    for name, c in azurerm_storage_container.layers :
+    name =&gt; "abfss://${name}@${azurerm_storage_account.lake.name}.dfs.core.windows.net/"
+  }
+}</code></pre>
+      </div>
+      <p>
+        Declaring the variable as <code>set(string)</code> rather than <code>list(string)</code> lets it feed
+        <code>for_each</code> directly with no <code>toset()</code>. The resulting state addresses are
+        <code>azurerm_storage_container.layers["raw"]</code> and so on — keyed by name, so removing
+        <code>"silver"</code> destroys exactly one container and leaves <code>gold</code> untouched. With
+        <code>count</code> over a list it would have destroyed and recreated <code>gold</code> as well, because
+        its index would have shifted from 3 to 2.
+      </p>
+      <p style="margin-bottom:0">
+        Note that <code>each.key</code> and <code>each.value</code> are identical when iterating a set of
+        strings.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write the medallion lake from scratch</span>
+  </div>
+  <div class="exercise-body">
+    <p>With no copying from earlier in the lesson, write a complete configuration that creates:</p>    <ul>
+      <li>A resource group and an ADLS Gen2 storage account, both consistently named from one place.</li>
+      <li>Containers <code>raw</code>, <code>bronze</code>, <code>silver</code> and <code>gold</code>, driven by a variable, where removing one from the list affects only that container.</li>
+      <li>Tags applied to everything, merged from a common set.</li>
+      <li>Outputs: the DFS endpoint, and a map of container name to its <code>abfss://</code> URI.</li>
+      <li>The storage account protected against accidental destruction.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">main.tf</span></div>
+<pre><code class="language-hcl">variable "workload"    { type = string }
+variable "environment" { type = string }
+variable "location" {
+  type    = string
+  default = "westeurope"
+}
+
+variable "medallion_layers" {
+  type        = set(string)
+  description = "Containers to create in the lake."
+  default     = ["raw", "bronze", "silver", "gold"]
+}
+
+locals {
+  region_short = { westeurope = "weu", northeurope = "neu" }
+
+  suffix = "${var.workload}-${var.environment}-${local.region_short[var.location]}-01"
+
+  # Storage accounts: lowercase alphanumeric only, max 24 characters.
+  sa_name = substr(lower(replace("st${local.suffix}", "-", "")), 0, 24)
+
+  common_tags = {
+    workload    = var.workload
+    environment = var.environment
+    managed_by  = "terraform"
+  }
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = "rg-${local.suffix}"
+  location = var.location
+  tags     = local.common_tags
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                = local.sa_name
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = var.environment == "prod" ? "GZRS" : "LRS"
+
+  is_hns_enabled                  = true    # this is what makes it ADLS Gen2
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+
+  tags = merge(local.common_tags, {
+    data_classification = "confidential"
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# for_each, not count: the state address becomes ["silver"] rather than [2],
+# so removing a layer destroys exactly that layer.
+resource "azurerm_storage_container" "layers" {
+  for_each = var.medallion_layers
+
+  name                  = each.value
+  storage_account_id    = azurerm_storage_account.lake.id
+  container_access_type = "private"
+}
+
+output "lake_dfs_endpoint" {
+  description = "DFS endpoint for abfss:// access from Spark."
+  value       = azurerm_storage_account.lake.primary_dfs_endpoint
+}
+
+output "layer_paths" {
+  description = "abfss:// URI per medallion layer."
+  value = {
+    for name, c in azurerm_storage_container.layers :
+    name =&gt; "abfss://${name}@${azurerm_storage_account.lake.name}.dfs.core.windows.net/"
+  }
+}</code></pre>
+</div>    <p>The details that separate this from a first attempt: <code>local.suffix</code> defined once so the naming scheme changes in one place; <code>substr(lower(replace(...)))</code> guarding the storage account's character and length rules; <code>set(string)</code> so the variable feeds <code>for_each</code> with no <code>toset()</code>; and <code>merge()</code> so per-resource tags extend the common set rather than replacing it.</p>    <p style="margin-bottom:0">Note also that <code>location</code> on the storage account references the resource group rather than <code>var.location</code> again. That makes it structurally impossible for the two to drift apart.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Add a second storage account without duplicating the module</span>
+  </div>
+  <div class="exercise-body">
+    <p>The platform now needs a second, separate account for Function App runtime state &mdash; deliberately not the data lake, for the reasons in Lesson 13. It should be plain blob storage (no hierarchical namespace), LRS, and it does not need medallion containers.</p>    <p style="margin-bottom:0">Refactor so both accounts come from one <code>for_each</code>-driven resource block rather than two copy-pasted ones, and say when you would <em>not</em> do this.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">storage.tf</span></div>
+<pre><code class="language-hcl">locals {
+  storage_accounts = {
+    lake = {
+      name_prefix  = "st"
+      hns          = true
+      replication  = var.environment == "prod" ? "GZRS" : "LRS"
+      containers   = var.medallion_layers
+      classification = "confidential"
+    }
+    functions = {
+      name_prefix  = "stfn"
+      hns          = false
+      replication  = "LRS"
+      containers   = []
+      classification = "internal"
+    }
+  }
+
+  # Flatten (account, container) pairs into a single stably-keyed map.
+  containers = {
+    for pair in flatten([
+      for acct, cfg in local.storage_accounts : [
+        for c in cfg.containers : { acct = acct, container = c }
+      ]
+    ]) : "${pair.acct}-${pair.container}" =&gt; pair
+  }
+}
+
+resource "azurerm_storage_account" "this" {
+  for_each = local.storage_accounts
+
+  name                = substr(lower(replace("${each.value.name_prefix}${local.suffix}", "-", "")), 0, 24)
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = each.value.replication
+
+  is_hns_enabled                  = each.value.hns
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+
+  tags = merge(local.common_tags, {
+    data_classification = each.value.classification
+  })
+}
+
+resource "azurerm_storage_container" "layers" {
+  for_each = local.containers
+
+  name                  = each.value.container
+  storage_account_id    = azurerm_storage_account.this[each.value.acct].id
+  container_access_type = "private"
+}</code></pre>
+</div>    <p><strong>When you would not do this.</strong> The two accounts serve genuinely different purposes and will diverge: the lake will grow lifecycle policies, private endpoints for blob <em>and</em> dfs, customer-managed keys and <code>prevent_destroy</code>; the runtime account needs none of those and must stay reachable by the Functions host.</p>    <p style="margin-bottom:0">Once the differences outnumber the similarities, a shared <code>for_each</code> becomes a block full of conditionals keyed on <code>each.key</code> &mdash; harder to read than two explicit resources. The honest answer here is that <strong>two separate blocks are better</strong>, and the exercise is worth doing to feel where that line sits. Deduplication is not automatically an improvement.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Intermittent apply failure</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      This configuration succeeds roughly half the time. When it fails, the error is
+      <code>Error: creating Storage Account: Code="ResourceGroupNotFound"</code>.
+    </p>
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">flaky.tf</span></div>
+<pre><code class="language-hcl">variable "resource_group_name" {
+  type    = string
+  default = "rg-analytics-dev-weu-01"
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = var.resource_group_name
+  location = "westeurope"
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                     = "stanalyticsdevweu01"
+  resource_group_name      = var.resource_group_name
+  location                 = "westeurope"
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}</code></pre>
+    </div>
+    <p>Why is it intermittent, and what is the correct fix? Explain why <code>depends_on</code> would be the wrong fix.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Cause.</strong> Both resources reference <code>var.resource_group_name</code>, and neither
+        references the other. In the dependency graph they are siblings that both depend on the variable — so
+        there is no edge between them, and Terraform creates them <strong>in parallel</strong>. Whether it works
+        depends on whether the resource group's creation happens to complete before the storage account request
+        arrives. That is a race, hence the ~50% failure rate.
+      </p>
+      <p><strong>Correct fix — reference the resource, not the variable:</strong></p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">fixed.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                     = "stanalyticsdevweu01"
+  resource_group_name      = azurerm_resource_group.analytics.name
+  location                 = azurerm_resource_group.analytics.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}</code></pre>
+      </div>
+      <p>
+        <strong>Why <code>depends_on</code> is the wrong fix.</strong> Adding
+        <code>depends_on = [azurerm_resource_group.analytics]</code> would make the symptom go away, which is
+        exactly why it is tempting and exactly why it is dangerous. It papers over a structurally broken
+        configuration: the storage account still does not know where its resource group name comes from. If
+        someone later renames the resource group by changing the <code>azurerm_resource_group</code> block
+        without updating the variable default, the reference-based version fixes itself and the
+        <code>depends_on</code> version breaks in a confusing way.
+      </p>
+      <p style="margin-bottom:0">
+        This is the general principle: <strong>a missing reference is a bug, and <code>depends_on</code> hides
+        bugs</strong>. Use it only where no data flows at all.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="scenario">Real-world scenario</h2>
+
+<div class="scenario">
+  <div class="scenario-tag">Scenario</div>
+  <p>
+    <strong>“Terraform plan wants to destroy and recreate our production storage account. It has 40 TB in it.
+    What do you do?”</strong>
+  </p>
+  <p>A structured investigation:</p>
+  <ol>
+    <li>
+      <strong>Do not apply.</strong> Obvious, but the first thing to say out loud. If a pipeline might apply
+      automatically, disable it now.
+    </li>
+    <li>
+      <strong>Find the trigger.</strong> The plan tells you: look for the line ending
+      <code># forces replacement</code>. There is always exactly one argument (or more) responsible.
+    </li>
+    <li>
+      <strong>Classify the cause.</strong> Three possibilities:
+      <ul>
+        <li><em>Someone changed the configuration</em> — check <code>git log -p</code> on the file. Revert if unintended.</li>
+        <li><em>Someone changed Azure</em> — drift. The portal change moved a ForceNew attribute; the plan is trying to move it back. Decide which value is correct.</li>
+        <li><em>The provider changed</em> — a new major version altered how an argument is handled, or a previously optional argument now has a different default. Check <code>git diff .terraform.lock.hcl</code>.</li>
+      </ul>
+    </li>
+    <li>
+      <strong>If the new value is genuinely required</strong>, a replacement is not the route. Migrating a data
+      lake means creating a new account alongside, copying data (<code>azcopy</code>, AzCopy jobs, or
+      Databricks), repointing consumers, then decommissioning — a project, not a Terraform apply.
+    </li>
+    <li>
+      <strong>Prevent recurrence.</strong> Add <code>lifecycle { prevent_destroy = true }</code> to the storage
+      account so any future plan that tries this fails at plan time rather than waiting for someone to read
+      carefully. Add an Azure resource lock as a second layer that works even outside Terraform. Add a CI check
+      that fails when the plan JSON contains a delete action. Lessons 15 and 18.
+    </li>
+  </ol>
+  <p style="margin-bottom:0">
+    The answer an interviewer is listening for is that you <em>investigate the cause before touching anything</em>,
+    and that you know a replacement of a stateful resource is a data-migration problem rather than a Terraform
+    problem.
+  </p>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is an Azure resource group and what does its location mean?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A logical container within a subscription that groups resources sharing a lifecycle and, usually, an RBAC
+        scope. Deleting it deletes everything in it. Its <code>location</code> determines only where the resource
+        group's own metadata is stored — resources inside it can be in different regions. In practice you keep
+        them aligned for clarity and to avoid cross-region charges, but it is not a technical requirement.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the difference between an implicit and an explicit dependency?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        An implicit dependency is created automatically when one resource references another's attribute —
+        Terraform parses the reference and adds a graph edge. An explicit dependency is declared with
+        <code>depends_on</code> and is needed only when ordering matters but no data flows, for example creating
+        a role assignment before performing a data-plane operation that requires it. Implicit is strongly
+        preferred: it is precise, self-documenting, and cannot go stale. Overusing <code>depends_on</code>
+        serialises the graph and hides places where a hardcoded string should have been a reference.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why do storage account names have such restrictive rules?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because the name becomes a DNS hostname — <code>&lt;name&gt;.blob.core.windows.net</code> and
+        <code>.dfs.core.windows.net</code> — so it must be globally unique across every Azure tenant and legal in
+        DNS: 3–24 characters, lowercase letters and digits only. The practical consequence for Terraform is that
+        the failure surfaces only at apply, since <code>validate</code> can check the character rules but not
+        whether another customer already took the name.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What does “forces replacement” mean in a plan?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        That the argument you changed cannot be updated in place, because the underlying API has no way to change
+        it on an existing resource — so Terraform must destroy the resource and create a new one, shown as
+        <code>-/+</code>. On stateful resources this destroys the data. Common Azure examples are
+        <code>name</code>, <code>location</code>, <code>resource_group_name</code> and
+        <code>is_hns_enabled</code> on a storage account. The plan output names the specific argument
+        responsible, and a careful reviewer looks for that comment before anything else.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Can you rename a Terraform-managed Azure resource without downtime?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Not the <em>Azure</em> name — Azure has no rename operation, so changing <code>name</code> always means
+        destroy and recreate. You can, however, freely rename the <em>Terraform address</em> — the second label
+        in the resource block — by using a <code>moved</code> block, which tells Terraform the resource in state
+        has a new address without touching Azure at all. Distinguishing these two kinds of “rename” is the point
+        of the question.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What does Terraform store in state for a storage account?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The resource address, the real Azure resource ID, every attribute returned by the API — including
+        computed ones like the endpoint URLs — the provider that manages it, the schema version, and its
+        dependencies. Critically that includes <code>primary_access_key</code> in plaintext. Terraform redacts
+        sensitive values from console output but does not encrypt them in state, which is why state must live in
+        an encrypted remote backend with tight access control.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>A resource group's <code>location</code> stores its metadata; it does not constrain where its resources live.</li>
+  <li>Storage accounts, Key Vaults and Function Apps are globally unique because their names become DNS hostnames.</li>
+  <li>Reference other resources' attributes instead of repeating literals — the reference <em>is</em> the dependency.</li>
+  <li><code>depends_on</code> is for ordering without data flow. Everywhere else it hides a missing reference.</li>
+  <li><code>(known after apply)</code> in a plan is a dependency edge made visible.</li>
+  <li>Read every plan for <code># forces replacement</code>. On a data-bearing resource that comment means data loss.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

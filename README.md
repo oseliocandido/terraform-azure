@@ -155,6 +155,7 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 | [Architecture](docs/ARCHITECTURE.html) | Repo and pipeline design, the analytics platform design, and the key decisions |
 | [Implementation](docs/IMPLEMENTATION.html) | Every module and object, the CI permission model, bootstrap |
 | [Backlog](docs/BACKLOG.md) | Open work and known gaps |
+| [Study material](misc/index.html) | A 20-lesson course on Terraform, the `azurerm` provider and Azure Databricks (open `misc/index.html` locally) |
 
 ## Repo layout
 
@@ -176,6 +177,7 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 │   ├── ARCHITECTURE.html     # repo/CI-CD design (part 1) and platform design (part 2)
 │   ├── IMPLEMENTATION.html   # every module and object
 │   └── BACKLOG.md            # open work
+├── misc/                     # study course: Terraform, azurerm, Databricks (HTML lessons)
 └── .github/workflows/        # terraform.yml (plan/apply), drift-detection.yml
 ```
 

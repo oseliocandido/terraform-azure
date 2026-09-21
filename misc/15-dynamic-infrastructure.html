@@ -1,0 +1,1138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>15 · for_each, count, dynamic, lifecycle &amp; dependencies — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="15">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate</span>
+    <span>Parts 14–15</span><span>·</span><span>~80 min</span><span>·</span><span>Requires Lesson 14</span>
+  </div>
+  <h1>for_each, count, dynamic, lifecycle &amp; dependencies</h1>
+  <p class="lede">
+    Meta-arguments turn static configuration into dynamic infrastructure, and lifecycle rules decide whether a
+    change updates or destroys. Both directly control what a plan does to production, so this is a lesson about
+    consequences rather than syntax.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain the index-shift problem and why <code>for_each</code> is preferred</li>
+      <li>Convert <code>count</code> to <code>for_each</code> without destroying anything</li>
+      <li>State the plan-time requirement on <code>for_each</code> keys and work around it</li>
+      <li>Use all four <code>lifecycle</code> rules, and know their limitations</li>
+      <li>Explain <code>create_before_destroy</code> and when it cannot work on Azure</li>
+      <li>Use <code>precondition</code> and <code>postcondition</code> as guardrails</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">for_each</span><span class="pill">lifecycle</span><span class="pill">Replacement</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="count">count</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">count.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_container" "layers" {
+  count = 4
+
+  name               = ["raw", "bronze", "silver", "gold"][count.index]
+  storage_account_id = azurerm_storage_account.lake.id
+}
+
+# addresses: azurerm_storage_container.layers[0] … [3]
+# reference:  azurerm_storage_container.layers[2].id
+# all of them: azurerm_storage_container.layers[*].id</code></pre>
+</div>
+
+<h3 id="count-good">The one thing <code>count</code> is genuinely good at</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">conditional creation</span></div>
+<pre><code class="language-hcl"># Create the private endpoint only in environments that need it.
+resource "azurerm_private_endpoint" "lake" {
+  count = var.enable_private_endpoints ? 1 : 0
+
+  name                = "pe-lake-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  subnet_id           = azurerm_subnet.this["privatelink"].id
+
+  private_service_connection {
+    name                           = "psc-lake"
+    private_connection_resource_id = azurerm_storage_account.lake.id
+    subresource_names              = ["blob"]
+    is_manual_connection           = false
+  }
+}
+
+# Referencing a maybe-absent resource: one() returns the single element
+# or null, rather than erroring on an empty list.
+output "lake_private_ip" {
+  value = try(one(azurerm_private_endpoint.lake).private_service_connection[0].private_ip_address, null)
+}</code></pre>
+</div>
+
+<h3 id="index-shift">Why <code>count</code> is dangerous for collections</h3>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph BEFORE["Before — count over [raw, bronze, silver, gold]"]
+        B0["[0] = raw"]
+        B1["[1] = bronze"]
+        B2["[2] = silver"]
+        B3["[3] = gold"]
+    end
+
+    subgraph AFTER["After — 'bronze' removed from the list"]
+        A0["[0] = raw"]
+        A1["[1] = silver"]
+        A2["[2] = gold"]
+    end
+
+    B0 -->|"unchanged"| A0
+    B1 -->|"[1] was bronze,<br/>is now silver<br/><b>→ DESTROY + CREATE</b>"| A1
+    B2 -->|"[2] was silver,<br/>is now gold<br/><b>→ DESTROY + CREATE</b>"| A2
+    B3 -->|"[3] no longer exists<br/><b>→ DESTROY</b>"| X["gone"]
+
+    style A1 fill:#fdeceb,stroke:#c0392b
+    style A2 fill:#fdeceb,stroke:#c0392b
+    style X fill:#fdeceb,stroke:#c0392b
+  </div>
+  <figcaption>
+    Removing one element from the middle of a list destroys and recreates every element after it. On storage
+    containers, that deletes their contents.
+  </figcaption>
+</figure>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the plan</span></div>
+<pre><code class="language-bash">  # azurerm_storage_container.layers[1] must be replaced
+-/+ resource "azurerm_storage_container" "layers" {
+      ~ name = "bronze" -&gt; "silver" # forces replacement
+    }
+
+  # azurerm_storage_container.layers[2] must be replaced
+-/+ resource "azurerm_storage_container" "layers" {
+      ~ name = "silver" -&gt; "gold" # forces replacement
+    }
+
+  # azurerm_storage_container.layers[3] will be destroyed
+  - resource "azurerm_storage_container" "layers" {
+      - name = "gold" -&gt; null
+    }
+
+Plan: 2 to add, 0 to change, 3 to destroy.</code></pre>
+</div>
+
+<h2 id="for-each">for_each</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">for_each.tf</span></div>
+<pre><code class="language-hcl"># over a SET — each.key and each.value are identical
+resource "azurerm_storage_container" "layers" {
+  for_each = toset(["raw", "bronze", "silver", "gold"])
+
+  name               = each.value
+  storage_account_id = azurerm_storage_account.lake.id
+}
+# addresses: azurerm_storage_container.layers["raw"] …
+
+
+# over a MAP — key and value differ, which is where the power is
+resource "azurerm_storage_data_lake_gen2_filesystem" "layers" {
+  for_each = {
+    raw    = { retention = 2555, tier = "Cool" }
+    bronze = { retention = 1095, tier = "Hot"  }
+    silver = { retention = null, tier = "Hot"  }
+    gold   = { retention = null, tier = "Hot"  }
+  }
+
+  name               = each.key
+  storage_account_id = azurerm_storage_account.lake.id
+
+  properties = {
+    retention_days = base64encode(tostring(coalesce(each.value.retention, 0)))
+  }
+}
+
+# referencing instances
+locals {
+  raw_id  = azurerm_storage_container.layers["raw"].id
+  all_ids = values(azurerm_storage_container.layers)[*].id
+  by_name = { for k, c in azurerm_storage_container.layers : k =&gt; c.id }
+}</code></pre>
+</div>
+
+<p>
+  Removing <code>"bronze"</code> from that map destroys exactly one container. <code>silver</code> and
+  <code>gold</code> keep their addresses and are untouched, because the key is meaningful rather than
+  positional.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th><code>count</code></th><th><code>for_each</code></th></tr></thead>
+  <tbody>
+    <tr><td>Accepts</td><td>A number</td><td>A <code>set</code> or a <code>map</code></td></tr>
+    <tr><td>Instance key</td><td>Integer index</td><td>String key</td></tr>
+    <tr><td>Inside the block</td><td><code>count.index</code></td><td><code>each.key</code>, <code>each.value</code></td></tr>
+    <tr><td>Insert/remove in the middle</td><td><strong>Cascading replacement</strong></td><td>Affects only that instance</td></tr>
+    <tr><td>Per-instance configuration</td><td>Awkward — index into parallel lists</td><td>Natural — the map value is an object</td></tr>
+    <tr><td>Plan readability</td><td><code>[2]</code> — you must count to know which</td><td><code>["silver"]</code> — self-evident</td></tr>
+    <tr><td>Best for</td><td>Conditional creation: <code>? 1 : 0</code></td><td><strong>Everything else</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="plan-time">The plan-time requirement</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the error you will eventually hit</span></div>
+<pre><code class="language-bash">Error: Invalid for_each argument
+
+  on rbac.tf line 4, in resource "azurerm_role_assignment" "this":
+   4:   for_each = toset(azurerm_storage_container.layers[*].id)
+
+The "for_each" value depends on resource attributes that cannot be determined
+until apply, so Terraform cannot predict how many instances will be created.
+To work around this, use the -target argument to first apply only the
+resources that the for_each depends on.</code></pre>
+</div>
+
+<p>
+  Terraform must enumerate every instance during plan. Keys derived from attributes that only exist after apply
+  make that impossible. The fix is always the same: <strong>key on static input, not on computed
+  attributes</strong>.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the fix</span></div>
+<pre><code class="language-hcl"># ✗ keys come from resource IDs — unknown at plan time
+resource "azurerm_role_assignment" "bad" {
+  for_each     = toset(values(azurerm_storage_container.layers)[*].id)
+  scope        = each.value
+  # ...
+}
+
+# ✓ keys come from the same static input that drove the containers.
+#   The unknown ID moves into the VALUE, which is allowed.
+resource "azurerm_role_assignment" "good" {
+  for_each = var.medallion_layers          # a set of names — static
+
+  scope                = azurerm_storage_container.layers[each.key].id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The rule</div>
+  <p style="margin-bottom:0">
+    <code>for_each</code> <strong>keys</strong> must be known at plan time. <code>for_each</code>
+    <strong>values</strong> may be unknown. Whenever you hit this error, look for a way to key on the variable
+    that generated the resources rather than on the resources themselves.
+  </p>
+</div>
+
+<h3 id="count-to-foreach">Migrating from count to for_each</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">migration.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_container" "layers" {
+  for_each           = toset(var.medallion_layers)
+  name               = each.value
+  storage_account_id = azurerm_storage_account.lake.id
+}
+
+# Tell Terraform which old index corresponds to which new key.
+moved {
+  from = azurerm_storage_container.layers[0]
+  to   = azurerm_storage_container.layers["raw"]
+}
+moved {
+  from = azurerm_storage_container.layers[1]
+  to   = azurerm_storage_container.layers["bronze"]
+}
+moved {
+  from = azurerm_storage_container.layers[2]
+  to   = azurerm_storage_container.layers["silver"]
+}
+moved {
+  from = azurerm_storage_container.layers[3]
+  to   = azurerm_storage_container.layers["gold"]
+}</code></pre>
+</div>
+
+<div class="callout callout-ok">
+  <div class="callout-title">Verify with an empty plan</div>
+  <p style="margin-bottom:0">
+    After adding the <code>moved</code> blocks, <code>terraform plan</code> must show
+    <code>0 to add, 0 to change, 0 to destroy</code>. Anything else means an index is mapped to the wrong key —
+    check the current order with <code>terraform state list</code> and
+    <code>terraform state show</code>, because the list order in your configuration may not match what was
+    applied.
+  </p>
+</div>
+
+<h2 id="dynamic">dynamic blocks</h2>
+
+<p>
+  <code>for_each</code> on a resource creates multiple resources. <code>dynamic</code> creates repeated
+  <em>nested blocks inside one resource</em>. Introduced in Lesson 03; here is the pattern that matters most.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">the conditional-block idiom</span></div>
+<pre><code class="language-hcl">resource "azurerm_linux_function_app" "ingest" {
+  # ...
+
+  # Include the identity block only when an identity is wanted, and
+  # choose its shape based on which kind.
+  dynamic "identity" {
+    for_each = var.identity_type == "none" ? [] : [var.identity_type]
+
+    content {
+      type         = identity.value
+      identity_ids = identity.value == "UserAssigned" ? [azurerm_user_assigned_identity.ingest.id] : null
+    }
+  }
+
+  site_config {
+    dynamic "ip_restriction" {
+      for_each = var.allowed_ip_ranges
+
+      content {
+        name       = "allow-${ip_restriction.key}"
+        ip_address = ip_restriction.value
+        action     = "Allow"
+        priority   = 100 + index(keys(var.allowed_ip_ranges), ip_restriction.key)
+      }
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Readability cost is real</div>
+  <p style="margin-bottom:0">
+    HashiCorp's documentation explicitly warns that overusing <code>dynamic</code> makes configuration hard to
+    read and maintain. If you can write three literal blocks, write three literal blocks — a reviewer can see
+    them, and a plan diff on a literal block is much easier to interpret.
+  </p>
+</div>
+
+<h2 id="lifecycle">The lifecycle block</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Rule</th><th>Effect</th><th>Use for</th></tr></thead>
+  <tbody>
+    <tr><td><code>create_before_destroy</code></td><td>On replacement, create the new resource before destroying the old</td><td>Minimising downtime — where the name allows it</td></tr>
+    <tr><td><code>prevent_destroy</code></td><td>Any plan that would destroy this resource <strong>fails at plan time</strong></td><td>Data lakes, key vaults, production databases</td></tr>
+    <tr><td><code>ignore_changes</code></td><td>Ignore drift on named attributes</td><td>Attributes another system owns</td></tr>
+    <tr><td><code>replace_triggered_by</code></td><td>Force replacement when another resource or attribute changes</td><td>Rebuilding a dependent when its dependency changes</td></tr>
+    <tr><td><code>precondition</code> / <code>postcondition</code></td><td>Assertions checked at plan/apply time</td><td>Guardrails spanning several values</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">lifecycle accepts literals only</div>
+  <p style="margin-bottom:0">
+    <code>prevent_destroy = var.is_production</code> does not work —
+    <code>Error: Variables not allowed</code>. The <code>lifecycle</code> block is evaluated too early for
+    variable resolution. This is the single most common frustration with it, and the practical answer is to
+    separate environments into different root modules (Lesson 17) so production can hardcode
+    <code>true</code>. <code>ignore_changes</code> and <code>replace_triggered_by</code> take references, but
+    the booleans do not.
+  </p>
+</div>
+
+<h3 id="prevent-destroy">prevent_destroy</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">prevent-destroy.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                = local.sa_name
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  # ...
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}</code></pre>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">what it does when someone tries</span></div>
+<pre><code class="language-bash">Error: Instance cannot be destroyed
+
+  on lake.tf line 1:
+   1: resource "azurerm_storage_account" "lake" {
+
+Resource azurerm_storage_account.lake has lifecycle.prevent_destroy set, but
+the plan calls for this resource to be destroyed. To avoid this error and
+continue with the plan, either disable lifecycle.prevent_destroy or reduce
+the scope of the plan using the -target flag.</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">What it protects against, and what it does not</div>
+  <ul style="margin-bottom:0">
+    <li>✓ An accidental <code>terraform destroy</code>.</li>
+    <li>✓ A change to a ForceNew attribute that would silently replace the resource — this is the case that saves data.</li>
+    <li>✓ Removing the resource block from configuration.</li>
+    <li>✗ Somebody deleting it in the portal. Use an Azure resource lock for that.</li>
+    <li>✗ Deleting the resource group it lives in — Terraform's protection is per resource.</li>
+    <li>✗ A deliberate attacker: it is one line to remove.</li>
+  </ul>
+</div>
+
+<h3 id="ignore-changes">ignore_changes</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">ignore-changes.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_linux_function_app" "ingest" {
+  # ...
+
+  lifecycle {
+    ignore_changes = [
+      # The deployment pipeline sets this. Terraform must not unset it.
+      app_settings["WEBSITE_RUN_FROM_PACKAGE"],
+
+      # Azure Policy appends governance tags.
+      tags["CreatedOnDate"],
+      tags["Owner"],
+    ]
+  }
+}
+
+resource "azurerm_network_security_group" "databricks" {
+  # ...
+
+  lifecycle {
+    # Databricks injects its own required rules into this NSG.
+    ignore_changes = [security_rule]
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Two ways to misuse it</div>
+  <p>
+    <strong>Too broad.</strong> <code>ignore_changes = all</code> makes Terraform stop reconciling the resource
+    entirely — it will create it and then never notice any difference again. That is almost never what you want,
+    and it turns a managed resource into an unmanaged one that merely appears in state.
+  </p>
+  <p style="margin-bottom:0">
+    <strong>Used to silence a real problem.</strong> If a plan keeps proposing a change you do not want, the
+    question is <em>who is changing this and why</em>. Ignoring it hides a genuine conflict — often two
+    configurations managing the same resource, which is a design bug that <code>ignore_changes</code> will let
+    you live with for a year before it bites.
+  </p>
+</div>
+
+<h3 id="create-before-destroy">create_before_destroy</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">create-before-destroy.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_user_assigned_identity" "ingest" {
+  name                = "id-ingest-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}</code></pre>
+</div>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    subgraph DEF["Default: destroy_before_create"]
+        D1["destroy old"] --> D2["gap — the resource<br/>does not exist"] --> D3["create new"]
+    end
+    subgraph CBD["create_before_destroy"]
+        C1["create new"] --> C2["switch references"] --> C3["destroy old"]
+    end
+
+    style D2 fill:#fdeceb,stroke:#c0392b
+    style CBD fill:#e3f5ee,stroke:#1a7f5a
+  </div>
+  <figcaption>The default leaves a window where the resource does not exist. Sometimes that window is an outage.</figcaption>
+</figure>
+
+<div class="callout callout-warn">
+  <div class="callout-title">It often cannot work on Azure</div>
+  <p style="margin-bottom:0">
+    Both resources exist simultaneously, so they need different names — and most Azure resources have a unique
+    name within their scope, with storage accounts, Key Vaults and Function Apps unique <em>globally</em>.
+    <code>create_before_destroy</code> on a storage account fails with “name already taken” because the old one
+    still holds it. It works when the name is generated (a <code>random_id</code> suffix), or on resources
+    without a name conflict. Note also that it propagates: Terraform applies it to dependents too, which can
+    widen a replacement more than you expected.
+  </p>
+</div>
+
+<h3 id="replace-triggered-by">replace_triggered_by</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">replace-triggered-by.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_linux_function_app" "ingest" {
+  # ...
+
+  lifecycle {
+    # If the identity is replaced, the app must be recreated to pick up
+    # the new principal — otherwise it silently keeps the old, now-invalid one.
+    replace_triggered_by = [azurerm_user_assigned_identity.ingest.id]
+  }
+}</code></pre>
+</div>
+
+<h3 id="conditions">precondition and postcondition</h3>
+
+<p>
+  Where <code>validation</code> can only inspect a single variable, conditions can reference anything — which
+  makes them the right tool for cross-cutting guardrails.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">conditions.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  # ...
+
+  lifecycle {
+    # Checked BEFORE the resource is created or updated.
+    precondition {
+      condition     = !(var.environment == "prod" &amp;&amp; var.allow_public_access)
+      error_message = "Production storage accounts must not allow public network access."
+    }
+
+    precondition {
+      condition     = var.environment != "prod" || var.replication_type != "LRS"
+      error_message = "Production requires zone- or geo-redundant replication, not LRS."
+    }
+
+    # Checked AFTER apply, against the real resource.
+    postcondition {
+      condition     = self.is_hns_enabled
+      error_message = "The lake account must have the hierarchical namespace enabled."
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">check blocks — non-blocking assertions</div>
+  <p style="margin-bottom:0">
+    A <code>check</code> block (Terraform 1.5+) reports a <em>warning</em> rather than failing, and can contain
+    scoped data sources. Use it for continuous validation — “is the lake's private endpoint actually resolving?”
+    — where you want visibility in every plan without blocking deployments on a transient condition.
+  </p>
+</div>
+
+<h2 id="depends-on">depends_on, revisited</h2>
+
+<p>Lesson 05 covered the basics. Two refinements now that you have modules:</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">depends_on at module level is coarse</span></div>
+<pre><code class="language-hcl"># ✗ Waits for EVERYTHING in the networking module — including resources
+#   the storage module does not care about. Serialises unnecessarily.
+module "storage" {
+  source     = "./modules/storage"
+  depends_on = [module.networking]
+}
+
+# ✓ Pass the specific output through as an input. This creates a precise
+#   edge and documents what the dependency actually is.
+module "storage" {
+  source                = "./modules/storage"
+  privatelink_subnet_id = module.networking.privatelink_subnet_id
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title"><code>depends_on</code> can widen replacements</div>
+  <p style="margin-bottom:0">
+    When a <code>depends_on</code> target is replaced, Terraform may conservatively plan to replace the dependent
+    too, because it cannot reason about what the dependency provided. A reference-based edge is more precise: it
+    knows exactly which attribute is consumed, so it can tell whether the change actually matters.
+  </p>
+</div>
+
+<h2 id="immutable">Immutable infrastructure</h2>
+
+<p>
+  Everything in this lesson serves one idea: with immutable infrastructure you replace rather than modify, so
+  a resource's configuration always matches what was deployed and there is no accumulated hand-editing.
+  Terraform's replacement mechanics are the engine for that.
+</p>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>Where immutability works well</h4>
+    <ul style="margin-bottom:0">
+      <li>Compute — VM scale sets, container images, Function App code</li>
+      <li>Configuration — NSG rules, app settings, policies</li>
+      <li>Anything stateless: replace freely</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Where it does not</h4>
+    <ul style="margin-bottom:0">
+      <li><strong>Data.</strong> A storage account, a database, a lake — replacing means migrating, which is a project.</li>
+      <li>Resources with globally unique names — the old one holds the name.</li>
+      <li>Anything with long provisioning time and a hard dependency chain.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The practical policy for a data platform</div>
+  <p style="margin-bottom:0">
+    Treat stateless resources as replaceable and stateful ones as precious. Concretely: <code>prevent_destroy</code>
+    on every data-bearing resource, an Azure resource lock as a second layer that works outside Terraform, and a
+    CI gate that fails when a plan contains a delete action unless a human sets an explicit override flag.
+    Lesson 18 implements that gate.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Predict the plan</span>
+  </div>
+  <div class="exercise-body">
+    <p>Four containers exist, created with <code>count</code> over <code>["raw","bronze","silver","gold"]</code>. Someone reorders the list to <code>["bronze","gold","raw","silver"]</code> — alphabetical, for tidiness. No other change.</p>
+    <p>What does the plan say, and what is the real-world consequence?</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>All four are destroyed and recreated.</strong></p>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Index</th><th>Was</th><th>Now</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td>[0]</td><td>raw</td><td>bronze</td><td>replace</td></tr>
+          <tr><td>[1]</td><td>bronze</td><td>gold</td><td>replace</td></tr>
+          <tr><td>[2]</td><td>silver</td><td>raw</td><td>replace</td></tr>
+          <tr><td>[3]</td><td>gold</td><td>silver</td><td>replace</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>
+        <code>Plan: 4 to add, 0 to change, 4 to destroy.</code> Container <code>name</code> is ForceNew, so every
+        index whose name changed must be replaced — <strong>and destroying a container deletes everything in
+        it.</strong> A purely cosmetic reordering deletes the entire data lake.
+      </p>
+      <p style="margin-bottom:0">
+        With <code>for_each = toset(...)</code>, sets are unordered and the keys are the names, so reordering the
+        literal produces <strong>no change at all</strong>. That is the whole argument, in one example.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Environment-driven resources</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write configuration where:</p>
+    <ul>
+      <li>Containers are created from a map, each with its own access tier.</li>
+      <li>Private endpoints exist only when <code>var.enable_private_endpoints</code> is true — one per required subresource.</li>
+      <li>A role assignment is created per container per identity, from an access matrix.</li>
+      <li>The storage account cannot be destroyed by a plan.</li>
+      <li>A precondition rejects a production configuration that allows public network access.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution</span></div>
+<pre><code class="language-hcl">variable "enable_private_endpoints" {
+  type    = bool
+  default = true
+}
+
+variable "environment" {
+  type = string
+}
+
+variable "allow_public_access" {
+  type    = bool
+  default = false
+}
+
+locals {
+  containers = {
+    raw    = { tier = "Cool" }
+    bronze = { tier = "Hot" }
+    silver = { tier = "Hot" }
+    gold   = { tier = "Hot" }
+  }
+
+  access_matrix = {
+    databricks = { raw = "Storage Blob Data Reader", silver = "Storage Blob Data Contributor" }
+    functions  = { raw = "Storage Blob Data Contributor" }
+  }
+
+  # cross-product, stably keyed
+  assignments = {
+    for a in flatten([
+      for who, layers in local.access_matrix : [
+        for layer, role in layers : { who = who, layer = layer, role = role }
+      ]
+    ]) : "${a.who}-${a.layer}" =&gt; a
+  }
+
+  pe_subresources = var.enable_private_endpoints ? {
+    blob = "privatelink.blob.core.windows.net"
+    dfs  = "privatelink.dfs.core.windows.net"
+  } : {}
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                          = local.sa_name
+  resource_group_name           = azurerm_resource_group.analytics.name
+  location                      = var.location
+  account_tier                  = "Standard"
+  account_replication_type      = "GZRS"
+  is_hns_enabled                = true
+  public_network_access_enabled = var.allow_public_access
+
+  lifecycle {
+    prevent_destroy = true
+
+    precondition {
+      condition     = !(var.environment == "prod" &amp;&amp; var.allow_public_access)
+      error_message = "Production storage must not allow public network access."
+    }
+  }
+}
+
+resource "azurerm_storage_container" "layers" {
+  for_each           = local.containers
+  name               = each.key
+  storage_account_id = azurerm_storage_account.lake.id
+}
+
+# for_each over an empty map when disabled — no count needed
+resource "azurerm_private_endpoint" "lake" {
+  for_each = local.pe_subresources
+
+  name                = "pe-lake-${each.key}-${local.suffix}"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  subnet_id           = azurerm_subnet.this["privatelink"].id
+
+  private_service_connection {
+    name                           = "psc-lake-${each.key}"
+    private_connection_resource_id = azurerm_storage_account.lake.id
+    subresource_names              = [each.key]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "pdz-${each.key}"
+    private_dns_zone_ids = [azurerm_private_dns_zone.this[each.value].id]
+  }
+}
+
+resource "azurerm_role_assignment" "lake" {
+  for_each = local.assignments
+
+  scope                = azurerm_storage_container.layers[each.value.layer].id
+  role_definition_name = each.value.role
+  principal_id         = local.principals[each.value.who]
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Two design points worth noting. First, <code>for_each</code> over a map that is empty when disabled is
+        cleaner than <code>count</code> for the conditional endpoints — it also gives per-instance keys, so
+        adding a third subresource later is a one-line change. Second, every <code>for_each</code> key here comes
+        from a <code>local</code> derived from variables, so all of them are known at plan time.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Migrate count to for_each on live infrastructure</span>
+  </div>
+  <div class="exercise-body">
+    <p>Four containers were created with <code>count</code> over <code>["raw", "bronze", "silver", "gold"]</code> and hold production data. Convert them to <code>for_each</code> without destroying anything.</p>    <p style="margin-bottom:0">Include how you would confirm the index-to-name mapping before writing anything &mdash; do not assume the configuration order matches what was actually applied.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">1-confirm-mapping.sh</span></div>
+<pre><code class="language-bash"># NEVER assume [0] is "raw". The list may have been reordered since the
+# last apply, in which case a wrong mapping silently binds the wrong
+# container to the wrong address.
+for i in 0 1 2 3; do
+  printf '[%s] = %s\n' "$i" \
+    "$(terraform state show "azurerm_storage_container.layers[$i]" \
+       | awk '/^ *name /{print $3}')"
+done
+
+# [0] = "raw"
+# [1] = "bronze"
+# [2] = "silver"
+# [3] = "gold"</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">2-migrate.tf</span></div>
+<pre><code class="language-hcl">variable "medallion_layers" {
+  type    = set(string)
+  default = ["raw", "bronze", "silver", "gold"]
+}
+
+resource "azurerm_storage_container" "layers" {
+  for_each = var.medallion_layers
+
+  name                  = each.value
+  storage_account_id    = azurerm_storage_account.lake.id
+  container_access_type = "private"
+}
+
+# One block per instance, using the mapping confirmed above.
+moved {
+  from = azurerm_storage_container.layers[0]
+  to   = azurerm_storage_container.layers["raw"]
+}
+moved {
+  from = azurerm_storage_container.layers[1]
+  to   = azurerm_storage_container.layers["bronze"]
+}
+moved {
+  from = azurerm_storage_container.layers[2]
+  to   = azurerm_storage_container.layers["silver"]
+}
+moved {
+  from = azurerm_storage_container.layers[3]
+  to   = azurerm_storage_container.layers["gold"]
+}</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">3-verify.sh</span></div>
+<pre><code class="language-bash">terraform plan -out=tfplan
+# REQUIRED: Plan: 0 to add, 0 to change, 0 to destroy.
+#
+# Anything else means a mapping is wrong. Do not apply and "fix it after" -
+# a wrong mapping destroys a container and creates an empty replacement.
+
+terraform apply tfplan
+terraform state list | grep storage_container
+# azurerm_storage_container.layers["bronze"]
+# azurerm_storage_container.layers["gold"]
+# azurerm_storage_container.layers["raw"]
+# azurerm_storage_container.layers["silver"]</code></pre>
+</div>    <p>Once migrated, removing <code>"bronze"</code> from the variable destroys exactly one container. Before the migration it would have replaced <code>silver</code> and <code>gold</code> as well, because their indexes shift &mdash; and container <code>name</code> is ForceNew, so &ldquo;replace&rdquo; means delete the data.</p>    <p style="margin-bottom:0">Leave the <code>moved</code> blocks in the repository for a release or two so colleagues on older checkouts are covered, then delete them.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Guard a production resource four different ways</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write every layer of protection you can express in Terraform for the production data lake, then name the one thing none of them can stop.</p>    <p style="margin-bottom:0">Include a precondition that makes an insecure production configuration fail at plan time.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">guards.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                = local.sa_name
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+
+  account_tier             = "Standard"
+  account_replication_type = var.replication
+  is_hns_enabled           = true
+
+  public_network_access_enabled = var.allow_public_access
+  shared_access_key_enabled     = var.allow_shared_keys
+
+  lifecycle {
+    # 1 - Any plan that would destroy this FAILS at plan time. Covers an
+    #     accidental destroy, removing the block, AND - most valuably - a
+    #     change to a ForceNew attribute that would silently replace it.
+    #     Must be a literal: prevent_destroy = var.is_prod does NOT work.
+    prevent_destroy = true
+
+    # 2 - Cross-value rules that a variable validation cannot express,
+    #     because validation can only see its own variable.
+    precondition {
+      condition     = !(var.environment == "prod" &amp;&amp; var.allow_public_access)
+      error_message = "Production storage must not allow public network access."
+    }
+
+    precondition {
+      condition     = !(var.environment == "prod" &amp;&amp; var.allow_shared_keys)
+      error_message = "Production storage must not permit shared key access."
+    }
+
+    precondition {
+      condition     = var.environment != "prod" || contains(["GZRS", "RAGZRS", "ZRS"], var.replication)
+      error_message = "Production requires zone- or geo-redundant replication."
+    }
+
+    # 3 - Verified AFTER apply against the real resource.
+    postcondition {
+      condition     = self.is_hns_enabled
+      error_message = "The lake must have the hierarchical namespace enabled."
+    }
+  }
+}
+
+# 4 - An Azure-side lock, which works even outside Terraform.
+resource "azurerm_management_lock" "lake" {
+  name       = "no-delete-lake"
+  scope      = azurerm_storage_account.lake.id
+  lock_level = "CanNotDelete"
+  notes      = "Production data lake. Removal requires a change request."
+}</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">ci-gate.sh</span></div>
+<pre><code class="language-bash"># 5 - The pipeline gate, from Lesson 18. Terraform-side guards protect
+#     against Terraform; this protects against the plan reaching apply.
+terraform show -json tfplan &gt; plan.json
+
+DESTROYS=$(jq '[.resource_changes[]
+  | select(.change.actions | index("delete"))] | length' plan.json)
+
+if [ "$DESTROYS" -gt 0 ] &amp;&amp; [ "${ALLOW_DESTROY:-false}" != "true" ]; then
+  echo "::error::Plan destroys $DESTROYS resource(s)."
+  jq -r '.resource_changes[] | select(.change.actions | index("delete"))
+         | "  - " + .address' plan.json
+  exit 1
+fi</code></pre>
+</div>    <p><strong>What none of them stops:</strong> someone with portal access deleting the resource by hand. <code>prevent_destroy</code> and preconditions only constrain Terraform; the management lock is the only one of the five that applies outside it &mdash; and even that can be removed by anyone with <code>Microsoft.Authorization/locks/delete</code>.</p>    <p style="margin-bottom:0">Which is the real lesson: these are layers, not a solution. The durable control is removing standing portal write access to production and routing every change through the reviewed pipeline. Note too that <code>prevent_destroy</code> cannot be driven by a variable &mdash; the <code>lifecycle</code> block takes literals only, which is one concrete reason to keep production in its own root module.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Four lifecycle bugs</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                     = "stanalytics${var.environment}weu01"
+  resource_group_name      = azurerm_resource_group.analytics.name
+  location                 = var.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  lifecycle {
+    prevent_destroy       = var.environment == "prod"
+    create_before_destroy = true
+    ignore_changes        = all
+  }
+}
+
+resource "azurerm_role_assignment" "containers" {
+  for_each = toset([
+    for c in azurerm_storage_container.layers : c.id
+  ])
+
+  scope                = each.value
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+}</code></pre>
+    </div>
+    <p>Find four problems.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>1 · <code>prevent_destroy</code> with an expression.</strong></p>
+      <p>
+        <code>Error: Variables not allowed</code>. The <code>lifecycle</code> block accepts only literals. Fix by
+        separating environments into different root modules so production hardcodes <code>true</code> — or accept
+        it everywhere, which for a data lake is defensible.
+      </p>
+
+      <p><strong>2 · <code>create_before_destroy</code> on a globally unique name.</strong></p>
+      <p>
+        Both accounts would exist at once, and both want <code>stanalyticsprodweu01</code>. The apply fails with
+        <code>StorageAccountAlreadyTaken</code>. It also conflicts with <code>prevent_destroy</code> — the two
+        together mean “never destroy, but when you do, create first”, which is incoherent. Remove it.
+      </p>
+
+      <p><strong>3 · <code>ignore_changes = all</code>.</strong></p>
+      <p>
+        Terraform will create the account and then never reconcile it again. Change
+        <code>account_replication_type</code> in code and nothing happens; someone disables HTTPS in the portal
+        and no plan reports it. This turns a managed resource into an unmanaged one that merely appears in state.
+        Name the specific attributes you genuinely need to ignore, or none.
+      </p>
+
+      <p><strong>4 · <code>for_each</code> keyed on computed IDs.</strong></p>
+      <p>
+        Container IDs are unknown until apply, so Terraform cannot enumerate the instances during plan:
+        <code>The "for_each" value depends on resource attributes that cannot be determined until apply</code>.
+        Key on the static input instead:
+      </p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">fix</span></div>
+<pre><code class="language-hcl">resource "azurerm_role_assignment" "containers" {
+  for_each = var.medallion_layers      # static set of names
+
+  scope                = azurerm_storage_container.layers[each.key].id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        A fifth, smaller point: <code>principal_type</code> is missing, which risks a
+        <code>PrincipalNotFound</code> race when the identity is created in the same apply.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is the difference between <code>count</code> and <code>for_each</code>?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>count</code> takes a number and keys instances by integer index; <code>for_each</code> takes a set
+        or map and keys them by a meaningful string. The practical difference is that instance keys become state
+        addresses, so removing an element from the middle of a <code>count</code> list shifts every later index
+        and causes unrelated resources to be destroyed and recreated — on storage containers, that deletes data.
+        With <code>for_each</code>, removing one element affects exactly that one. I use <code>count</code> only
+        for conditional creation with <code>? 1 : 0</code>, and <code>for_each</code> for everything else.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why might <code>for_each</code> fail with “value depends on resource attributes”?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because Terraform must enumerate every instance during plan, so <code>for_each</code> keys have to be
+        known before anything is created. Keying on something computed — a resource ID, a managed identity's
+        principal ID — makes that impossible. The fix is to key on the same static input that generated those
+        resources and put the unknown value in the <code>for_each</code> value or in the resource body, which is
+        allowed. If the dependency genuinely spans a creation boundary, that is a signal to split into two
+        applies rather than to reach for <code>-target</code>.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What does <code>prevent_destroy</code> do, and what are its limits?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        It makes any plan that would destroy the resource fail at plan time — which protects against an
+        accidental destroy, against removing the block from configuration, and most valuably against a change to
+        a ForceNew attribute that would silently replace the resource. Its limits: it does not stop someone
+        deleting the resource in the portal, it does not protect against deleting the whole resource group, it
+        cannot be set from a variable because <code>lifecycle</code> accepts only literals, and it is one line
+        for anyone to remove. So it is one layer, alongside Azure resource locks and a CI gate on destroy
+        actions.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>When is <code>ignore_changes</code> appropriate?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        When another system legitimately owns an attribute — a deployment pipeline setting
+        <code>WEBSITE_RUN_FROM_PACKAGE</code>, Azure Policy appending tags, Databricks injecting NSG rules, an
+        autoscaler changing node counts. Always name the specific attributes; <code>ignore_changes = all</code>
+        stops Terraform reconciling the resource at all, which makes it effectively unmanaged. And I would be
+        suspicious of using it to silence a recurring diff without understanding the cause — that is often two
+        configurations fighting over the same resource, which is a design problem it merely postpones.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why does <code>create_before_destroy</code> often fail on Azure?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because both instances exist simultaneously and most Azure resources require a unique name within their
+        scope — with storage accounts, Key Vaults and Function Apps unique globally. Creating the replacement
+        fails because the original still holds the name. It works when names are generated with a random suffix,
+        or on resources without a naming conflict. It is also worth knowing that Terraform propagates it to
+        dependent resources, which can make a replacement wider than you intended.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you protect production data from a bad Terraform change?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Layers. <code>prevent_destroy</code> on data-bearing resources so a plan fails rather than proceeding.
+        Azure resource locks, which work even outside Terraform. Separate state and separate credentials per
+        environment, so a dev pipeline cannot reach production. A CI gate that parses the plan JSON and fails on
+        any delete action unless a human sets an override. Mandatory plan review with the reviewed plan applied
+        via <code>-out</code>. And reading every plan for <code># forces replacement</code>, which is the comment
+        that precedes most accidental data loss.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li><code>for_each</code> for collections, <code>count</code> only for <code>? 1 : 0</code>. Index shifting destroys data.</li>
+  <li><code>for_each</code> keys must be known at plan time; values need not be.</li>
+  <li>Convert <code>count</code> to <code>for_each</code> with <code>moved</code> blocks, and verify with an empty plan.</li>
+  <li><code>lifecycle</code> accepts literals only — no variables in <code>prevent_destroy</code>.</li>
+  <li><code>ignore_changes</code> names specific attributes. <code>all</code> makes the resource unmanaged.</li>
+  <li><code>create_before_destroy</code> conflicts with globally unique Azure names.</li>
+  <li>Preconditions express rules that span several values, which <code>validation</code> cannot.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,1158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 · Terraform state &amp; remote backends — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="10">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate · core</span>
+    <span>Part 9</span><span>·</span><span>~80 min</span><span>·</span><span>Requires Lesson 07</span>
+  </div>
+  <h1>Terraform state &amp; remote backends</h1>
+  <p class="lede">
+    State is the concept that separates people who use Terraform from people who understand it. Nearly every
+    confusing behaviour — “it wants to recreate everything”, “it says it already exists”, “the plan is empty
+    but the resource is gone” — is a state question wearing a disguise.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain the four jobs state does, and why Terraform cannot work without it</li>
+      <li>Read a state file and explain the address-to-resource-ID mapping</li>
+      <li>Define drift precisely, and detect it deliberately with <code>-refresh-only</code></li>
+      <li>Configure the Azure Storage backend correctly, including the bootstrap problem</li>
+      <li>Argue for a state isolation strategy in terms of blast radius</li>
+      <li>Recover from a lost, locked or corrupted state file</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">State</span><span class="pill">Azure backend</span><span class="pill">Locking</span><span class="pill">Drift</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="what-is-state">What state is</h2>
+
+<p>
+  A JSON document recording, for every resource Terraform manages, the mapping between its <strong>configuration
+  address</strong> and its <strong>real resource ID</strong> — plus a cached copy of every attribute the
+  provider last read.
+</p>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">terraform.tfstate — the essential shape</span></div>
+<pre><code class="language-json">{
+  "version": 4,
+  "terraform_version": "1.16.1",
+  "serial": 42,
+  "lineage": "8f2c1e4a-3b6d-4c9e-8a1f-2d5e7c9b0a3f",
+  "outputs": {
+    "lake_dfs_endpoint": {
+      "value": "https://stanalyticsdevweu01.dfs.core.windows.net/",
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "lake",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 4,
+          "attributes": {
+            "id": "/subscriptions/.../storageAccounts/stanalyticsdevweu01",
+            "name": "stanalyticsdevweu01",
+            "is_hns_enabled": true,
+            "primary_access_key": "PLAINTEXT-IN-THE-REAL-FILE",
+            "...": "..."
+          },
+          "dependencies": ["azurerm_resource_group.analytics"]
+        }
+      ]
+    }
+  ]
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>version</code></td><td>State file <em>format</em> version (4 for years). Not your Terraform version.</td></tr>
+    <tr><td><code>terraform_version</code></td><td>The CLI that last wrote it. An <strong>older</strong> CLI refuses to open state written by a newer one — a common CI failure when someone upgrades locally.</td></tr>
+    <tr><td><code>serial</code></td><td>Incremented on every write. The backend uses it to detect that state moved underneath you.</td></tr>
+    <tr><td><code>lineage</code></td><td>A GUID identifying this state's history. If it changes, you are looking at a <em>different</em> state — Terraform warns loudly, because it usually means someone pointed at the wrong backend.</td></tr>
+    <tr><td><code>mode</code></td><td><code>managed</code> for resources, <code>data</code> for data sources.</td></tr>
+    <tr><td><code>instances</code></td><td>One entry per instance. A plain resource has one; <code>count</code> adds <code>index_key</code>; <code>for_each</code> adds a string key.</td></tr>
+    <tr><td><code>dependencies</code></td><td>The graph edges, recorded so Terraform can destroy in the right order <em>even after you delete the configuration</em>.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="why-state">Why state exists — four jobs</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    S[("<b>Terraform state</b>")]
+
+    S --> J1["<b>1 · Mapping</b><br/>Which real Azure resource is<br/>azurerm_storage_account.lake?<br/><br/><i>Azure has no field saying<br/>'this belongs to Terraform address X'.</i>"]
+    S --> J2["<b>2 · Metadata</b><br/>Dependencies, provider,<br/>schema version.<br/><br/><i>Lets Terraform destroy in the right<br/>order after you delete the code.</i>"]
+    S --> J3["<b>3 · Performance</b><br/>A cached snapshot of attributes.<br/><br/><i>Large configurations can plan against<br/>the cache with -refresh=false.</i>"]
+    S --> J4["<b>4 · Collaboration</b><br/>One shared, locked source of truth.<br/><br/><i>Without it, two engineers each<br/>believe they created everything.</i>"]
+
+    style S fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+  </div>
+  <figcaption>Job 1 is the irreducible one. The others are consequences and optimisations.</figcaption>
+</figure>
+
+<div class="callout callout-important">
+  <div class="callout-title">Why Terraform cannot just query Azure instead</div>
+  <p>
+    A reasonable question, and the answer sharpens the mental model. Suppose Terraform listed every resource in
+    the subscription on each run. It still could not answer:
+  </p>
+  <ul>
+    <li><strong>Which of these 400 resources are mine?</strong> There is no reliable marker. Tags are advisory and can be edited.</li>
+    <li><strong>Which configuration address does this resource correspond to?</strong> Two storage accounts with identical settings are indistinguishable by inspection.</li>
+    <li><strong>What did I create that has since been deleted?</strong> Detecting deletion requires knowing what should be there.</li>
+    <li><strong>In what order must I destroy things after the code is gone?</strong> The dependencies were in the configuration you just deleted.</li>
+  </ul>
+  <p style="margin-bottom:0">
+    State is the answer to “what do I own, and what is it called in my code”. That is why deleting it is
+    catastrophic rather than inconvenient.
+  </p>
+</div>
+
+<h2 id="addressing">Resource addressing</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">terraform state list</span></div>
+<pre><code class="language-bash">$ terraform state list
+
+data.azurerm_client_config.current
+azurerm_resource_group.analytics
+azurerm_storage_account.lake
+azurerm_storage_container.layers["bronze"]
+azurerm_storage_container.layers["gold"]
+azurerm_storage_container.layers["raw"]
+azurerm_storage_container.layers["silver"]
+azurerm_subnet.this[0]
+azurerm_subnet.this[1]
+module.networking.azurerm_virtual_network.main
+module.networking.azurerm_subnet.privatelink
+module.databricks.azurerm_databricks_workspace.this</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Address form</th><th>Produced by</th><th>Stability</th></tr></thead>
+  <tbody>
+    <tr><td><code>azurerm_storage_account.lake</code></td><td>A plain resource</td><td>Stable unless you rename the block</td></tr>
+    <tr><td><code>azurerm_subnet.this[0]</code></td><td><code>count</code></td><td><strong>Fragile</strong> — indexes shift when list elements are inserted or removed</td></tr>
+    <tr><td><code>azurerm_storage_container.layers["raw"]</code></td><td><code>for_each</code></td><td><strong>Stable</strong> — keyed by a meaningful value</td></tr>
+    <tr><td><code>module.networking.azurerm_subnet.privatelink</code></td><td>A module</td><td>Stable unless the module call is renamed</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Renaming a block is a state operation</div>
+  <p style="margin-bottom:0">
+    Changing <code>resource "azurerm_storage_account" "lake"</code> to <code>"data_lake"</code> makes Terraform
+    plan to destroy <code>lake</code> and create <code>data_lake</code> — because as far as state is concerned,
+    one address disappeared and another appeared. The fix is a <code>moved</code> block, which renames the
+    address in state without touching Azure. Lesson 16.
+  </p>
+</div>
+
+<h2 id="drift">Drift</h2>
+
+<p>
+  <strong>Drift</strong> is any difference between what state records and what actually exists in Azure —
+  caused by something other than Terraform.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart LR
+    subgraph CAUSES["How drift happens"]
+        C1["Portal edit<br/>'just a quick fix'"]
+        C2["Azure Policy<br/>appending tags"]
+        C3["Autoscaling<br/>changing node counts"]
+        C4["Another Terraform<br/>configuration"]
+        C5["Manual az CLI<br/>during an incident"]
+        C6["Azure deprecating<br/>a setting"]
+    end
+
+    CAUSES --> D["Reality ≠ State"]
+    D --> R["terraform plan refresh phase<br/>detects it"]
+    R --> A{"What does<br/>the config say?"}
+    A -->|"config still has the old value"| REVERT["Plan proposes reverting<br/>Azure to the config"]
+    A -->|"the attribute is ignored"| NOOP["No change shown"]
+
+    style D fill:#fdf3e0,stroke:#a5670a
+  </div>
+  <figcaption>Terraform's default response to drift is to push reality back toward the configuration.</figcaption>
+</figure>
+
+<h3 id="detecting-drift">Detecting drift deliberately</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">refresh-only</span></div>
+<pre><code class="language-bash"># Show what has changed in Azure, WITHOUT proposing to change anything back.
+terraform plan -refresh-only
+
+# Accept reality into state (does not touch Azure).
+terraform apply -refresh-only</code></pre>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">refresh-only output</span></div>
+<pre><code class="language-bash">Note: Objects have changed outside of Terraform
+
+Terraform detected the following changes made outside of Terraform since the
+last "terraform apply" which may have affected this plan:
+
+  # azurerm_storage_account.lake has changed
+  ~ resource "azurerm_storage_account" "lake" {
+        id                       = "/subscriptions/.../stanalyticsdevweu01"
+      ~ account_replication_type = "LRS" -&gt; "GRS"
+      ~ tags                     = {
+          + "AppliedByPolicy" = "true"
+        }
+    }
+
+This is a refresh-only plan, so Terraform will not take any actions to undo
+these changes.</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The difference between the two commands</div>
+  <p style="margin-bottom:0">
+    <code>terraform plan</code> refreshes and then proposes changes to make Azure match your code — it wants to
+    revert the drift. <code>terraform plan -refresh-only</code> refreshes and <em>reports</em>, proposing only
+    to update state. Use refresh-only when you want to <em>understand</em> a change before deciding whether the
+    code or the cloud is right. This is the correct first move whenever a plan surprises you.
+  </p>
+</div>
+
+<h3 id="automated-drift">Automated drift detection</h3>
+
+<div class="code is-yaml">
+  <div class="code-head"><span class="fname">.github/workflows/drift.yml (excerpt)</span></div>
+<pre><code class="language-yaml">on:
+  schedule:
+    - cron: "0 6 * * 1-5"   # weekday mornings
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - run: terraform init -backend-config=env/prod.backend.hcl
+      - id: plan
+        # exit 0 = no changes, 1 = error, 2 = changes present
+        run: terraform plan -var-file=env/prod.tfvars -detailed-exitcode -lock=false
+        continue-on-error: true
+      - if: steps.plan.outputs.exitcode == '2'
+        run: echo "::warning::Drift detected in production"</code></pre>
+</div>
+
+<p>
+  Note <code>-lock=false</code>: a read-only drift check should not block a real deployment by holding the
+  lock.
+</p>
+
+<h2 id="locking">State locking</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+sequenceDiagram
+    participant A as Engineer A
+    participant B as Engineer B
+    participant BE as Azure Blob<br/>terraform.tfstate
+
+    A->>BE: acquire blob lease
+    BE-->>A: lease granted (lease ID)
+    A->>BE: read state
+    Note over A: plan + apply<br/>(minutes)
+    B->>BE: acquire blob lease
+    BE-->>B: 409 LeaseAlreadyPresent
+    Note over B: Error acquiring the state lock<br/>waits, or fails
+    A->>BE: write state (serial 43)
+    A->>BE: release lease
+    B->>BE: acquire blob lease
+    BE-->>B: lease granted
+    B->>BE: read state (serial 43 — A's changes included)
+  </div>
+  <figcaption>
+    The Azure backend uses a native blob lease. No extra infrastructure is needed — unlike the S3 backend,
+    which historically required a DynamoDB table.
+  </figcaption>
+</figure>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">a held lock</span></div>
+<pre><code class="language-bash">Error: Error acquiring the state lock
+
+Error message: state blob is already locked
+Lock Info:
+  ID:        4f3c2b1a-...
+  Path:      tfstate/prod.terraform.tfstate
+  Operation: OperationTypeApply
+  Who:       runner@fv-az123
+  Created:   2026-09-08 09:14:22.15 +0000 UTC</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Do not reflexively run <code>force-unlock</code></div>
+  <p>
+    The lock exists because another operation is <em>in progress</em>. Breaking it while an apply is mid-flight
+    means two processes writing state concurrently, which is how state gets corrupted.
+  </p>
+  <p style="margin-bottom:0">
+    First, read the lock info: <em>who</em> holds it and <em>when</em> was it created. If the timestamp is
+    recent and the holder is a running pipeline, wait. Only if the process is genuinely dead — a cancelled CI
+    job, a crashed laptop — should you run
+    <code>terraform force-unlock &lt;LOCK_ID&gt;</code>. Prefer <code>-lock-timeout=10m</code> on your commands
+    so concurrent runs queue instead of failing.
+  </p>
+</div>
+
+<h2 id="backends">Backends</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Local (default)</th><th>Remote</th></tr></thead>
+  <tbody>
+    <tr><td>Location</td><td><code>./terraform.tfstate</code></td><td>Azure Blob Storage, S3, Terraform Cloud/Enterprise, …</td></tr>
+    <tr><td>Locking</td><td>A local file lock — useless across machines</td><td>Yes</td></tr>
+    <tr><td>Team use</td><td>Impossible</td><td>Yes</td></tr>
+    <tr><td>Encryption at rest</td><td>Whatever your disk does</td><td>Yes, plus versioning and soft delete</td></tr>
+    <tr><td>Durability</td><td>One laptop</td><td>Replicated, backed up</td></tr>
+    <tr><td>Use for</td><td>Learning, throwaway experiments</td><td><strong>Everything real</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="azure-backend">The Azure Storage backend</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">backend.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  backend "azurerm" {
+    resource_group_name  = "rg-tfstate-prod-weu-01"
+    storage_account_name = "sttfstateprodweu01"
+    container_name       = "tfstate"
+    key                  = "analytics/prod.terraform.tfstate"
+
+    # Authenticate the DATA plane with Entra ID rather than an account key.
+    use_azuread_auth = true
+
+    # In CI, federated credentials — no secrets stored anywhere.
+    use_oidc  = true
+    tenant_id = "00000000-0000-0000-0000-000000000000"
+    client_id = "00000000-0000-0000-0000-000000000000"
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title"><code>use_azuread_auth = true</code> is not optional in practice</div>
+  <p style="margin-bottom:0">
+    Without it, the backend authenticates to the state blob using a <strong>storage account key</strong>, which
+    means every engineer and pipeline needs that key — a shared secret granting full access to every state file
+    in the account. With it, access is governed by Azure RBAC (<code>Storage Blob Data Contributor</code> on the
+    state container), which is scopeable, auditable and revocable. It also lets you set
+    <code>shared_access_key_enabled = false</code> on the state storage account itself.
+  </p>
+</div>
+
+<h3 id="partial-backend">Partial configuration — one codebase, many environments</h3>
+
+<p>
+  The <code>backend</code> block cannot use variables or expressions: it is read before variable evaluation.
+  The supported approach is <strong>partial configuration</strong> — omit the varying parts and supply them at
+  <code>init</code>.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">backend.tf — the invariant part</span></div>
+<pre><code class="language-hcl">terraform {
+  backend "azurerm" {
+    use_azuread_auth = true
+    # everything else comes from -backend-config
+  }
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">env/prod.backend.hcl</span></div>
+<pre><code class="language-hcl">resource_group_name  = "rg-tfstate-prod-weu-01"
+storage_account_name = "sttfstateprodweu01"
+container_name       = "tfstate"
+key                  = "analytics/prod.terraform.tfstate"</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">switching environments</span></div>
+<pre><code class="language-bash">terraform init -reconfigure -backend-config=env/prod.backend.hcl
+terraform plan -var-file=env/prod.tfvars -out=tfplan</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">The <code>-reconfigure</code> trap</div>
+  <p style="margin-bottom:0">
+    Terraform caches the backend configuration in <code>.terraform/</code>. Switching environments without
+    <code>-reconfigure</code> (or <code>-migrate-state</code>) means Terraform may keep using the previous
+    backend — so you plan dev's code against prod's state, or vice versa. This is a genuine cause of production
+    incidents. It is also the strongest argument for a directory per environment (Lesson 17), where the backend
+    is committed per directory and cannot be confused.
+  </p>
+</div>
+
+<h2 id="bootstrap">The bootstrap problem</h2>
+
+<p>
+  The backend must exist before Terraform can use it. So who creates the storage account that holds the state?
+  Three answers, and the third is what most teams do.
+</p>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>A · Create it manually, once</h4>
+    <p style="margin-bottom:0">
+      A documented <code>az</code> script, run once per subscription by an administrator. Not managed by
+      Terraform at all. Simple, honest, and the state backend genuinely is foundational infrastructure that
+      should not be destroyable by a Terraform apply.
+    </p>
+  </div>
+  <div class="card">
+    <h4>B · A bootstrap configuration with local state</h4>
+    <p style="margin-bottom:0">
+      A small separate configuration that creates the state account, keeping <em>its own</em> state locally and
+      committing it (it contains nothing sensitive if you disable shared keys). Reproducible, slightly circular.
+    </p>
+  </div>
+  <div class="card">
+    <h4>C · Bootstrap, then migrate</h4>
+    <p style="margin-bottom:0">
+      Run once with local state, then add the backend block and run
+      <code>terraform init -migrate-state</code> so the configuration ends up managing its own backend. Elegant
+      but creates a resource that, if destroyed, takes its own state with it.
+    </p>
+  </div>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">bootstrap.sh — option A, the pragmatic choice</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+LOCATION="westeurope"
+RG="rg-tfstate-prod-weu-01"
+SA="sttfstateprodweu01"
+CONTAINER="tfstate"
+
+az group create --name "$RG" --location "$LOCATION"
+
+az storage account create \
+  --name "$SA" --resource-group "$RG" --location "$LOCATION" \
+  --sku Standard_GZRS \
+  --kind StorageV2 \
+  --min-tls-version TLS1_2 \
+  --https-only true \
+  --allow-blob-public-access false \
+  --allow-shared-key-access false          # RBAC only — pairs with use_azuread_auth
+
+# Versioning + soft delete: your undo button for state corruption
+az storage account blob-service-properties update \
+  --account-name "$SA" --resource-group "$RG" \
+  --enable-versioning true \
+  --enable-delete-retention true --delete-retention-days 30 \
+  --enable-container-delete-retention true --container-delete-retention-days 30
+
+az storage container create \
+  --name "$CONTAINER" --account-name "$SA" --auth-mode login
+
+# A management lock so nobody deletes the state account by accident
+az lock create --name "no-delete-tfstate" --lock-type CanNotDelete \
+  --resource-group "$RG"</code></pre>
+</div>
+
+<div class="callout callout-ok">
+  <div class="callout-title">Blob versioning is the feature that will save you</div>
+  <p style="margin-bottom:0">
+    With versioning enabled, every state write creates a new blob version. A corrupted or truncated state file
+    is then recoverable by promoting the previous version — a two-minute fix instead of a day of
+    <code>terraform import</code>. Turn it on before you need it. The <code>snapshot = true</code> backend
+    option gives similar protection at the Terraform level.
+  </p>
+</div>
+
+<h2 id="securing-state">Securing state</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    T["Terraform<br/>(engineer or CI)"] -->|"OIDC / managed identity<br/>+ Storage Blob Data Contributor<br/>on the state container"| SA
+
+    subgraph SA["State storage account — sttfstateprodweu01"]
+        BLOB[("tfstate container<br/>analytics/prod.terraform.tfstate")]
+        P1["shared_access_key_enabled = false"]
+        P2["public_network_access_enabled = false<br/>+ private endpoint"]
+        P3["versioning + soft delete"]
+        P4["encryption at rest (CMK optional)"]
+        P5["management lock: CanNotDelete"]
+    end
+
+    SA --> LOG["Diagnostic settings →<br/>Log Analytics<br/><i>who read state, and when</i>"]
+
+    style SA fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+  </div>
+  <figcaption>Treat the state account as the most sensitive resource in the platform, because it is.</figcaption>
+</figure>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Read access to state is equivalent to read access to every secret</div>
+  <p style="margin-bottom:0">
+    State contains storage account keys, generated passwords, Key Vault secret values you created or read, and
+    connection strings — all in plaintext. Giving the whole engineering team
+    <code>Storage Blob Data Reader</code> on the state container “so they can debug” hands them every credential
+    in the platform. Grant it to the deployment identity and a small break-glass group only.
+  </p>
+</div>
+
+<h3 id="never-commit">Why state must never go in git</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Problem</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Plaintext secrets</strong></td><td>Every credential in the platform is now in git history, permanently, readable by everyone with clone access.</td></tr>
+    <tr><td><strong>No locking</strong></td><td>Two applies can run simultaneously against the same infrastructure with no protection.</td></tr>
+    <tr><td><strong>Merge conflicts</strong></td><td>Git will happily produce a syntactically valid but semantically corrupt state file. There is no sensible way to merge two state files.</td></tr>
+    <tr><td><strong>Stale reads</strong></td><td>Anyone who has not pulled is planning against out-of-date state, and their apply will try to recreate resources that exist.</td></tr>
+    <tr><td><strong>It is not source</strong></td><td>State is generated data, like a build artefact or a database. Source control is for source.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="isolation">State isolation and blast radius</h2>
+
+<p>
+  “How many state files should we have?” is really “how large should a single failure be?”
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph MONO["One state for everything"]
+        M1["Every resource in one file"]
+        M2["✓ Every reference is direct<br/>✓ One apply deploys everything"]
+        M3["✗ Slow plans — every resource refreshed<br/>✗ One lock blocks the whole team<br/>✗ A corrupt state loses everything<br/>✗ Anyone who can change a tag can destroy prod"]
+    end
+
+    subgraph SPLIT["State per layer, per environment"]
+        S1["prod/networking · prod/platform · prod/analytics<br/>dev/networking · dev/platform · dev/analytics"]
+        S2["✓ Small blast radius<br/>✓ Fast plans<br/>✓ Independent permissions per layer<br/>✓ Teams do not block each other"]
+        S3["✗ Cross-state references needed<br/>✗ More pipelines and more moving parts"]
+    end
+
+    style SPLIT fill:#e3f5ee,stroke:#1a7f5a
+    style MONO fill:#fdf3e0,stroke:#a5670a
+  </div>
+  <figcaption>The trade-off. Neither extreme is right; the useful question is where the seams are.</figcaption>
+</figure>
+
+<p>Split state along lines where <strong>change frequency</strong> or <strong>ownership</strong> differ:</p>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">a typical layering for a data platform</span></div>
+<pre class="plain">tfstate container
+├── platform/prod.tfstate        ← VNet, DNS zones, Key Vault      (rarely changes, network team)
+├── data/prod.tfstate            ← ADLS, RBAC, Databricks workspace (weekly, platform team)
+├── workloads/prod.tfstate       ← Functions, jobs, pipelines       (daily, product teams)
+├── platform/dev.tfstate
+├── data/dev.tfstate
+└── workloads/dev.tfstate</pre>
+</div>
+
+<h3 id="cross-state">Reading across state boundaries</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">option 1 — terraform_remote_state</span></div>
+<pre><code class="language-hcl">data "terraform_remote_state" "platform" {
+  backend = "azurerm"
+
+  config = {
+    resource_group_name  = "rg-tfstate-prod-weu-01"
+    storage_account_name = "sttfstateprodweu01"
+    container_name       = "tfstate"
+    key                  = "platform/prod.tfstate"
+    use_azuread_auth     = true
+  }
+}
+
+resource "azurerm_private_endpoint" "lake" {
+  subnet_id = data.terraform_remote_state.platform.outputs.privatelink_subnet_id
+  # ...
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">The catch with <code>terraform_remote_state</code></div>
+  <p style="margin-bottom:0">
+    It requires read access to the <em>entire other state file</em> — including all its secrets — merely to read
+    one output. That is a significant privilege escalation for what looks like a lookup. It also couples the two
+    configurations tightly: renaming an output in the platform state breaks the consumer.
+  </p>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">option 2 — data sources (usually better)</span></div>
+<pre><code class="language-hcl"># Query Azure directly. No access to anyone else's state required.
+data "azurerm_subnet" "privatelink" {
+  name                 = "snet-privatelink-prod-weu-01"
+  virtual_network_name = "vnet-platform-prod-weu-01"
+  resource_group_name  = "rg-platform-prod-weu-01"
+}
+
+resource "azurerm_private_endpoint" "lake" {
+  subnet_id = data.azurerm_subnet.privatelink.id
+  # ...
+}</code></pre>
+</div>
+
+<p>
+  The contract becomes the resource <em>name</em> rather than another team's state layout — looser coupling and
+  far less privilege. The trade-off is that names must be predictable, which is exactly what a naming convention
+  is for. A third option, cleaner still at scale, is publishing values to a well-known Key Vault or an Azure
+  App Configuration store that both sides read.
+</p>
+
+<h2 id="commands">State commands</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Command</th><th>Does</th><th>Risk</th></tr></thead>
+  <tbody>
+    <tr><td><code>terraform state list</code></td><td>List all addresses</td><td>None — read-only</td></tr>
+    <tr><td><code>terraform state show ADDR</code></td><td>Show one resource's attributes</td><td>None, but prints sensitive values</td></tr>
+    <tr><td><code>terraform state pull</code></td><td>Print raw state JSON</td><td>Read-only; the output is a secret</td></tr>
+    <tr><td><code>terraform state mv OLD NEW</code></td><td>Rename an address in state</td><td>Medium — prefer a <code>moved</code> block</td></tr>
+    <tr><td><code>terraform state rm ADDR</code></td><td><strong>Forget</strong> a resource — Azure keeps it</td><td>High — the resource becomes unmanaged and orphaned</td></tr>
+    <tr><td><code>terraform state push</code></td><td>Overwrite remote state from a file</td><td><strong>Very high</strong> — last resort only</td></tr>
+    <tr><td><code>terraform force-unlock ID</code></td><td>Break a lock</td><td><strong>Very high</strong> if the holder is alive</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Lesson 16 works through these with realistic recovery scenarios.</p>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Four state-shaped failures</span>
+  </div>
+  <div class="exercise-body">
+    <p>Explain what happened and what to do:</p>
+    <ol>
+      <li>An engineer deletes <code>terraform.tfstate</code> locally, then runs <code>apply</code>. It fails partway with <code>StorageAccountAlreadyTaken</code>.</li>
+      <li>Two engineers run <code>apply</code> at the same time against local state on their own laptops.</li>
+      <li>A plan shows <code>0 to add, 0 to change, 0 to destroy</code> — but the resource group was deleted in the portal an hour ago.</li>
+      <li>CI fails with <code>state snapshot was created by Terraform v1.16.1, which is newer than current v1.9.8</code>.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li>
+          <strong>Terraform believes it has created nothing</strong>, so it plans to create everything. Resources
+          with globally unique names fail immediately; others may be created as duplicates. Recovery is importing
+          each existing resource back into state — hours of work. This is the argument for a remote backend with
+          versioning: you would simply restore the previous blob version.
+        </li>
+        <li>
+          <strong>Two divergent states and a race.</strong> Each laptop's state records only its own creations;
+          each apply may partially overwrite the other's work. There is no locking because a local file lock does
+          not span machines. Neither state now reflects reality. This is <em>the</em> reason remote backends
+          exist.
+        </li>
+        <li>
+          <strong>The plan was run with <code>-refresh=false</code></strong>, or the refresh failed silently.
+          Without refresh, Terraform diffs configuration against stale state and sees no difference. Run
+          <code>terraform plan -refresh-only</code> to see the truth — it will report the resource as gone.
+        </li>
+        <li>
+          <strong>State format is forward-incompatible.</strong> Someone ran a newer CLI locally, which upgraded
+          the state file; the older CI runner now refuses to read it. Fix by pinning the CLI version in CI to
+          match (use <code>required_version</code> plus a version manager like <code>tfenv</code>). Do not try to
+          downgrade state — there is no supported path.
+        </li>
+      </ol>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">A secure backend, end to end</span>
+  </div>
+  <div class="exercise-body">
+    <p>Produce the full setup for a production state backend:</p>
+    <ul>
+      <li>A bootstrap script creating the storage account with no shared keys, versioning and soft delete.</li>
+      <li>A partial backend block usable across environments.</li>
+      <li>Per-environment backend config files.</li>
+      <li>The exact RBAC the CI identity needs — and nothing more.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>The bootstrap script is the one earlier in this lesson. The Terraform side:</p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">backend.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  backend "azurerm" {
+    use_azuread_auth = true
+    use_oidc         = true
+    # resource_group_name, storage_account_name, container_name and key
+    # all come from -backend-config
+  }
+}</code></pre>
+      </div>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">env/prod.backend.hcl</span></div>
+<pre><code class="language-hcl">resource_group_name  = "rg-tfstate-prod-weu-01"
+storage_account_name = "sttfstateprodweu01"
+container_name       = "tfstate"
+key                  = "analytics/prod.terraform.tfstate"
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+tenant_id            = "11111111-1111-1111-1111-111111111111"</code></pre>
+      </div>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">RBAC for the CI identity — least privilege</span></div>
+<pre><code class="language-bash"># Data-plane access to the state container ONLY — not the whole account,
+# and not any other environment's container.
+az role assignment create \
+  --assignee "$CI_PRINCIPAL_ID" \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/$SUB/resourceGroups/rg-tfstate-prod-weu-01/providers/Microsoft.Storage/storageAccounts/sttfstateprodweu01/blobServices/default/containers/tfstate"
+
+# NOT "Storage Account Contributor" — that would allow listKeys and
+# reconfiguring the account's firewall.
+# NOT account-level scope — that would expose every environment's state.</code></pre>
+      </div>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">usage</span></div>
+<pre><code class="language-bash">terraform init -reconfigure -backend-config=env/prod.backend.hcl
+terraform plan -var-file=env/prod.tfvars -out=tfplan -lock-timeout=10m
+terraform apply -lock-timeout=10m tfplan</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Ideally each environment gets its <em>own container</em> (or its own storage account), so a container-scoped
+        role assignment cannot read another environment's state. With a shared container, container-level scoping
+        gives the CI identity read access to every key in it.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write a complete, secure backend setup</span>
+  </div>
+  <div class="exercise-body">
+    <p>Produce everything needed to give one project three isolated remote states:</p>    <ul>
+      <li>A bootstrap script creating the state storage with no shared keys, versioning and soft delete.</li>
+      <li>A partial backend block plus per-environment config files.</li>
+      <li>The exact RBAC for the CI identity &mdash; and nothing more.</li>
+    </ul>
+    <p style="margin-bottom:0">The state must be isolated per environment in a way that a role assignment can enforce, not merely by convention.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">bootstrap.sh</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+ENV="${1:?usage: bootstrap.sh &lt;dev|test|prod&gt;}"
+LOCATION="westeurope"
+RG="rg-tfstate-${ENV}-weu-01"
+SA="sttfstate${ENV}weu01"
+
+az group create --name "$RG" --location "$LOCATION"
+
+az storage account create \
+  --name "$SA" --resource-group "$RG" --location "$LOCATION" \
+  --sku Standard_GZRS --kind StorageV2 \
+  --min-tls-version TLS1_2 --https-only true \
+  --allow-blob-public-access false \
+  --allow-shared-key-access false      # RBAC only; pairs with use_azuread_auth
+
+# Versioning is the undo button for state corruption. Enable it BEFORE
+# you need it - it turns a disaster into a two-minute restore.
+az storage account blob-service-properties update \
+  --account-name "$SA" --resource-group "$RG" \
+  --enable-versioning true \
+  --enable-delete-retention true --delete-retention-days 30
+
+az storage container create --name tfstate --account-name "$SA" --auth-mode login
+
+az lock create --name no-delete-tfstate --lock-type CanNotDelete --resource-group "$RG"</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">backend.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  # The backend block cannot use variables or expressions - it is read
+  # before variable evaluation. So the varying parts come from -backend-config.
+  backend "azurerm" {
+    use_azuread_auth = true
+    use_oidc         = true
+  }
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">env/prod.backend.hcl</span></div>
+<pre><code class="language-hcl">resource_group_name  = "rg-tfstate-prod-weu-01"
+storage_account_name = "sttfstateprodweu01"
+container_name       = "tfstate"
+key                  = "analytics/prod.terraform.tfstate"
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+tenant_id            = "11111111-1111-1111-1111-111111111111"</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">rbac.sh</span></div>
+<pre><code class="language-bash"># A SEPARATE storage account per environment is what makes isolation
+# enforceable: a role assignment scoped to the prod account simply cannot
+# reach dev state. Sharing one account with different blob keys would rely
+# on convention, because container-level roles see every key in the container.
+
+az role assignment create \
+  --assignee "$CI_PROD_PRINCIPAL_ID" \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/$SUB/resourceGroups/rg-tfstate-prod-weu-01/providers/Microsoft.Storage/storageAccounts/sttfstateprodweu01/blobServices/default/containers/tfstate"
+
+# NOT "Storage Account Contributor" - that permits listKeys and lets the
+#   pipeline reconfigure the account's firewall.
+# NOT account-level or subscription-level scope.
+# NOT the dev principal on the prod account, at any scope.</code></pre>
+</div>    <p><code>use_azuread_auth = true</code> is the argument that matters most. Without it the backend authenticates to the state blob with a storage account key &mdash; a shared secret granting full access to every state file in the account, which every engineer and pipeline would then need.</p>    <p style="margin-bottom:0">And remember what read access to state actually means: state holds every resource attribute in plaintext, including storage keys and any secret that passed through. Granting the whole engineering team <code>Storage Blob Data Reader</code> &ldquo;so they can debug&rdquo; hands them every credential in the platform.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Read another team's outputs two different ways</span>
+  </div>
+  <div class="exercise-body">
+    <p>Your analytics configuration needs the privatelink subnet ID from the platform team's separate state. Write <strong>both</strong> approaches, then say which you would ship and why.</p>    <p style="margin-bottom:0">Their state lives at <code>platform/prod.tfstate</code> in <code>sttfstateprodweu01</code>; the subnet is <code>snet-privatelink-prod-weu-01</code> in VNet <code>vnet-platform-prod-weu-01</code>, resource group <code>rg-platform-prod-weu-01</code>.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">option-a-remote-state.tf</span></div>
+<pre><code class="language-hcl">data "terraform_remote_state" "platform" {
+  backend = "azurerm"
+
+  config = {
+    resource_group_name  = "rg-tfstate-prod-weu-01"
+    storage_account_name = "sttfstateprodweu01"
+    container_name       = "tfstate"
+    key                  = "platform/prod.tfstate"
+    use_azuread_auth     = true
+  }
+}
+
+resource "azurerm_private_endpoint" "lake" {
+  subnet_id = data.terraform_remote_state.platform.outputs.privatelink_subnet_id
+  # ...
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">option-b-data-source.tf</span></div>
+<pre><code class="language-hcl"># Query Azure directly. No access to anyone else's state required.
+data "azurerm_subnet" "privatelink" {
+  name                 = "snet-privatelink-prod-weu-01"
+  virtual_network_name = "vnet-platform-prod-weu-01"
+  resource_group_name  = "rg-platform-prod-weu-01"
+}
+
+resource "azurerm_private_endpoint" "lake" {
+  subnet_id = data.azurerm_subnet.privatelink.id
+  # ...
+}</code></pre>
+</div>    <p><strong>Ship option B.</strong> <code>terraform_remote_state</code> requires read access to the <em>entire</em> platform state file just to read one output &mdash; and that file contains every secret the platform team's resources produced. It is a significant privilege escalation disguised as a lookup. It also couples the two configurations tightly: renaming an output over there breaks you over here.</p>    <p style="margin-bottom:0">Option B's contract is the resource <em>name</em> rather than another team's state layout &mdash; looser coupling, far less privilege, and the deployment identity only needs <code>Reader</code> on their resource group. The cost is that names must be predictable, which is exactly what a naming convention is for. At larger scale, a third option is publishing shared values to Azure App Configuration or a well-known Key Vault that both sides read.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Prod plan wants to create everything</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      A pipeline that has run cleanly for months suddenly plans <code>47 to add, 0 to change, 0 to
+      destroy</code> against production. Nothing was deleted in Azure — the platform is serving traffic
+      normally. The only recent change was a refactor moving environment configuration into
+      <code>env/*.backend.hcl</code> files.
+    </p>
+    <p>What happened, how do you confirm it, and how do you fix it without an outage?</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Diagnosis.</strong> Terraform is reading an <em>empty or different</em> state file. Almost
+        certainly the backend <code>key</code> changed during the refactor — say from
+        <code>prod.terraform.tfstate</code> to <code>analytics/prod.terraform.tfstate</code>. Terraform found no
+        blob at the new key, created a fresh empty state, and therefore believes nothing exists.
+      </p>
+      <p><strong>Confirm — do not apply.</strong></p>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">investigation</span></div>
+<pre><code class="language-bash"># How many resources does the current backend think it manages?
+terraform state list | wc -l          # expect 0 or a small number
+
+# What blobs actually exist in the container?
+az storage blob list \
+  --account-name sttfstateprodweu01 \
+  --container-name tfstate \
+  --auth-mode login -o table
+
+# Confirm which backend this working directory is bound to
+cat .terraform/terraform.tfstate | jq '.backend.config'</code></pre>
+      </div>
+      <p>
+        You will find the real state sitting at the old key, with <code>serial</code> in the hundreds and
+        <code>lineage</code> matching the platform's history.
+      </p>
+      <p><strong>Fix.</strong> Point the configuration back at the correct key:</p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">env/prod.backend.hcl</span></div>
+<pre><code class="language-hcl">key = "prod.terraform.tfstate"   # the original, where the real state lives</code></pre>
+      </div>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">verify</span></div>
+<pre><code class="language-bash">rm -rf .terraform
+terraform init -backend-config=env/prod.backend.hcl
+terraform state list | wc -l    # should now be 47
+terraform plan -var-file=env/prod.tfvars   # should be "No changes"</code></pre>
+      </div>
+      <p>
+        If you genuinely want the new key, migrate rather than repoint:
+        <code>terraform init -migrate-state -backend-config=env/prod.backend.hcl</code>, which copies the state
+        blob and confirms first.
+      </p>
+      <div class="callout callout-mistake" style="margin-top:16px;margin-bottom:0">
+        <div class="callout-title">What would have happened on apply</div>
+        <p style="margin-bottom:0">
+          Terraform would have tried to create 47 resources that already exist. Globally unique names (the
+          storage account, the Key Vault) would fail immediately. Anything that <em>can</em> be duplicated would
+          be created twice. And the new state would record only the successes, leaving you with two divergent
+          state files and a partially duplicated production environment. Preventing exactly this is why a plan
+          showing an unexpected number of creations must stop the pipeline.
+        </p>
+      </div>
+    </div>
+  </details>
+</div>
+
+<h2 id="scenarios">Real-world scenarios</h2>
+
+<div class="scenario">
+  <div class="scenario-tag">Scenario 4 from the brief</div>
+  <p><strong>“A developer manually deleted a Terraform-managed resource in Azure.”</strong></p>
+  <ol>
+    <li>Run <code>terraform plan -refresh-only</code> to see precisely what Terraform now believes is missing, without proposing any change.</li>
+    <li>The next ordinary <code>plan</code> will show <code>+ create</code> for that resource — Terraform's job is to restore the configured state.</li>
+    <li><strong>Decide whether recreating is safe.</strong> For a stateless resource — an NSG rule, a role assignment — just apply. For anything holding data, recreating gives you an empty resource, which may be worse than the deletion.</li>
+    <li>If it should stay deleted, remove it from the configuration <em>and</em> from state (<code>terraform state rm</code>), or the next plan keeps proposing to recreate it.</li>
+    <li>Prevent recurrence: Azure resource locks on production resource groups, <code>prevent_destroy</code> on data-bearing resources, and portal write access removed in favour of the deployment pipeline.</li>
+  </ol>
+  <p style="margin-bottom:0">
+    The judgement being tested is step 3 — recognising that Terraform's default answer, “recreate it”, is not
+    always the right one.
+  </p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-tag">Scenario</div>
+  <p><strong>“State is corrupted — the file is truncated and <code>terraform plan</code> fails to parse it.”</strong></p>
+  <ol>
+    <li><strong>Stop all pipelines.</strong> Another write could overwrite the last good version.</li>
+    <li><strong>Restore from blob versioning</strong> — the fastest path by far, and the reason you enabled it:</li>
+  </ol>
+  <div class="code is-sh">
+    <div class="code-head"><span class="fname">recovery</span></div>
+<pre><code class="language-bash">az storage blob list \
+  --account-name sttfstateprodweu01 --container-name tfstate \
+  --include v --prefix analytics/prod.terraform.tfstate \
+  --auth-mode login -o table
+
+az storage blob copy start \
+  --account-name sttfstateprodweu01 \
+  --destination-container tfstate \
+  --destination-blob analytics/prod.terraform.tfstate \
+  --source-uri "https://sttfstateprodweu01.blob.core.windows.net/tfstate/analytics/prod.terraform.tfstate?versionid=2026-09-08T09:14:22.1234567Z" \
+  --auth-mode login</code></pre>
+  </div>
+  <ol start="3">
+    <li>Run <code>terraform plan</code>. Any resources created after that version will show as <code>+ create</code> — reconcile them with <code>import</code> blocks.</li>
+    <li>If there is no version history, the fallback is rebuilding state resource by resource with <code>import</code>. On 47 resources that is a long day; it is survivable, which is worth knowing.</li>
+  </ol>
+  <p style="margin-bottom:0">
+    The takeaway an interviewer wants: <em>blob versioning turns a catastrophe into an inconvenience</em>, and it
+    costs nothing to enable.
+  </p>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is Terraform state and why does it exist?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A JSON document mapping each configuration address to the real resource it manages, plus a cached copy of
+        that resource's attributes and its dependencies. It exists because there is no way to derive that mapping
+        from the cloud: Azure cannot tell you which of 400 resources correspond to
+        <code>azurerm_storage_account.lake</code>, which resources Terraform owns versus which another team
+        created, or what has been deleted since the last run. It also records dependencies so Terraform can
+        destroy in the correct order even after the configuration is deleted, and it enables locking so a team
+        can share one source of truth.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why shouldn't state be committed to git?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        It contains every resource attribute in plaintext, including storage account keys, generated passwords
+        and Key Vault secret values — committing it puts every credential in the platform into permanent git
+        history. There is also no locking, so concurrent applies are unprotected; state files cannot be
+        meaningfully merged, so git will happily produce a corrupt one; and anyone who has not pulled plans
+        against stale state. Fundamentally it is generated data, not source.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you secure Terraform state on Azure?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A dedicated storage account with <code>shared_access_key_enabled = false</code> so access is Entra ID
+        only, and <code>use_azuread_auth = true</code> in the backend to match. Blob versioning and soft delete
+        for recovery. Public network access disabled with a private endpoint where the runners can reach it.
+        RBAC scoped to the state container, granted to the deployment identity and a small break-glass group
+        only — read access to state is equivalent to read access to every secret. A CanNotDelete management
+        lock, diagnostic logging to Log Analytics, and separate containers or accounts per environment so a
+        container-scoped role cannot reach production state.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is state locking and how does the Azure backend implement it?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A mutex preventing two operations from writing state simultaneously, which would corrupt it. The
+        <code>azurerm</code> backend uses a native blob lease on the state blob — no additional infrastructure,
+        unlike the S3 backend which historically needed a DynamoDB table. If a lock is held you get an error
+        naming the holder and the time it was acquired. The right response is usually to wait or use
+        <code>-lock-timeout</code>; <code>force-unlock</code> should only be used when the holding process is
+        genuinely dead, since breaking a live lock is how state gets corrupted.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is drift and how do you detect it?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A difference between what state records and what actually exists in the cloud, caused by something other
+        than Terraform — a portal edit, an Azure Policy appending tags, autoscaling, or another configuration
+        managing the same resource. Terraform detects it in the refresh phase of every plan. To investigate it
+        without proposing to revert it, use <code>terraform plan -refresh-only</code>. For continuous detection I
+        would run a scheduled plan with <code>-detailed-exitcode</code> and alert on exit code 2, using
+        <code>-lock=false</code> so the check does not block deployments.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How many state files should a platform have?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        It is a blast-radius decision. One state for everything means slow plans, one lock blocking the whole
+        team, and anyone who can change a tag being able to destroy production. Splitting per environment is
+        non-negotiable. Beyond that I would split along seams where change frequency or ownership differ —
+        typically a networking layer that changes rarely, a data-platform layer, and a workloads layer that
+        changes daily. The cost is cross-state references, which I would satisfy with plain data sources querying
+        Azure rather than <code>terraform_remote_state</code>, since the latter requires read access to the whole
+        other state file and therefore all its secrets.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What happens if someone manually changes an Azure resource?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The refresh phase of the next plan picks up the new value, and Terraform proposes to change it back,
+        because the configuration is the source of truth. For most attributes that is a harmless in-place update.
+        The dangerous case is a change to a ForceNew attribute, where reverting means destroying and recreating
+        the resource — on a storage account, that is data loss. Which is why the right first response to an
+        unexpected plan is <code>-refresh-only</code>, to understand the change before deciding whether the code
+        or the cloud should win.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>State maps configuration addresses to real resource IDs. Nothing else can supply that mapping.</li>
+  <li>State contains every attribute in plaintext. Read access to state ≈ read access to every secret.</li>
+  <li>Remote backend, always, for anything real. On Azure: blob storage with <code>use_azuread_auth = true</code>.</li>
+  <li>Enable blob versioning before you need it — it converts state corruption from a disaster into a two-minute restore.</li>
+  <li>Locking is a blob lease. Read the lock info before ever running <code>force-unlock</code>.</li>
+  <li><code>plan -refresh-only</code> is the correct first move whenever a plan surprises you.</li>
+  <li>Split state by environment always, and by ownership/change-frequency seams beyond that.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,1089 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · HCL: types, expressions and functions — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="03">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-beginner">Beginner</span>
+    <span>Part 2</span><span>·</span><span>~70 min</span><span>·</span><span>Requires Lesson 02</span>
+  </div>
+  <h1>HCL: types, expressions and functions</h1>
+  <p class="lede">
+    You already know what a variable and a loop are. What you need is the shape of HCL's type system —
+    especially the list/set distinction that decides whether <code>for_each</code> works — and the ways HCL
+    deliberately refuses to behave like a programming language.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Read any block and name its parts: block type, labels, arguments, nested blocks</li>
+      <li>Choose correctly between <code>list</code>, <code>set</code>, <code>map</code>, <code>object</code> and <code>tuple</code> — and explain why it matters for <code>for_each</code></li>
+      <li>Write <code>for</code> expressions that produce maps, filter, and flatten nested structures</li>
+      <li>Use <code>try</code>, <code>coalesce</code>, <code>merge</code> and <code>lookup</code> the way real Azure configurations do</li>
+      <li>Explain why a <code>dynamic</code> block exists and when not to use one</li>
+      <li>Explore any expression interactively with <code>terraform console</code></li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">HCL</span><span class="pill">Type system</span><span class="pill">No Azure calls needed</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="not-a-programming-language">HCL is not a programming language, on purpose</h2>
+
+<p>
+  Coming from Python or TypeScript, four constraints will surprise you. Each is a deliberate design decision,
+  and understanding <em>why</em> stops you fighting the language.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>What you expect</th><th>What HCL does</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Statements execute in order</td>
+      <td>Blocks are declarations. Order in the file is irrelevant; evaluation order comes from the reference graph.</td>
+      <td>Terraform needs a graph to parallelise and to compute a diff. A sequence cannot be diffed.</td>
+    </tr>
+    <tr>
+      <td>Reassign a variable</td>
+      <td>Everything is immutable. A <code>local</code> is bound once; there is no <code>x = x + 1</code>.</td>
+      <td>Mutable values would make evaluation order significant, which would break the graph model.</td>
+    </tr>
+    <tr>
+      <td>Write a loop or a function</td>
+      <td>No <code>for</code> statement, no user-defined functions in the classic sense. You get <code>for</code> <em>expressions</em>, <code>for_each</code>/<code>count</code> meta-arguments, and (since 1.8) provider-defined and local <code>function</code> blocks for pure value transforms.</td>
+      <td>Arbitrary control flow would let configuration produce a different resource set on each run — the opposite of reproducible.</td>
+    </tr>
+    <tr>
+      <td>Print, read files, call an API</td>
+      <td>No side effects. Expressions are pure. I/O happens only through providers and data sources.</td>
+      <td>Plan must be able to evaluate everything without changing anything.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The one sentence to internalise</div>
+  <p style="margin-bottom:0">
+    HCL expressions compute <strong>values</strong>; the <code>resource</code> blocks those values feed decide
+    <strong>infrastructure</strong>. Anything clever you do in HCL is clever value-shuffling — it never changes
+    the fact that Terraform must be able to enumerate every resource before it does anything.
+  </p>
+</div>
+
+<h2 id="anatomy">Anatomy of a block</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">anatomy.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "lake" {
+  name                     = "stanalyticsdevweu01"
+  resource_group_name      = azurerm_resource_group.analytics.name
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  blob_properties {
+    versioning_enabled = true
+
+    delete_retention_policy {
+      days = 7
+    }
+  }
+
+  tags = {
+    environment = "dev"
+  }
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Part</th><th>In the example</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Block type</strong></td><td><code>resource</code></td><td>One of a fixed set: <code>terraform</code>, <code>provider</code>, <code>resource</code>, <code>data</code>, <code>variable</code>, <code>output</code>, <code>locals</code>, <code>module</code>, <code>moved</code>, <code>import</code>, <code>removed</code>, <code>check</code>, <code>run</code>.</td></tr>
+    <tr><td><strong>Labels</strong></td><td><code>"azurerm_storage_account"</code>, <code>"lake"</code></td><td>How many labels a block takes is fixed by its type. <code>resource</code> takes two: type and local name.</td></tr>
+    <tr><td><strong>Address</strong></td><td><code>azurerm_storage_account.lake</code></td><td>The globally unique identity of this resource within the configuration. This is what appears in plans and in state.</td></tr>
+    <tr><td><strong>Argument</strong></td><td><code>name = "..."</code></td><td>Something you set. Always <code>identifier = expression</code>.</td></tr>
+    <tr><td><strong>Nested block</strong></td><td><code>blob_properties { }</code></td><td>Note: <strong>no <code>=</code> sign</strong>. Blocks and arguments look similar and are not interchangeable — this trips everyone up once.</td></tr>
+    <tr><td><strong>Attribute</strong></td><td><code>.id</code>, <code>.primary_dfs_endpoint</code></td><td>Something you <em>read</em>, exported by the resource. Some are known only after apply.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · argument vs block syntax</div>
+  <p>Writing an <code>=</code> where the schema expects a block, or omitting it where it expects an argument:</p>
+  <div class="code is-bad">
+    <div class="code-head"><span class="fname">wrong</span></div>
+<pre><code class="language-hcl">blob_properties = {          # ✗ blob_properties is a block, not an argument
+  versioning_enabled = true
+}
+
+tags {                       # ✗ tags is a map argument, not a block
+  environment = "dev"
+}</code></pre>
+  </div>
+  <p style="margin-bottom:0">
+    The provider schema decides which is which. The error is
+    <code>Unexpected "=" — An argument or block definition is required</code> or
+    <code>Blocks of type "tags" are not expected here</code>. When in doubt, check the registry docs for that
+    resource — arguments described as “a <code>foo</code> block as defined below” take no <code>=</code>.
+  </p>
+</div>
+
+<h2 id="types">The type system</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    T["HCL value types"] --> P["<b>Primitive</b>"]
+    T --> C["<b>Collection</b><br/><i>many values of ONE type</i>"]
+    T --> S["<b>Structural</b><br/><i>values of DIFFERENT types</i>"]
+    T --> N["<b>null</b> / <b>any</b>"]
+
+    P --> P1["string"]
+    P --> P2["number"]
+    P --> P3["bool"]
+
+    C --> C1["list(T)<br/><i>ordered, duplicates OK</i><br/>index: 0,1,2…"]
+    C --> C2["set(T)<br/><i>unordered, unique</i><br/>no index"]
+    C --> C3["map(T)<br/><i>string keys → T</i>"]
+
+    S --> S1["object({a=string, b=number})<br/><i>fixed named attributes</i>"]
+    S --> S2["tuple([string, number, bool])<br/><i>fixed positional types</i>"]
+
+    style C2 fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+    style C3 fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+  </div>
+  <figcaption>
+    The two highlighted types are the ones <code>for_each</code> accepts. Everything else must be converted
+    first — Lesson 15.
+  </figcaption>
+</figure>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">types.tf — every type, with Azure-flavoured values</span></div>
+<pre><code class="language-hcl">locals {
+  # ---- primitives ----
+  location    = "westeurope"          # string
+  retention   = 30                    # number (no int/float distinction)
+  hns_enabled = true                  # bool
+
+  # ---- collections: homogeneous ----
+  # list: ordered, duplicates allowed, addressed by index
+  regions = ["westeurope", "northeurope", "westeurope"]
+
+  # set: unordered, deduplicated, NOT addressable by index
+  containers = toset(["raw", "bronze", "silver", "gold"])
+
+  # map: string keys, values all the same type
+  tags = {
+    environment = "dev"
+    workload    = "analytics"
+  }
+
+  # ---- structural: heterogeneous ----
+  # object: named attributes, each with its own type
+  lake_config = {
+    name          = "stanalyticsdevweu01"
+    tier          = "Standard"
+    replication   = "LRS"
+    hns           = true
+    retention_days = 7
+  }
+
+  # tuple: positional, each position its own type
+  pair = ["westeurope", 3, true]
+
+  # nested: a map of objects — the single most useful shape in Terraform
+  subnets = {
+    privatelink = { prefix = "10.10.1.0/24", delegate = null }
+    databricks_host = { prefix = "10.10.2.0/24", delegate = "Microsoft.Databricks/workspaces" }
+    functions   = { prefix = "10.10.3.0/26", delegate = "Microsoft.App/environments" }
+  }
+}</code></pre>
+</div>
+
+<h3 id="list-vs-set">list vs set — the distinction that actually bites</h3>
+
+<p>
+  They look identical in HCL syntax (both written with <code>[...]</code>), and Terraform will convert between
+  them silently in many places. But they behave differently in the one place it counts.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th><code>list(string)</code></th><th><code>set(string)</code></th></tr></thead>
+  <tbody>
+    <tr><td>Order preserved</td><td>Yes</td><td>No — Terraform stores it sorted</td></tr>
+    <tr><td>Duplicates</td><td>Allowed</td><td>Silently removed</td></tr>
+    <tr><td>Index access</td><td><code>local.regions[0]</code></td><td>Not possible — convert with <code>tolist()</code> first</td></tr>
+    <tr><td>Usable with <code>for_each</code></td><td><strong>No</strong> — wrap in <code>toset()</code></td><td>Yes</td></tr>
+    <tr><td>Resource instance keys</td><td>With <code>count</code>: <code>[0]</code>, <code>[1]</code>…</td><td>With <code>for_each</code>: <code>["raw"]</code>, <code>["bronze"]</code>…</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Why this matters more than it looks</div>
+  <p>
+    Instance keys end up in state addresses. With a list and <code>count</code>, removing <code>"bronze"</code>
+    from the middle of <code>["raw","bronze","silver","gold"]</code> shifts every subsequent index — so
+    Terraform plans to <em>destroy and recreate</em> silver and gold, because <code>[2]</code> used to be silver
+    and is now gold.
+  </p>
+  <p style="margin-bottom:0">
+    With a set and <code>for_each</code>, the key is the value itself. Removing <code>"bronze"</code> destroys
+    exactly one container. This is why the course, like every production codebase, prefers
+    <code>for_each</code>. Full treatment in Lesson 15.
+  </p>
+</div>
+
+<h3 id="conversion">Type conversion</h3>
+
+<p>
+  HCL converts automatically when it is unambiguous, and errors when it is not. Terraform will happily accept
+  the string <code>"30"</code> where a number is required, and <code>true</code> where a string is required.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">conversion functions you will use</span></div>
+<pre><code class="language-hcl">toset(["raw", "bronze", "raw"])   # → set: ["bronze", "raw"]  (deduped, sorted)
+tolist(toset(["b", "a"]))         # → list: ["a", "b"]        (sorted, now indexable)
+tomap({ a = 1, b = 2 })           # → map(number)
+tostring(30)                      # → "30"
+tonumber("30")                    # → 30
+</code></pre>
+</div>
+
+<h2 id="strings">Strings and interpolation</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">strings.tf</span></div>
+<pre><code class="language-hcl">locals {
+  workload = "analytics"
+  env      = "dev"
+  region   = "weu"
+
+  # interpolation — ${ } inside a quoted string
+  rg_name = "rg-${local.workload}-${local.env}-${local.region}-01"
+
+  # storage accounts allow only lowercase letters and digits, max 24 chars
+  sa_name = lower("st${local.workload}${local.env}${local.region}01")
+
+  # you can call functions and use conditionals inside interpolation
+  sku = "Standard_${local.env == "prod" ? "GZRS" : "LRS"}"
+
+  # a bare expression needs no interpolation at all — this is redundant:
+  bad  = "${var.location}"
+  good = var.location
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · wrapping a whole expression in <code>"${ }"</code></div>
+  <p style="margin-bottom:0">
+    <code>count = "${length(var.regions)}"</code> works but is legacy style from Terraform 0.11.
+    <code>terraform fmt</code> will not remove it; linters will flag it. Use interpolation only when you are
+    genuinely embedding a value <em>inside</em> a larger string.
+  </p>
+</div>
+
+<h3 id="heredoc">Heredoc strings</h3>
+
+<p>Used for JSON policies, scripts and anything multi-line. The <code>&lt;&lt;-</code> form strips leading indentation.</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">heredoc.tf</span></div>
+<pre><code class="language-hcl">locals {
+  # For real JSON, prefer jsonencode() over a heredoc — it guarantees valid
+  # JSON and lets you interpolate values without quoting bugs.
+  lifecycle_rule = jsonencode({
+    rules = [{
+      name    = "archive-raw-after-90d"
+      enabled = true
+      filters = { prefixMatch = ["raw/"] }
+    }]
+  })
+
+  init_script = &lt;&lt;-EOT
+    #!/bin/bash
+    set -euo pipefail
+    echo "Mounting ${local.sa_name}"
+  EOT
+}</code></pre>
+</div>
+
+<h2 id="operators">Operators and conditionals</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">operators.tf</span></div>
+<pre><code class="language-hcl">locals {
+  a = 10 + 5          # arithmetic: + - * / %
+  b = 10 &gt; 5          # comparison: == != &lt; &lt;= &gt; &gt;=
+  c = true &amp;&amp; false   # logical: &amp;&amp; || !
+
+  # conditional expression:  condition ? true_value : false_value
+  replication = var.environment == "prod" ? "GZRS" : "LRS"
+  retention   = var.environment == "prod" ? 90 : 7
+
+  # both branches must be the same type — this errors:
+  # bad = var.enabled ? "yes" : 0
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Both branches are evaluated</div>
+  <p>
+    HCL's conditional is not short-circuiting in the way you might assume. This <em>fails</em> when the list is
+    empty, even though the condition guards against it:
+  </p>
+  <div class="code is-bad">
+    <div class="code-head"><span class="fname">fails on an empty list</span></div>
+<pre><code class="language-hcl">first_subnet = length(var.subnets) &gt; 0 ? var.subnets[0] : "none"</code></pre>
+  </div>
+  <p style="margin-bottom:0">
+    Use <code>try()</code> or <code>one()</code> instead:
+    <code>try(var.subnets[0], "none")</code>. <code>try()</code> evaluates its arguments in order and returns
+    the first that does not produce an error.
+  </p>
+</div>
+
+<h2 id="for-expressions">for expressions</h2>
+
+<p>
+  A <code>for</code> expression transforms one collection into another. It is an expression, not a statement —
+  it produces a value. Brackets decide the output type: <code>[ ]</code> gives a tuple/list,
+  <code>{ }</code> gives an object/map.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">for_expressions.tf</span></div>
+<pre><code class="language-hcl">locals {
+  containers = ["raw", "bronze", "silver", "gold"]
+
+  # 1 · list → list
+  upper = [for c in local.containers : upper(c)]
+  # ["RAW", "BRONZE", "SILVER", "GOLD"]
+
+  # 2 · list → map   (key => value)
+  paths = { for c in local.containers : c =&gt; "abfss://${c}@${local.sa_name}.dfs.core.windows.net/" }
+  # { raw = "abfss://raw@...", bronze = "abfss://bronze@...", ... }
+
+  # 3 · with a filter (the "if" clause)
+  curated = [for c in local.containers : c if c != "raw"]
+  # ["bronze", "silver", "gold"]
+
+  # 4 · iterating a map yields key AND value
+  tag_strings = [for k, v in local.tags : "${k}=${v}"]
+  # ["environment=dev", "workload=analytics"]
+
+  # 5 · the single most useful pattern in Terraform:
+  #     turn a list of objects into a map keyed by something stable,
+  #     so it can be used with for_each
+  subnet_defs = [
+    { name = "privatelink", prefix = "10.10.1.0/24" },
+    { name = "functions",   prefix = "10.10.3.0/26" },
+  ]
+  subnets_by_name = { for s in local.subnet_defs : s.name =&gt; s }
+  # { privatelink = {name=..., prefix=...}, functions = {...} }
+
+  # 6 · grouping mode — note the ellipsis, which collects duplicates
+  #     into a list instead of erroring on a repeated key
+  by_tier = { for c in local.container_defs : c.tier =&gt; c.name... }
+}</code></pre>
+</div>
+
+<h3 id="flatten">Flattening nested loops</h3>
+
+<p>
+  HCL has no nested <code>for_each</code>. The standard idiom for “every combination of X and Y” is a nested
+  <code>for</code> inside <code>flatten()</code>, producing a flat map. You will use this for things like
+  “assign three roles to two identities”.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">flatten.tf — cross-product of identities × roles</span></div>
+<pre><code class="language-hcl">locals {
+  access = {
+    databricks = ["Storage Blob Data Contributor", "Key Vault Secrets User"]
+    functions  = ["Storage Blob Data Reader"]
+  }
+
+  # produce one entry per (identity, role) pair
+  assignments = {
+    for pair in flatten([
+      for identity, roles in local.access : [
+        for role in roles : {
+          identity = identity
+          role     = role
+        }
+      ]
+    ]) : "${pair.identity}-${pair.role}" =&gt; pair
+  }
+}
+
+# → {
+#     "databricks-Storage Blob Data Contributor" = { identity = "databricks", role = "..." }
+#     "databricks-Key Vault Secrets User"        = { ... }
+#     "functions-Storage Blob Data Reader"       = { ... }
+#   }
+#
+# which is now directly usable:  for_each = local.assignments</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Why the key must be stable</div>
+  <p style="margin-bottom:0">
+    That composite key becomes part of the resource address in state:
+    <code>azurerm_role_assignment.this["databricks-Storage Blob Data Contributor"]</code>. If you generate keys
+    from something that changes — an index, a timestamp, a resource ID that is unknown until apply — Terraform
+    cannot match old instances to new ones and will plan to destroy and recreate them. Keys must be derivable
+    at plan time from static input.
+  </p>
+</div>
+
+<h3 id="splat">Splat expressions</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">splat.tf</span></div>
+<pre><code class="language-hcl"># shorthand for [for s in azurerm_subnet.this : s.id]
+subnet_ids = azurerm_subnet.this[*].id
+
+# with for_each (a map), values() first
+subnet_ids = values(azurerm_subnet.this)[*].id
+
+# splat on a possibly-null single value returns [] or [value] — handy
+principal_ids = azurerm_linux_function_app.this.identity[*].principal_id</code></pre>
+</div>
+
+<h2 id="dynamic">dynamic blocks</h2>
+
+<p>
+  <code>for_each</code> on a <em>resource</em> creates multiple resources. <code>dynamic</code> creates multiple
+  <em>nested blocks inside one resource</em>. Use it when the provider schema wants repeated blocks and the
+  number is data-driven.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">dynamic.tf — NSG rules from a variable</span></div>
+<pre><code class="language-hcl">variable "nsg_rules" {
+  type = map(object({
+    priority                   = number
+    direction                  = string
+    access                     = string
+    protocol                   = string
+    source_port_range          = string
+    destination_port_range     = string
+    source_address_prefix      = string
+    destination_address_prefix = string
+  }))
+  default = {}
+}
+
+resource "azurerm_network_security_group" "this" {
+  name                = "nsg-databricks-dev-weu-01"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+
+  dynamic "security_rule" {
+    for_each = var.nsg_rules
+
+    content {
+      name                       = security_rule.key
+      priority                   = security_rule.value.priority
+      direction                  = security_rule.value.direction
+      access                     = security_rule.value.access
+      protocol                   = security_rule.value.protocol
+      source_port_range          = security_rule.value.source_port_range
+      destination_port_range     = security_rule.value.destination_port_range
+      source_address_prefix      = security_rule.value.source_address_prefix
+      destination_address_prefix = security_rule.value.destination_address_prefix
+    }
+  }
+}</code></pre>
+</div>
+
+<p>
+  Inside the <code>content</code> block, the iterator is named after the block (<code>security_rule</code>) and
+  exposes <code>.key</code> and <code>.value</code>. Override the name with <code>iterator = r</code> when
+  nesting dynamics.
+</p>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Use dynamic sparingly</div>
+  <p>
+    HashiCorp's own documentation warns that overuse makes configuration hard to read. A conditional single
+    block is the most common legitimate use — <code>for_each</code> over a zero-or-one collection:
+  </p>
+  <div class="code is-hcl">
+    <div class="code-head"><span class="fname">conditional block idiom</span></div>
+<pre><code class="language-hcl">dynamic "identity" {
+  for_each = var.enable_managed_identity ? [1] : []
+  content {
+    type = "SystemAssigned"
+  }
+}</code></pre>
+  </div>
+  <p style="margin-bottom:0">
+    If you can write three literal blocks instead of a dynamic over three items, write the three blocks. A
+    reviewer can see them.
+  </p>
+</div>
+
+<h2 id="functions">Functions worth knowing</h2>
+
+<p>
+  There are around 120 built-ins. These are the ones that appear constantly in Azure configurations. There is
+  no way to define your own general-purpose functions in HCL — that constraint is intentional.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Function</th><th>Does</th><th>Typical Azure use</th></tr></thead>
+  <tbody>
+    <tr><td><code>merge(m1, m2, …)</code></td><td>Combines maps; later keys win</td><td>Merging common tags with per-resource tags — the most-used function in any Azure codebase</td></tr>
+    <tr><td><code>lookup(map, key, default)</code></td><td>Map access with a fallback</td><td>Per-environment sizing tables</td></tr>
+    <tr><td><code>try(a, b, …)</code></td><td>First expression that does not error</td><td>Optional attributes on object variables</td></tr>
+    <tr><td><code>coalesce(a, b, …)</code></td><td>First non-null, non-empty value</td><td>“Use the supplied name, otherwise generate one”</td></tr>
+    <tr><td><code>can(expr)</code></td><td>Returns bool: did it evaluate without error</td><td>Inside <code>validation</code> blocks</td></tr>
+    <tr><td><code>toset / tolist / tomap</code></td><td>Type conversion</td><td>Preparing a value for <code>for_each</code></td></tr>
+    <tr><td><code>flatten(list)</code></td><td>Collapses nested lists one level</td><td>Cross-products of identities and roles</td></tr>
+    <tr><td><code>keys / values</code></td><td>Map keys or values as a list</td><td>Extracting IDs from a <code>for_each</code>-created resource</td></tr>
+    <tr><td><code>lower / upper / substr / replace</code></td><td>String manipulation</td><td>Forcing storage account names into the allowed character set</td></tr>
+    <tr><td><code>format / join / split</code></td><td>String building and splitting</td><td>Constructing <code>abfss://</code> URIs; parsing a resource ID</td></tr>
+    <tr><td><code>cidrsubnet(prefix, newbits, num)</code></td><td>Carves a subnet out of a CIDR block</td><td>Generating subnets without hardcoding — Lesson 11</td></tr>
+    <tr><td><code>jsonencode / jsondecode</code></td><td>JSON round-trip</td><td>Policy documents, lifecycle rules, app settings</td></tr>
+    <tr><td><code>file / templatefile</code></td><td>Read a file; read and interpolate</td><td>Init scripts, ARM template bodies</td></tr>
+    <tr><td><code>one(list)</code></td><td>Single element, or null if empty; errors if more than one</td><td>Safely reading an optional <code>identity</code> block</td></tr>
+    <tr><td><code>sensitive(value)</code></td><td>Marks a value sensitive</td><td>Wrapping computed secrets — Lesson 09</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="merge-pattern">The tag-merging pattern</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">tags.tf — the idiom you will write in every project</span></div>
+<pre><code class="language-hcl">locals {
+  common_tags = {
+    workload    = var.workload
+    environment = var.environment
+    managed_by  = "terraform"
+    repository  = "contoso/analytics-platform"
+    cost_center = var.cost_center
+  }
+}
+
+resource "azurerm_storage_account" "lake" {
+  # ...
+  tags = merge(local.common_tags, {
+    data_classification = "confidential"
+    contains_pii        = "true"
+  })
+}</code></pre>
+</div>
+
+<h2 id="console">terraform console</h2>
+
+<p>
+  The fastest way to learn all of the above. It loads your variables, locals and current state and lets you
+  evaluate expressions interactively without touching Azure.
+</p>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">$ terraform console
+&gt; toset(["raw", "bronze", "raw"])
+toset([
+  "bronze",
+  "raw",
+])
+
+&gt; { for c in ["raw","bronze"] : c =&gt; upper(c) }
+{
+  "bronze" = "BRONZE"
+  "raw"    = "RAW"
+}
+
+&gt; cidrsubnet("10.10.0.0/16", 8, 3)
+"10.10.3.0/24"
+
+&gt; local.common_tags
+{
+  "environment" = "dev"
+  "managed_by"  = "terraform"
+  "workload"    = "analytics"
+}
+
+&gt; try(var.nonexistent[0], "fallback")
+"fallback"
+
+&gt; exit</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Console works without credentials</div>
+  <p style="margin-bottom:0">
+    Pure expressions evaluate fine with no Azure access. Only references to real resource attributes need state.
+    Use <code>echo 'expression' | terraform console</code> to evaluate one-off expressions from a script.
+  </p>
+</div>
+
+<h2 id="mistakes">Common mistakes</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Trying to build a resource name from a value that is unknown at plan time</div>
+  <p>
+    <code>name = "st${random_id.suffix.hex}"</code> is fine. <code>for_each</code> keyed on
+    <code>azurerm_storage_account.lake.id</code> is not — that ID does not exist until apply, so Terraform
+    cannot enumerate the instances during plan and errors with
+    <code>The "for_each" value depends on resource attributes that cannot be determined until apply</code>.
+  </p>
+  <p style="margin-bottom:0">
+    Rule: <code>for_each</code> and <code>count</code> keys must be computable from static input at plan time.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Using <code>lookup()</code> on an object</div>
+  <p style="margin-bottom:0">
+    <code>lookup()</code> is for maps. On an object with known attributes, use <code>try(obj.attr, default)</code>
+    or declare the attribute as <code>optional()</code> in the variable type (Lesson 07). Using
+    <code>lookup()</code> with a default on a map is also increasingly discouraged in favour of
+    <code>try()</code>.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Assuming set ordering</div>
+  <p style="margin-bottom:0">
+    <code>tolist(toset(["gold","raw"]))[0]</code> is <code>"gold"</code>, not <code>"raw"</code> — sets are
+    stored sorted. If order matters, keep a list and never round-trip through a set.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Name the type</span>
+  </div>
+  <div class="exercise-body">
+    <p>Give the most specific type of each value:</p>
+    <ol>
+      <li><code>["raw", "bronze"]</code></li>
+      <li><code>{ name = "lake", tier = "Standard" }</code></li>
+      <li><code>{ dev = 7, prod = 90 }</code></li>
+      <li><code>["westeurope", 3, true]</code></li>
+      <li><code>toset([1, 2, 2, 3])</code></li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><code>tuple([string, string])</code>, which converts to <code>list(string)</code> wherever one is expected.</li>
+        <li><code>object({ name = string, tier = string })</code> — converts to <code>map(string)</code> because both values happen to be strings.</li>
+        <li><code>object({ dev = number, prod = number })</code> → <code>map(number)</code>.</li>
+        <li><code>tuple([string, number, bool])</code>. It <strong>cannot</strong> become a list, because a list requires one element type.</li>
+        <li><code>set(number)</code> containing <code>[1, 2, 3]</code> — the duplicate is dropped.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        The practical takeaway: literal <code>[ ]</code> and <code>{ }</code> produce tuples and objects, which
+        Terraform converts to lists and maps when the target type requires it. Mixed-type values can only stay
+        tuples/objects.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Build a container map</span>
+  </div>
+  <div class="exercise-body">
+    <p>Given:</p>
+    <div class="code is-hcl">
+      <div class="code-head"><span class="fname">input</span></div>
+<pre><code class="language-hcl">locals {
+  storage_account = "stanalyticsdevweu01"
+  layers = [
+    { name = "raw",    tier = "Cool", retention_days = 365 },
+    { name = "bronze", tier = "Hot",  retention_days = 90  },
+    { name = "silver", tier = "Hot",  retention_days = 90  },
+    { name = "gold",   tier = "Hot",  retention_days = null },
+  ]
+}</code></pre>
+    </div>
+    <p>Write locals that produce:</p>
+    <ol>
+      <li><code>layers_by_name</code> — a map keyed by layer name, ready for <code>for_each</code>.</li>
+      <li><code>hot_layers</code> — a list of just the names whose tier is <code>"Hot"</code>.</li>
+      <li><code>abfss_paths</code> — a map from layer name to its <code>abfss://</code> URI.</li>
+      <li><code>retention</code> — a map from layer name to retention days, defaulting to <code>30</code> where null.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution</span></div>
+<pre><code class="language-hcl">locals {
+  # 1 · keyed map — the shape for_each needs
+  layers_by_name = { for l in local.layers : l.name =&gt; l }
+
+  # 2 · filtered list of names
+  hot_layers = [for l in local.layers : l.name if l.tier == "Hot"]
+
+  # 3 · derived URIs
+  abfss_paths = {
+    for l in local.layers :
+    l.name =&gt; "abfss://${l.name}@${local.storage_account}.dfs.core.windows.net/"
+  }
+
+  # 4 · coalesce handles the null
+  retention = {
+    for l in local.layers :
+    l.name =&gt; coalesce(l.retention_days, 30)
+  }
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Verify any of these with <code>terraform console</code> before wiring them into a resource. Note that
+        <code>coalesce</code> returns the first non-null <em>and</em> non-empty argument, which is what you want
+        here; <code>try</code> would not help, since <code>null</code> is a valid value rather than an error.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Build a subnet plan using expressions only</span>
+  </div>
+  <div class="exercise-body">
+    <p>From the input below, write <code>locals</code> producing the four values listed. No literal CIDR string may appear anywhere in your answer.</p><div class="code is-hcl">
+  <div class="code-head"><span class="fname">input.tf</span></div>
+<pre><code class="language-hcl">variable "vnet_cidr" {
+  type    = string
+  default = "10.10.0.0/16"
+}
+
+variable "subnets" {
+  type = map(object({
+    newbits    = number
+    netnum     = number
+    delegation = optional(string)
+  }))
+  default = {
+    privatelink = { newbits = 8,  netnum = 1 }
+    databricks  = { newbits = 8,  netnum = 2,  delegation = "Microsoft.Databricks/workspaces" }
+    functions   = { newbits = 10, netnum = 16, delegation = "Microsoft.Web/serverFarms" }
+  }
+}</code></pre>
+</div>    <ol>
+      <li><code>prefixes</code> &mdash; map of subnet name to its CIDR.</li>
+      <li><code>delegated</code> &mdash; a <em>set</em> of the names that have a delegation.</li>
+      <li><code>usable_ips</code> &mdash; map of name to usable address count (Azure reserves 5 per subnet).</li>
+      <li><code>summary</code> &mdash; strings like <code>"privatelink: 10.10.1.0/24 (251 usable)"</code>.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">locals.tf</span></div>
+<pre><code class="language-hcl">locals {
+  # 1 - cidrsubnet(prefix, newbits, netnum)
+  prefixes = {
+    for k, v in var.subnets : k =&gt; cidrsubnet(var.vnet_cidr, v.newbits, v.netnum)
+  }
+
+  # 2 - a filtered "for" over a map, projected into a set of keys
+  delegated = toset([
+    for k, v in var.subnets : k if v.delegation != null
+  ])
+
+  # 3 - host bits = 32 - prefix length;  usable = 2^hostbits - 5
+  usable_ips = {
+    for k, prefix in local.prefixes :
+    k =&gt; pow(2, 32 - tonumber(split("/", prefix)[1])) - 5
+  }
+
+  # 4 - iterating a MAP yields keys in sorted order, so no sort() is needed
+  summary = [
+    for k, prefix in local.prefixes :
+    format("%s: %s (%d usable)", k, prefix, local.usable_ips[k])
+  ]
+}
+
+# summary = [
+#   "databricks: 10.10.2.0/24 (251 usable)",
+#   "functions: 10.10.4.0/26 (59 usable)",
+#   "privatelink: 10.10.1.0/24 (251 usable)",
+# ]</code></pre>
+</div>    <p>Verify each of these in <code>terraform console</code> before wiring them into resources. CIDR arithmetic is easy to get subtly wrong and expensive to correct later, because resizing a subnet requires emptying it first.</p>    <p style="margin-bottom:0">Two details: <code>format("%d", ...)</code> renders the number from <code>pow()</code> without a decimal point, and iterating a <strong>map</strong> gives sorted keys &mdash; a <code>for</code> over a <em>list</em> would instead preserve the list's own order.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Reshape a flat list into an access matrix</span>
+  </div>
+  <div class="exercise-body">
+    <p>A team hands you their access requirements as a flat list. Derive two values from it.</p><div class="code is-hcl">
+  <div class="code-head"><span class="fname">input.tf</span></div>
+<pre><code class="language-hcl">locals {
+  grants = [
+    { team = "engineering", layer = "raw",    access = "read"  },
+    { team = "engineering", layer = "silver", access = "write" },
+    { team = "engineering", layer = "gold",   access = "write" },
+    { team = "analysts",    layer = "gold",   access = "read"  },
+    { team = "ml",          layer = "silver", access = "read"  },
+    { team = "ml",          layer = "gold",   access = "read"  },
+  ]
+}</code></pre>
+</div>    <ol>
+      <li><code>assignments</code> &mdash; a map keyed <code>"&lt;team&gt;-&lt;layer&gt;"</code> whose value carries the team, the layer and the <em>Azure role name</em> (<code>read</code> becomes <code>Storage Blob Data Reader</code>, <code>write</code> becomes <code>Storage Blob Data Contributor</code>). It must be usable directly as a <code>for_each</code>.</li>
+      <li><code>layers_by_team</code> &mdash; a map of team name to the list of layers it touches.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">locals.tf</span></div>
+<pre><code class="language-hcl">locals {
+  role_for = {
+    read  = "Storage Blob Data Reader"
+    write = "Storage Blob Data Contributor"
+  }
+
+  # 1 - project the list into a map with a stable composite key
+  assignments = {
+    for g in local.grants :
+    "${g.team}-${g.layer}" =&gt; {
+      team  = g.team
+      layer = g.layer
+      role  = local.role_for[g.access]
+    }
+  }
+
+  # 2 - GROUPING mode. The ellipsis collects duplicate keys into a list
+  #     instead of failing on the repeated "engineering" key.
+  layers_by_team = {
+    for g in local.grants : g.team =&gt; g.layer...
+  }
+}
+
+# layers_by_team = {
+#   analysts    = ["gold"]
+#   engineering = ["raw", "silver", "gold"]
+#   ml          = ["silver", "gold"]
+# }
+
+resource "azurerm_role_assignment" "lake" {
+  for_each = local.assignments
+
+  scope                = azurerm_storage_container.layers[each.value.layer].id
+  role_definition_name = each.value.role
+  principal_id         = local.team_principals[each.value.team]
+  principal_type       = "Group"
+}</code></pre>
+</div>    <p>The <code>...</code> grouping suffix is the part most people do not know exists. Without it, <code>{ for g in local.grants : g.team =&gt; g.layer }</code> fails with <code>Duplicate object key</code>, because three entries share the key <code>"engineering"</code>.</p>    <p style="margin-bottom:0">The composite key matters too. <code>"engineering-silver"</code> is derived entirely from static input, so it is known at plan time and stable between runs. Keying on anything computed &mdash; a container ID, a principal ID &mdash; fails with <em>the for_each value depends on resource attributes that cannot be determined until apply</em>. Lesson 15.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Four bugs in one file</span>
+  </div>
+  <div class="exercise-body">
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">variable "containers" {
+  type    = list(string)
+  default = ["raw", "bronze", "silver", "gold"]
+}
+
+resource "azurerm_storage_container" "this" {
+  for_each           = var.containers
+  name               = each.value
+  storage_account_id = azurerm_storage_account.lake.id
+}
+
+resource "azurerm_storage_account" "lake" {
+  name                     = "st-analytics-dev-weu-01"
+  resource_group_name      = azurerm_resource_group.analytics.name
+  location                 = azurerm_resource_group.analytics.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  tags {
+    environment = "dev"
+  }
+}</code></pre>
+    </div>
+    <p>Find four separate problems. Two are HCL-level, two are Azure-level.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>1 · <code>for_each</code> on a list (HCL).</strong></p>
+      <p>
+        <code>for_each</code> accepts a <code>set</code> or a <code>map</code>, never a list. Error:
+        <code>Invalid for_each argument … must be a map, or set of strings</code>.
+        Fix: <code>for_each = toset(var.containers)</code>, or change the variable type to
+        <code>set(string)</code>.
+      </p>
+
+      <p><strong>2 · <code>tags</code> written as a block (HCL).</strong></p>
+      <p>
+        <code>tags</code> is a map argument, so it needs <code>=</code>:
+        <code>tags = { environment = "dev" }</code>.
+      </p>
+
+      <p><strong>3 · Invalid storage account name (Azure).</strong></p>
+      <p>
+        <code>"st-analytics-dev-weu-01"</code> contains hyphens and is 23 characters. Storage account names
+        must be <strong>3–24 characters, lowercase letters and digits only</strong>, and globally unique across
+        all of Azure. Fix: <code>"stanalyticsdevweu01"</code>. This is caught at plan time by the provider's
+        validation, not by <code>terraform validate</code>… actually it <em>is</em> caught by validate here,
+        because the provider declares a regex — but the <em>global uniqueness</em> failure only appears at apply.
+      </p>
+
+      <p><strong>4 · Missing <code>is_hns_enabled</code> for a data lake (Azure, design-level).</strong></p>
+      <p style="margin-bottom:0">
+        Not a syntax error, but this creates a flat blob storage account, not ADLS Gen2. Without
+        <code>is_hns_enabled = true</code> there is no hierarchical namespace, so no real directories, no
+        POSIX-style ACLs, and worse performance for analytics engines. And because that argument forces
+        replacement, discovering this after loading data means destroying the account. Lesson 06.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is the difference between a list and a set in Terraform, and why does it matter?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A list is ordered and allows duplicates, addressable by index. A set is unordered and deduplicated, and
+        cannot be indexed. It matters because <code>for_each</code> accepts only sets and maps, and because the
+        instance key ends up in the state address. With <code>count</code> over a list, removing an element
+        shifts every later index and causes unrelated resources to be destroyed and recreated. With
+        <code>for_each</code> over a set, the key is the value itself, so removing one element affects exactly
+        one resource.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the difference between an argument and an attribute?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        An argument is an input you set inside a block — <code>name = "..."</code>. An attribute is a value the
+        resource exports for you to read — <code>azurerm_storage_account.lake.id</code>. Many are both. The
+        important category is attributes that are <em>only</em> known after apply, such as a resource ID or a
+        managed identity's principal ID; those cannot be used where Terraform needs a value at plan time, like a
+        <code>for_each</code> key.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>When would you use a <code>dynamic</code> block?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        When a resource schema takes repeated nested blocks and the number of them is driven by data — NSG
+        security rules from a variable, or IP restrictions on a function app. Also for conditionally including a
+        single block, using <code>for_each = condition ? [1] : []</code>. I would avoid it when the blocks are
+        few and known, since literal blocks are far easier to review. Note it produces nested blocks within one
+        resource, not multiple resources — that is <code>for_each</code> on the resource itself.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you handle an optional value that may not exist?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>try(expr, fallback)</code> returns the first argument that evaluates without error — good for
+        possibly-absent object attributes or out-of-range indexes. <code>coalesce(a, b)</code> returns the first
+        non-null, non-empty value — good when the value exists but may be null. For variable types, declaring an
+        attribute <code>optional(string, "default")</code> is cleaner than either. And <code>one()</code> safely
+        reduces a zero-or-one list to a value or null, which is the idiom for reading an optional
+        <code>identity</code> block.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why does Terraform not let you write arbitrary loops or functions?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because Terraform must be able to enumerate the complete set of resources and their dependencies before
+        it does anything — that is what makes a plan possible. Arbitrary control flow or side effects would mean
+        the resource set could differ between the plan and the apply, and the configuration would no longer be
+        reviewable. The constraint pushes complexity into modules and data structures, where it stays visible.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you create a resource for every combination of two lists?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        There is no nested <code>for_each</code>, so you build the cross-product as a value first: a nested
+        <code>for</code> expression wrapped in <code>flatten()</code>, then projected into a map with a composite
+        key, and use that map as the <code>for_each</code>. The key must be stable and derivable at plan time —
+        typically a string joining the two source values — because it becomes part of the resource's address in
+        state.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Blocks take no <code>=</code>; arguments always do. The provider schema decides which a given name is.</li>
+  <li>Collections are homogeneous (<code>list</code>, <code>set</code>, <code>map</code>); structural types are not (<code>object</code>, <code>tuple</code>).</li>
+  <li><code>for_each</code> takes a <strong>set or map only</strong>, and its keys must be known at plan time.</li>
+  <li><code>for</code> expressions with <code>{ }</code> produce maps — the shape almost everything downstream wants. Combine with <code>flatten()</code> for cross-products.</li>
+  <li>Conditionals evaluate both branches; use <code>try()</code> for anything that might error.</li>
+  <li><code>terraform console</code> is the correct way to learn every one of these. Use it constantly.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

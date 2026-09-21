@@ -1,0 +1,1411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>20 · Final project: an Azure data platform — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="20">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-capstone">Capstone</span>
+    <span>Part 21</span><span>·</span><span>~4 hours</span><span>·</span><span>Requires every previous lesson</span>
+  </div>
+  <h1>Final project: an Azure data platform</h1>
+  <p class="lede">
+    Build the whole thing. Networking, a medallion data lake, Key Vault, managed identities, RBAC, private
+    endpoints, Databricks and Functions — as versioned modules, with remote state, environment separation and a
+    pipeline. This is the artefact you show in an interview.
+  </p>
+
+  <div class="objectives">
+    <h3>What you will produce</h3>
+    <ul>
+      <li>A repository with six modules and three environment root modules</li>
+      <li>A working dev environment you can apply and destroy</li>
+      <li>A production configuration with private endpoints and no public access</li>
+      <li>A CI/CD pipeline with OIDC, plan artefacts and an approval gate</li>
+      <li>Module tests and a policy gate</li>
+      <li>A README that explains the decisions, not just the resources</li>
+      <li>Eleven passed checkpoints — each one an executable gate, not a self-graded box</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">End to end</span><span class="pill">~40 resources</span><span class="pill">11 checkpoints</span><span class="pill">Costs money — read the warning</span>
+    </div>
+  </div>
+</header>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Cost warning — read before you apply anything</div>
+  <p>
+    The full production architecture is <strong>not free</strong>. The significant costs are private endpoints
+    (billed per endpoint-hour, and there are five or six of them), the Premium function plan, the Databricks
+    workspace's compute, and Log Analytics ingestion.
+  </p>
+  <p style="margin-bottom:0">
+    <strong>Build the dev variant.</strong> It uses service endpoints instead of private endpoints, a
+    Consumption function plan, and no Databricks workspace unless you specifically want to exercise it — a few
+    euros rather than a few hundred. Apply it, explore it, and run <code>terraform destroy</code> the same day.
+    Set a budget alert on the subscription first.
+  </p>
+</div>
+
+<h2 id="brief">The brief</h2>
+
+<div class="scenario">
+  <div class="scenario-tag">Requirements</div>
+  <p>
+    Contoso Analytics needs a data platform on Azure. Source systems land files and CDC feeds; Databricks
+    processes them through a medallion architecture; Power BI reads the gold layer.
+  </p>
+  <ul>
+    <li><strong>Storage:</strong> ADLS Gen2 with raw, bronze, silver and gold, each with its own retention policy.</li>
+    <li><strong>Ingestion:</strong> an Azure Function writing to raw, calling a third-party API that needs a static key.</li>
+    <li><strong>Processing:</strong> a Databricks workspace with Unity Catalog access to the lake.</li>
+    <li><strong>Security:</strong> no credentials anywhere. Managed identities and RBAC only. No shared storage keys in production.</li>
+    <li><strong>Network:</strong> production has no public data-plane exposure. Dev may be public for cost reasons.</li>
+    <li><strong>Governance:</strong> everything tagged, everything in code, everything reviewed before it reaches production.</li>
+    <li><strong>Operations:</strong> remote state, environment isolation, drift detection.</li>
+  </ul>
+</div>
+
+<h2 id="architecture">Target architecture</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    subgraph SUB["Subscription — prod"]
+        subgraph RGN["rg-network-prod-weu-01"]
+            subgraph VNET["vnet-analytics-prod-weu-01 · 10.10.0.0/16"]
+                SNPL["snet-privatelink<br/>10.10.1.0/24"]
+                SNDH["snet-databricks-host<br/>10.10.2.0/24"]
+                SNDC["snet-databricks-container<br/>10.10.3.0/24"]
+                SNF["snet-functions<br/>10.10.4.0/26"]
+            end
+            DNS["Private DNS zones<br/>blob · dfs · vaultcore · azurewebsites"]
+        end
+
+        subgraph RGA["rg-analytics-prod-weu-01"]
+            LAKE[("ADLS Gen2<br/>raw · bronze · silver · gold<br/>HNS · no shared keys<br/>no public access")]
+            KV["Key Vault<br/>RBAC mode<br/>purge protection"]
+            DBW["Databricks workspace<br/>VNet-injected · no public IP"]
+            AC["Access connector<br/>managed identity"]
+            IDF["id-ingest<br/>user-assigned identity"]
+            PE["Private endpoints<br/>blob · dfs · vault · sites"]
+        end
+
+        subgraph RGW["rg-workloads-prod-weu-01"]
+            FUNC["Function App<br/>Linux · Python · EP1"]
+            SAF[("Runtime storage")]
+            AI["Application Insights"]
+        end
+    end
+
+    subgraph CICD["CI/CD"]
+        PR["Pull request → plan → policy check → PR comment"]
+        APR["Approval gate"]
+        APL["apply"]
+    end
+
+    PR --> APR --> APL
+    APL -->|"OIDC federated credential"| SUB
+
+    SNPL --- PE
+    PE --> LAKE
+    PE --> KV
+    PE --> FUNC
+    PE -.-> DNS
+
+    DBW --- SNDH
+    DBW --- SNDC
+    FUNC --- SNF
+    FUNC --- SAF
+    FUNC --- AI
+
+    AC -->|"Blob Data Contributor<br/>per container"| LAKE
+    DBW --> AC
+    IDF -->|"Blob Data Contributor<br/>on raw"| LAKE
+    IDF -->|"Key Vault Secrets User<br/>on one secret"| KV
+    FUNC --- IDF
+
+    BE[("Remote state<br/>sttfstateprodweu01<br/>blob lease locking")]
+    APL -.-> BE
+
+    style LAKE fill:#e6f2fb,stroke:#0078d4,stroke-width:2px
+    style KV fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+    style BE fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+  </div>
+  <figcaption>
+    Every arrow here is something you built in Lessons 5–19. This is the assembly, not new material.
+  </figcaption>
+</figure>
+
+<h2 id="layout">Repository layout</h2>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">contoso-analytics-platform/</span></div>
+<pre class="plain">.
+├── README.md
+├── .gitignore
+├── .pre-commit-config.yaml
+├── .tflint.hcl
+│
+├── bootstrap/                         run once, by an admin
+│   ├── bootstrap.sh                   creates the state backend
+│   └── federated-credentials.sh       creates the OIDC app registrations
+│
+├── modules/
+│   ├── naming/                        the name and tag convention
+│   ├── networking/                    VNet, subnets, NSGs
+│   ├── private-endpoint/              one endpoint (zones owned by the caller)
+│   ├── storage/                       ADLS Gen2 + containers + lifecycle
+│   ├── key-vault/                     vault + RBAC
+│   ├── databricks/                    workspace + access connector
+│   └── functions/                     plan + app + insights + identity
+│
+├── environments/
+│   ├── dev/
+│   │   ├── main.tf  backend.tf  terraform.tfvars  variables.tf  versions.tf
+│   ├── test/
+│   └── prod/
+│
+├── policy/
+│   ├── deny-public-storage.rego
+│   └── require-tags.rego
+│
+└── .github/workflows/
+    ├── terraform-plan.yml
+    ├── terraform-apply.yml
+    └── drift.yml</pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Why this structure</div>
+  <p style="margin-bottom:0">
+    Structure C from Lesson 17 — directory per environment with shared modules. It is the right size for this
+    project: the backend is committed per environment so you cannot apply to the wrong state, environments can
+    legitimately differ (prod has private endpoints, dev does not), and there is no layering machinery to
+    maintain for a platform one person operates. If Contoso grew to eight product teams, you would split into
+    layers.
+  </p>
+</div>
+
+<h2 id="phase-0">Phase 0 — bootstrap</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">bootstrap/bootstrap.sh</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+LOCATION="westeurope"
+ENV="${1:?usage: bootstrap.sh &lt;dev|test|prod&gt;}"
+RG="rg-tfstate-${ENV}-weu-01"
+SA="sttfstate${ENV}weu01"
+
+az group create --name "$RG" --location "$LOCATION"
+
+az storage account create \
+  --name "$SA" --resource-group "$RG" --location "$LOCATION" \
+  --sku Standard_GZRS --kind StorageV2 \
+  --min-tls-version TLS1_2 --https-only true \
+  --allow-blob-public-access false \
+  --allow-shared-key-access false
+
+az storage account blob-service-properties update \
+  --account-name "$SA" --resource-group "$RG" \
+  --enable-versioning true \
+  --enable-delete-retention true --delete-retention-days 30
+
+az storage container create --name tfstate --account-name "$SA" --auth-mode login
+
+az lock create --name no-delete-tfstate --lock-type CanNotDelete --resource-group "$RG"
+
+echo "Backend ready: $SA / tfstate"</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/dev/backend.tf — committed, hardcoded, unambiguous</span></div>
+<pre><code class="language-hcl">terraform {
+  backend "azurerm" {
+    resource_group_name  = "rg-tfstate-dev-weu-01"
+    storage_account_name = "sttfstatedevweu01"
+    container_name       = "tfstate"
+    key                  = "analytics/dev.terraform.tfstate"
+    use_azuread_auth     = true
+  }
+}</code></pre>
+</div>
+
+<div class="checkpoint" data-cp="bootstrap">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP1</span>
+    <span class="checkpoint-title">The state backend is actually secure</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="bootstrap">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> an unversioned or key-accessible state backend, discovered only when Phase 7's apply already depends on it.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-bootstrap.sh</span></div>
+<pre><code class="language-bash">ENV=dev   # repeat for test, prod
+RG="rg-tfstate-${ENV}-weu-01"
+SA="sttfstate${ENV}weu01"
+
+# Shared keys must be off - state access must be Entra ID only.
+az storage account show --name "$SA" --resource-group "$RG" \
+  --query "allowSharedKeyAccess" -o tsv
+# expect: false
+
+# Versioning is the undo button for state corruption (Lesson 10).
+az storage account blob-service-properties show \
+  --account-name "$SA" --resource-group "$RG" \
+  --query "{versioning:isVersioningEnabled, retentionDays:deleteRetentionPolicy.days}" -o json
+# expect: {"versioning": true, "retentionDays": 30}
+
+# The account itself cannot be deleted by accident.
+az lock list --resource-group "$RG" --query "[].{name:name, level:level}" -o table
+# expect: no-delete-tfstate   CanNotDelete
+
+# init must succeed against the RBAC-only backend.
+cd environments/dev &amp;&amp; terraform init -backend-config=backend.hcl</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> all four checks return the expected value, and <code>init</code> completes with no key-based fallback warning.</p>    <p style="margin-bottom:0"><strong>If <code>allowSharedKeyAccess</code> is <code>true</code>:</strong> the state backend has an access key floating around, and <code>use_azuread_auth</code> in the backend block is doing nothing to enforce RBAC-only access. Fix the bootstrap script, not the symptom.</p></div>
+</div>
+
+<h2 id="phase-1">Phase 1 — the naming module</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/naming/main.tf</span></div>
+<pre><code class="language-hcl">variable "workload"    { type = string }
+variable "environment" { type = string }
+variable "location"    { type = string }
+variable "instance" {
+  type    = number
+  default = 1
+}
+variable "extra_tags" {
+  type    = map(string)
+  default = {}
+}
+
+locals {
+  region_short = {
+    westeurope  = "weu"
+    northeurope = "neu"
+    uksouth     = "uks"
+  }
+
+  suffix = join("-", [
+    var.workload,
+    var.environment,
+    local.region_short[var.location],
+    format("%02d", var.instance),
+  ])
+
+  # Globally unique names cannot contain hyphens and cap at 24 characters.
+  compact = substr(replace(local.suffix, "-", ""), 0, 20)
+}
+
+output "suffix" { value = local.suffix }
+
+output "names" {
+  value = {
+    resource_group_network   = "rg-network-${var.environment}-${local.region_short[var.location]}-01"
+    resource_group_analytics = "rg-analytics-${var.environment}-${local.region_short[var.location]}-01"
+    resource_group_workloads = "rg-workloads-${var.environment}-${local.region_short[var.location]}-01"
+    virtual_network          = "vnet-${local.suffix}"
+    key_vault                = substr("kv-${local.suffix}", 0, 24)
+    storage_lake             = substr("st${local.compact}", 0, 24)
+    storage_functions        = substr("stfn${local.compact}", 0, 24)
+    databricks_workspace     = "dbw-${local.suffix}"
+    databricks_connector     = "dbac-${local.suffix}"
+    function_app             = substr("func-ingest-${var.environment}-${local.region_short[var.location]}-01", 0, 32)
+    service_plan             = "asp-${local.suffix}"
+    identity_ingest          = "id-ingest-${local.suffix}"
+    log_analytics            = "log-${local.suffix}"
+  }
+}
+
+output "tags" {
+  value = merge({
+    workload    = var.workload
+    environment = var.environment
+    managed_by  = "terraform"
+    repository  = "contoso/analytics-platform"
+  }, var.extra_tags)
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Is a naming module a thin wrapper?</div>
+  <p style="margin-bottom:0">
+    Lesson 14 warned against modules that only compute values. This one is borderline, and the justification is
+    that it is used by three root modules and encodes rules that are genuinely easy to get wrong — the 24- and
+    32-character caps, the hyphen stripping, the region abbreviations. If it were used once, it would be a
+    <code>locals</code> block. Be able to defend the choice either way; that is the actual skill.
+  </p>
+</div>
+
+<div class="checkpoint" data-cp="naming">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP2</span>
+    <span class="checkpoint-title">Generated names respect Azure's limits</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="naming">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> a workload or environment name combination that produces a storage account name over 24 characters, or a function app name over 32 &mdash; both fail only at apply, deep into the run.</div>
+  <div class="checkpoint-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/naming/tests/checkpoint.tftest.hcl</span></div>
+<pre><code class="language-hcl">variables {
+  workload    = "analyticsplatform"   # deliberately long, to stress the caps
+  environment = "staging"
+  location    = "westeurope"
+}
+
+run "names_respect_azure_limits" {
+  command = plan
+
+  assert {
+    condition     = length(output.names.storage_lake) &lt;= 24
+    error_message = "Storage account names must not exceed 24 characters."
+  }
+
+  assert {
+    condition     = length(output.names.function_app) &lt;= 32
+    error_message = "Function app names should stay at or under 32 characters."
+  }
+
+  assert {
+    condition     = can(regex("^[a-z0-9]+$", output.names.storage_lake))
+    error_message = "Storage account names must be lowercase alphanumeric only."
+  }
+
+  assert {
+    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$", output.names.key_vault))
+    error_message = "Key Vault names must be 3-24 chars, alphanumerics and hyphens, starting with a letter."
+  }
+}</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-unmapped-region.sh</span></div>
+<pre><code class="language-bash">cd modules/naming
+terraform init
+
+# An unsupported region must fail LOUDLY, not silently produce a name
+# containing the string "null".
+terraform plan -var="workload=analytics" -var="environment=dev" -var="location=useast2"
+# expect:
+#   Error: Invalid index
+#   ... local.region_short["useast2"] ...
+#   The given key does not identify an element in this collection value.</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> <code>terraform test</code> reports every assertion passed, and the unmapped-region plan fails with <code>Invalid index</code> rather than succeeding.</p>    <p style="margin-bottom:0"><strong>If the unmapped region silently plans successfully:</strong> the naming module is using <code>lookup(local.region_short, var.location, "unknown")</code> or similar somewhere instead of a bare index &mdash; which trades a loud failure for a storage account literally named <code>stanalyticsdevunknown01</code>.</p></div>
+</div>
+
+<h2 id="phase-2">Phase 2 — networking</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/networking/main.tf</span></div>
+<pre><code class="language-hcl">variable "name"                { type = string }
+variable "resource_group_name" { type = string }
+variable "location"            { type = string }
+variable "tags" {
+  type    = map(string)
+  default = {}
+}
+
+variable "address_space" {
+  type = string
+
+  validation {
+    condition     = can(cidrnetmask(var.address_space))
+    error_message = "address_space must be a valid CIDR block, e.g. 10.10.0.0/16."
+  }
+}
+
+variable "subnets" {
+  description = "Subnets carved from address_space with cidrsubnet(newbits, netnum)."
+
+  type = map(object({
+    newbits           = number
+    netnum            = number
+    delegation        = optional(string)
+    service_endpoints = optional(list(string), [])
+  }))
+}
+
+locals {
+  prefixes = {
+    for k, v in var.subnets : k =&gt; cidrsubnet(var.address_space, v.newbits, v.netnum)
+  }
+}
+
+resource "azurerm_virtual_network" "this" {
+  name                = var.name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  address_space       = [var.address_space]
+  tags                = var.tags
+}
+
+resource "azurerm_subnet" "this" {
+  for_each = var.subnets
+
+  name                 = "snet-${replace(each.key, "_", "-")}"
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = [local.prefixes[each.key]]
+  service_endpoints    = each.value.service_endpoints
+
+  dynamic "delegation" {
+    for_each = each.value.delegation == null ? [] : [each.value.delegation]
+
+    content {
+      name = "delegation"
+      service_delegation {
+        name = delegation.value
+        actions = [
+          "Microsoft.Network/virtualNetworks/subnets/join/action",
+          "Microsoft.Network/virtualNetworks/subnets/action",
+        ]
+      }
+    }
+  }
+}
+
+# Databricks injects its own rules — keep this NSG bare and ignore them.
+resource "azurerm_network_security_group" "databricks" {
+  name                = "nsg-databricks-${var.name}"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  tags                = var.tags
+
+  lifecycle {
+    ignore_changes = [security_rule]
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "databricks" {
+  for_each = toset([
+    for k, v in var.subnets : k
+    if v.delegation == "Microsoft.Databricks/workspaces"
+  ])
+
+  subnet_id                 = azurerm_subnet.this[each.value].id
+  network_security_group_id = azurerm_network_security_group.databricks.id
+}
+
+output "vnet_id"     { value = azurerm_virtual_network.this.id }
+output "subnet_ids"  { value = { for k, s in azurerm_subnet.this : k =&gt; s.id } }
+output "subnet_names" { value = { for k, s in azurerm_subnet.this : k =&gt; s.name } }
+
+# The workspace needs the ASSOCIATION ids, not the subnet ids (Lesson 12).
+output "databricks_nsg_association_ids" {
+  value = { for k, a in azurerm_subnet_network_security_group_association.databricks : k =&gt; a.id }
+}</code></pre>
+</div>
+
+<div class="checkpoint" data-cp="networking">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP3</span>
+    <span class="checkpoint-title">The address plan is arithmetically and structurally correct</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="networking">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> CIDR arithmetic errors, Databricks subnets outside the /26-/24 range Azure requires, and address spaces that overlap between environments &mdash; all invisible until a peering or a workspace creation fails.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-networking.sh</span></div>
+<pre><code class="language-bash"># 1 - The module tests from Lesson 19 apply directly here, since Phase 2
+#     reuses that same networking module unchanged.
+cd modules/networking
+terraform test
+# expect: Success! N passed, 0 failed.
+
+# 2 - Environments must not share address space, or a future VNet peering
+#     between dev and prod becomes impossible without renumbering.
+cd ../../environments
+DEV_CIDR=$(grep -oE '"[0-9./]+/16"' dev/terraform.tfvars  | tr -d '"')
+PROD_CIDR=$(grep -oE '"[0-9./]+/16"' prod/terraform.tfvars | tr -d '"')
+
+python3 -c "
+import ipaddress as ip
+a = ip.ip_network('$DEV_CIDR')
+b = ip.ip_network('$PROD_CIDR')
+print('OVERLAP - FIX THIS' if a.overlaps(b) else 'ok: no overlap')
+"</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> the module tests are all green, and the overlap check prints <code>ok: no overlap</code>.</p>    <p style="margin-bottom:0"><strong>If the tests fail on a Databricks subnet prefix:</strong> the mistake is almost always in the <code>newbits</code> argument passed from the environment's <code>main.tf</code> &mdash; a value that carves a /27 or smaller where Databricks requires at least a /26.</p></div>
+</div>
+
+<h2 id="phase-3">Phase 3 — the lake, the vault and the identities</h2>
+
+<p>
+  The <code>storage</code> module is the one built in Lesson 14 — reuse it as written. The
+  <code>key-vault</code> module wraps Lesson 09's vault. What is new here is the root module wiring them
+  together with RBAC.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod/main.tf — the platform layer</span></div>
+<pre><code class="language-hcl">module "naming" {
+  source      = "../../modules/naming"
+  workload    = "analytics"
+  environment = var.environment
+  location    = var.location
+  extra_tags = {
+    cost_center = var.cost_center
+    criticality = var.criticality
+  }
+}
+
+resource "azurerm_resource_group" "network" {
+  name     = module.naming.names.resource_group_network
+  location = var.location
+  tags     = module.naming.tags
+}
+
+resource "azurerm_resource_group" "analytics" {
+  name     = module.naming.names.resource_group_analytics
+  location = var.location
+  tags     = module.naming.tags
+}
+
+module "networking" {
+  source = "../../modules/networking"
+
+  name                = module.naming.names.virtual_network
+  resource_group_name = azurerm_resource_group.network.name
+  location            = var.location
+  address_space       = var.vnet_address_space
+  tags                = module.naming.tags
+
+  subnets = {
+    privatelink = {
+      newbits           = 8
+      netnum            = 1
+      service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"]
+    }
+    databricks_host = {
+      newbits           = 8
+      netnum            = 2
+      delegation        = "Microsoft.Databricks/workspaces"
+      service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"]
+    }
+    databricks_container = {
+      newbits           = 8
+      netnum            = 3
+      delegation        = "Microsoft.Databricks/workspaces"
+      service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"]
+    }
+    functions = {
+      newbits           = 10
+      netnum            = 16
+      delegation        = "Microsoft.Web/serverFarms"
+      service_endpoints = ["Microsoft.Storage"]
+    }
+  }
+}
+
+module "lake" {
+  source = "../../modules/storage"
+
+  name                = module.naming.names.storage_lake
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  replication_type    = var.lake_replication
+  tags                = module.naming.tags
+
+  allow_public_network_access = !var.enable_private_endpoints
+  allow_shared_key_access     = !var.enforce_identity_only
+
+  containers = var.medallion_layers
+}
+
+module "key_vault" {
+  source = "../../modules/key-vault"
+
+  name                = module.naming.names.key_vault
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  tags                = module.naming.tags
+
+  purge_protection_enabled      = var.environment == "prod"
+  public_network_access_enabled = !var.enable_private_endpoints
+}
+
+# --- identities ---
+
+resource "azurerm_user_assigned_identity" "ingest" {
+  name                = module.naming.names.identity_ingest
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  tags                = module.naming.tags
+}
+
+resource "azurerm_databricks_access_connector" "unity" {
+  name                = module.naming.names.databricks_connector
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  tags                = module.naming.tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+}
+
+# --- the access matrix, as data (Lesson 08) ---
+
+locals {
+  principals = {
+    databricks = azurerm_databricks_access_connector.unity.identity[0].principal_id
+    ingest     = azurerm_user_assigned_identity.ingest.principal_id
+  }
+
+  access_matrix = {
+    databricks = {
+      raw    = "Storage Blob Data Reader"        # raw is immutable by design
+      bronze = "Storage Blob Data Contributor"
+      silver = "Storage Blob Data Contributor"
+      gold   = "Storage Blob Data Contributor"
+    }
+    ingest = {
+      raw = "Storage Blob Data Contributor"      # ingestion writes raw only
+    }
+  }
+
+  lake_assignments = {
+    for a in flatten([
+      for who, layers in local.access_matrix : [
+        for layer, role in layers : { who = who, layer = layer, role = role }
+      ]
+    ]) : "${a.who}-${a.layer}" =&gt; a
+  }
+}
+
+resource "azurerm_role_assignment" "lake" {
+  for_each = local.lake_assignments
+
+  scope                = module.lake.container_scopes[each.value.layer]
+  role_definition_name = each.value.role
+  principal_id         = local.principals[each.value.who]
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_role_assignment" "ingest_secret" {
+  scope                = "${module.key_vault.id}/secrets/saas-api-key"
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+  principal_type       = "ServicePrincipal"
+}</code></pre>
+</div>
+
+<div class="checkpoint" data-cp="lake-rbac">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP4</span>
+    <span class="checkpoint-title">Data-plane access actually works, at the right granularity</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="lake-rbac">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> the control-plane/data-plane confusion from Lesson 08 &mdash; a deployer with Contributor that cannot touch a single blob, discovered only when a data-plane resource creation returns 403.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-lake-rbac.sh</span></div>
+<pre><code class="language-bash"># 1 - Can the DEPLOYMENT identity actually reach the data plane? This is
+#     exactly the check that would have caught the Lesson 06 403 before
+#     Phase 4 ever tried to create a filesystem.
+az storage fs list \
+  --account-name stanalyticsdevweu01 \
+  --auth-mode login
+# expect: a JSON array (even if empty) - NOT an AuthorizationFailure.
+
+# 2 - Does the access matrix from Phase 3 match what was actually applied?
+for layer in raw bronze silver gold; do
+  echo "-- $layer --"
+  az role assignment list \
+    --scope "/subscriptions/$SUB/resourceGroups/rg-analytics-dev-weu-01/providers/Microsoft.Storage/storageAccounts/stanalyticsdevweu01/blobServices/default/containers/$layer" \
+    --query "[].{role:roleDefinitionName, principal:principalId}" -o table
+done
+# expect: raw shows Databricks as Reader + ingest as Contributor;
+#         bronze/silver/gold show Databricks as Contributor only.</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> the data-plane call succeeds, and every container's role list matches the access matrix from Phase 3 exactly &mdash; no extra grants, no missing ones.</p>    <p style="margin-bottom:0"><strong>If <code>az storage fs list</code> returns 403 while the resources were created successfully:</strong> a control-plane role (Contributor) let Terraform build everything, but nobody granted the deployer itself a data role &mdash; the exact asymmetry Lesson 08 is about.</p></div>
+</div>
+
+<h2 id="phase-4">Phase 4 — private endpoints, conditionally</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod/private-endpoints.tf</span></div>
+<pre><code class="language-hcl">locals {
+  # Empty in dev — for_each over an empty map creates nothing (Lesson 15).
+  private_endpoints = var.enable_private_endpoints ? {
+    lake_blob = { target = module.lake.id,       sub = "blob",  zone = "privatelink.blob.core.windows.net" }
+    lake_dfs  = { target = module.lake.id,       sub = "dfs",   zone = "privatelink.dfs.core.windows.net" }
+    keyvault  = { target = module.key_vault.id,  sub = "vault", zone = "privatelink.vaultcore.azure.net" }
+  } : {}
+
+  # Deduplicate: several endpoints may share one zone.
+  dns_zones = toset([for pe in local.private_endpoints : pe.zone])
+}
+
+resource "azurerm_private_dns_zone" "this" {
+  for_each = local.dns_zones
+
+  name                = each.value
+  resource_group_name = azurerm_resource_group.network.name
+  tags                = module.naming.tags
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "this" {
+  for_each = local.dns_zones
+
+  name                  = "link-${replace(each.value, ".", "-")}"
+  resource_group_name   = azurerm_resource_group.network.name
+  private_dns_zone_name = azurerm_private_dns_zone.this[each.value].name
+  virtual_network_id    = module.networking.vnet_id
+  registration_enabled  = false
+  tags                  = module.naming.tags
+}
+
+module "private_endpoints" {
+  source   = "../../modules/private-endpoint"
+  for_each = local.private_endpoints
+
+  name                 = "pe-${replace(each.key, "_", "-")}-${module.naming.suffix}"
+  resource_group_name  = azurerm_resource_group.network.name
+  location             = var.location
+  subnet_id            = module.networking.subnet_ids["privatelink"]
+  target_resource_id   = each.value.target
+  subresource_name     = each.value.sub
+  private_dns_zone_ids = [azurerm_private_dns_zone.this[each.value.zone].id]
+  tags                 = module.naming.tags
+}</code></pre>
+</div>
+
+<div class="checkpoint" data-cp="private-endpoints">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP5</span>
+    <span class="checkpoint-title">The lake resolves privately, from inside the network</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="private-endpoints">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> the single most common private-endpoint failure: everything shows Approved in the portal, and clients still resolve the public IP because a DNS zone is missing, misnamed, or never linked.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-private-dns.sh</span></div>
+<pre><code class="language-bash"># From a VM or Cloud Shell attached to the platform VNet - NOT your laptop.
+
+for svc in blob dfs; do
+  echo "-- $svc --"
+  nslookup "stanalyticsprodweu01.${svc}.core.windows.net"
+done
+# expect BOTH: a CNAME into privatelink.SVC.core.windows.net,
+#              resolving to an address in 10.10.1.0/24.
+# A public IP here (20.x, 40.x, ...) means the zone for that service is
+# missing, misnamed, or not linked to this VNet.
+
+# Confirm the A record actually exists in the dfs zone - this is what
+# private_dns_zone_group writes, and it's the block people forget.
+az network private-dns record-set a list \
+  --zone-name privatelink.dfs.core.windows.net \
+  --resource-group rg-network-prod-weu-01 -o table
+
+az network private-dns record-set a list \
+  --zone-name privatelink.blob.core.windows.net \
+  --resource-group rg-network-prod-weu-01 -o table</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> both hostnames resolve to <code>10.10.1.x</code> addresses, and both zones list an A record.</p>    <p style="margin-bottom:0"><strong>If <code>dfs</code> resolves publicly but <code>blob</code> resolves privately:</strong> only the blob endpoint was built. Databricks and Spark use <code>abfss://</code>, which goes through <code>dfs</code> &mdash; this exact asymmetry is the Lesson 11 scenario where the portal works and every Spark job fails.</p></div>
+</div>
+
+<h2 id="phase-5">Phase 5 — Databricks and Functions</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod/databricks.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_databricks_workspace" "this" {
+  count = var.enable_databricks ? 1 : 0
+
+  name                = module.naming.names.databricks_workspace
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  sku                 = "premium"
+
+  managed_resource_group_name = "${azurerm_resource_group.analytics.name}-databricks-managed"
+
+  public_network_access_enabled         = !var.enable_private_endpoints
+  network_security_group_rules_required = var.enable_private_endpoints ? "NoAzureDatabricksRules" : "AllRules"
+
+  custom_parameters {
+    no_public_ip       = true
+    virtual_network_id = module.networking.vnet_id
+
+    public_subnet_name  = module.networking.subnet_names["databricks_host"]
+    private_subnet_name = module.networking.subnet_names["databricks_container"]
+
+    # Association IDs, not subnet IDs — Lesson 12.
+    public_subnet_network_security_group_association_id =
+      module.networking.databricks_nsg_association_ids["databricks_host"]
+    private_subnet_network_security_group_association_id =
+      module.networking.databricks_nsg_association_ids["databricks_container"]
+  }
+
+  tags = module.naming.tags
+}</code></pre>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Unity Catalog goes in a second root module</div>
+  <p style="margin-bottom:0">
+    Do <strong>not</strong> put <code>databricks_*</code> resources in this configuration. The
+    <code>databricks</code> provider would be configured from the workspace resource, and destroy would break
+    (Lesson 12). Create <code>environments/prod-databricks/</code> as a separate root module with its own state,
+    reading the workspace with <code>data "azurerm_databricks_workspace"</code>. Apply it after the platform,
+    and destroy it before.
+  </p>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod/functions.tf</span></div>
+<pre><code class="language-hcl">module "functions" {
+  source = "../../modules/functions"
+
+  name                = module.naming.names.function_app
+  service_plan_name   = module.naming.names.service_plan
+  storage_name        = module.naming.names.storage_functions
+  log_analytics_name  = module.naming.names.log_analytics
+  resource_group_name = azurerm_resource_group.workloads.name
+  location            = var.location
+  tags                = module.naming.tags
+
+  # EP1 supports VNet integration; Y1 does not (Lesson 13).
+  sku_name  = var.enable_private_endpoints ? "EP1" : "Y1"
+  subnet_id = var.enable_private_endpoints ? module.networking.subnet_ids["functions"] : null
+
+  user_assigned_identity_id        = azurerm_user_assigned_identity.ingest.id
+  user_assigned_identity_client_id = azurerm_user_assigned_identity.ingest.client_id
+
+  app_settings = {
+    LAKE_ACCOUNT_NAME = module.lake.name
+    LAKE_CONTAINER    = "raw"
+
+    # A pointer, not a secret (Lesson 09).
+    SAAS_API_KEY = "@Microsoft.KeyVault(VaultName=${module.key_vault.name};SecretName=saas-api-key)"
+  }
+}</code></pre>
+</div>
+
+<div class="checkpoint" data-cp="compute">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP6</span>
+    <span class="checkpoint-title">The workspace and the function app both actually run</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="compute">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> the association-ID-vs-subnet-ID mistake from Lesson 12, and the runtime-storage lockdown from Lesson 13 that leaves a Function App running with zero functions and no error message.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-compute.sh</span></div>
+<pre><code class="language-bash"># Databricks: did VNet injection actually succeed?
+az databricks workspace show \
+  --name dbw-analytics-prod-weu-01 \
+  --resource-group rg-analytics-prod-weu-01 \
+  --query "provisioningState" -o tsv
+# expect: Succeeded
+# (a wrong association ID typically fails here with an obscure networking
+#  error, or succeeds but leaves the workspace unreachable)
+
+# Functions: does the host list ANY functions at all?
+az functionapp function list \
+  --name func-ingest-prod-weu-01 \
+  --resource-group rg-workloads-prod-weu-01 \
+  --query "length(@)" -o tsv
+# expect: a number greater than 0. Zero means the runtime cannot reach its
+# own storage account - check private endpoints for blob/file/queue/table.
+
+# Confirm no credential leaked into app settings.
+az functionapp config appsettings list \
+  --name func-ingest-prod-weu-01 \
+  --resource-group rg-workloads-prod-weu-01 \
+  --query "[].name" -o tsv | grep -i "key\|connectionstring" || echo "clean - no key-bearing setting names"
+</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> the workspace is <code>Succeeded</code>, the function count is non-zero, and the app settings grep finds nothing (or only <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code>, the one accepted exception from Lesson 13).</p>    <p style="margin-bottom:0"><strong>If the function count is zero and the app shows Running:</strong> this is almost always the runtime storage account being unreachable &mdash; walk the checklist in Lesson 13's first exercise rather than guessing.</p></div>
+</div>
+
+<h2 id="phase-6">Phase 6 — environment configuration</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/dev/terraform.tfvars</span></div>
+<pre><code class="language-hcl">environment  = "dev"
+location     = "westeurope"
+cost_center  = "DATA-01"
+criticality  = "low"
+
+vnet_address_space = "10.20.0.0/16"     # non-overlapping with prod
+
+lake_replication         = "LRS"
+enable_private_endpoints = false        # cost: service endpoints + firewall instead
+enforce_identity_only    = false        # shared keys allowed, for convenience
+enable_databricks        = false        # the expensive one — enable deliberately
+
+medallion_layers = {
+  raw    = { tier_after_days = 7 }
+  bronze = {}
+  silver = {}
+  gold   = {}
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod/terraform.tfvars</span></div>
+<pre><code class="language-hcl">environment  = "prod"
+location     = "westeurope"
+cost_center  = "DATA-01"
+criticality  = "high"
+
+vnet_address_space = "10.10.0.0/16"
+
+lake_replication         = "GZRS"
+enable_private_endpoints = true
+enforce_identity_only    = true
+enable_databricks        = true
+
+medallion_layers = {
+  raw    = { tier_after_days = 30,  delete_after_days = 2555 }
+  bronze = { tier_after_days = 180, delete_after_days = 1095 }
+  silver = { tier_after_days = 365 }
+  gold   = {}
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Look at what the two files reveal</div>
+  <p style="margin-bottom:0">
+    The entire dev/prod difference is nine values in a readable file — replication, networking posture, identity
+    enforcement, whether Databricks exists, and retention. A reviewer can see the whole delta at a glance, which
+    is exactly the property Lesson 17 argued for. Note also that the address spaces do not overlap, so the VNets
+    could be peered later without renumbering.
+  </p>
+</div>
+
+<div class="checkpoint" data-cp="environments">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP7</span>
+    <span class="checkpoint-title">dev and prod are genuinely isolated, not just conventionally separate</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="environments">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> the wrong-state incident from Lesson 10 &mdash; a shared backend key or overlapping resource names that let one environment's apply reach into the other's infrastructure.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-environment-isolation.sh</span></div>
+<pre><code class="language-bash"># 1 - Different backend keys, confirmed from the files themselves.
+grep key environments/dev/backend.hcl environments/prod/backend.hcl
+# expect: two DIFFERENT values, e.g. analytics/dev.terraform.tfstate
+#         and analytics/prod.terraform.tfstate
+
+# 2 - Different state, confirmed by actually asking each one.
+( cd environments/dev  &amp;&amp; terraform init -input=false &gt;/dev/null &amp;&amp; terraform state list ) &gt; /tmp/dev.txt
+( cd environments/prod &amp;&amp; terraform init -input=false &gt;/dev/null &amp;&amp; terraform state list ) &gt; /tmp/prod.txt
+
+grep -q stanalyticsdevweu01  /tmp/dev.txt  &amp;&amp; ! grep -q stanalyticsdevweu01  /tmp/prod.txt &amp;&amp; echo "ok: dev resource only in dev state"
+grep -q stanalyticsprodweu01 /tmp/prod.txt &amp;&amp; ! grep -q stanalyticsprodweu01 /tmp/dev.txt  &amp;&amp; echo "ok: prod resource only in prod state"
+
+# 3 - The deployment identities cannot cross the boundary either (Lesson 17).
+az role assignment list --assignee "$SP_DEV_PRINCIPAL_ID" \
+  --query "[?contains(scope, 'prod')]" -o table
+# expect: EMPTY. The dev identity should hold no role anywhere containing "prod".</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> the backend keys differ, each environment's resources appear in exactly one state file, and the dev identity's role assignments never mention <code>prod</code>.</p>    <p style="margin-bottom:0"><strong>If step 3 returns any rows:</strong> isolation exists only by convention, not by permission &mdash; the exact gap Lesson 17's least-privilege bootstrap exercise exists to close.</p></div>
+</div>
+
+<h2 id="phase-7">Phase 7 — deployment order</h2>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">first deployment</span></div>
+<pre><code class="language-bash"># 0 · once per environment, by an admin
+./bootstrap/bootstrap.sh dev
+./bootstrap/federated-credentials.sh dev
+
+# 1 · the platform
+cd environments/dev
+terraform init
+terraform validate
+terraform plan -out=tfplan
+terraform show tfplan            # READ IT
+terraform apply tfplan
+
+# 2 · populate the vault out of band — Terraform never sees the value
+az keyvault secret set \
+  --vault-name "$(terraform output -raw key_vault_name)" \
+  --name saas-api-key \
+  --value "$(read -rsp 'API key: ' k; echo "$k")"
+
+# 3 · Unity Catalog, in its own root module and its own state
+cd ../dev-databricks
+terraform init
+terraform apply
+
+# 4 · function code, from its own pipeline — not Terraform
+cd ../../src/ingest
+func azure functionapp publish "$(cd ../../environments/dev &amp;&amp; terraform output -raw function_app_name)"</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">teardown — reverse order</span></div>
+<pre><code class="language-bash">cd environments/dev-databricks &amp;&amp; terraform destroy   # workspace contents FIRST
+cd ../dev                      &amp;&amp; terraform destroy   # then the platform</code></pre>
+</div>
+
+<div class="checkpoint" data-cp="cicd-guard">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP8</span>
+    <span class="checkpoint-title">The policy gate actually blocks a bad change</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="cicd-guard">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> a guard that reads correctly, was code-reviewed, and does nothing &mdash; the only way to know a gate works is to watch it fail something on purpose.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">prove-the-gate-works.sh</span></div>
+<pre><code class="language-bash"># 1 - Deliberately break something the gate is supposed to catch.
+#     Remove "silver" from environments/dev/terraform.tfvars's
+#     medallion_layers map, on a branch. Open a pull request.
+
+# 2 - The pull-request workflow (Lesson 18) MUST fail, specifically at the
+#     policy-check step, with output resembling:
+#
+#     ::error::Plan destroys 1 resource(s):
+#       - module.lake.azurerm_storage_container.this["silver"]
+#
+#     A green check here is a FAILED checkpoint, not a passed one.
+
+# 3 - Confirm the merge button is actually blocked, not just the check
+#     showing red - branch protection must require this status check.
+gh pr checks PR_NUMBER --watch
+gh api repos/:owner/:repo/branches/main/protection \
+  --jq ".required_status_checks.contexts"
+# expect: the plan/policy job's context name is listed here.
+
+# 4 - Revert the tfvars change; confirm the SAME pull request now goes green.</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> step 2 genuinely fails with the destroy named, step 3 shows the check is a required one (not merely informational), and step 4's revert turns it green on the same PR.</p>    <p style="margin-bottom:0"><strong>If the PR merges anyway despite a red check:</strong> the workflow exists but branch protection was never configured to require it &mdash; the single most common reason a &ldquo;working&rdquo; CI gate turns out to have been decorative.</p></div>
+</div>
+
+<h2 id="verification">Verification checklist</h2>
+
+<p>Work through this after applying. Each item maps to a lesson; a failure tells you which one to revisit.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Check</th><th>How</th><th>Lesson</th></tr></thead>
+  <tbody>
+    <tr><td>A second <code>plan</code> is empty</td><td><code>terraform plan</code> → <code>No changes</code></td><td>02</td></tr>
+    <tr><td>The lake really is ADLS Gen2</td><td><code>terraform state show module.lake.azurerm_storage_account.this | grep is_hns</code></td><td>06</td></tr>
+    <tr><td>No shared keys in prod</td><td><code>az storage account show --query allowKeySharedAccess</code> → <code>false</code></td><td>06</td></tr>
+    <tr><td>Databricks can write silver but not raw</td><td><code>az role assignment list --scope &lt;container&gt;</code></td><td>08</td></tr>
+    <tr><td>No secret values in state</td><td><code>terraform state pull | grep -i 'saas-api-key'</code> → only the reference</td><td>09</td></tr>
+    <tr><td>State is locked during apply</td><td>Run two applies concurrently; the second must wait</td><td>10</td></tr>
+    <tr><td>The lake resolves privately</td><td>From a VM in the VNet: <code>nslookup &lt;acct&gt;.dfs.core.windows.net</code> → 10.10.1.x</td><td>11</td></tr>
+    <tr><td>Both blob <em>and</em> dfs endpoints exist</td><td><code>az network private-endpoint list -o table</code></td><td>11</td></tr>
+    <tr><td>The function has no connection strings</td><td><code>az functionapp config appsettings list</code> → names and references only</td><td>13</td></tr>
+    <tr><td>Removing a layer destroys only that layer</td><td>Remove <code>silver</code> from tfvars, <code>plan</code> → 1 to destroy</td><td>15</td></tr>
+    <tr><td>The lake cannot be destroyed</td><td>Comment out the module call, <code>plan</code> → error</td><td>15</td></tr>
+    <tr><td>Portal drift is detected</td><td>Change a tag in the portal, <code>plan -refresh-only</code></td><td>16</td></tr>
+    <tr><td>The pipeline blocks a destroy</td><td>Open a PR removing a container; CI must fail</td><td>18</td></tr>
+    <tr><td>Module tests pass</td><td><code>cd modules/storage &amp;&amp; terraform test</code></td><td>19</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="final-checkpoints">Final checkpoints</h2>
+
+<p>
+  These three run against the whole platform rather than one phase, and they only make sense once every
+  phase checkpoint above has passed.
+</p>
+
+<div class="checkpoint" data-cp="idempotence">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP9</span>
+    <span class="checkpoint-title">A second plan is completely empty</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="idempotence">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> anything that drifts by construction — a tag built from timestamp(), a random suffix without a stored seed, an app setting the pipeline also manages — every one of which announces itself here and nowhere else.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-idempotence.sh</span></div>
+<pre><code class="language-bash">cd environments/dev
+terraform apply -var-file=terraform.tfvars -auto-approve
+
+# The real test: plan again, with NOTHING changed.
+terraform plan -var-file=terraform.tfvars -detailed-exitcode
+echo "exit code: $?"
+# 0 = no changes   (PASS)
+# 1 = error
+# 2 = changes present   (FAIL - read exactly what it wants to change)</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> exit code <code>0</code>, on both dev and prod.</p>    <p style="margin-bottom:0"><strong>If it is never zero:</strong> read the diff before touching anything else — it names the exact attribute. A tag is the most common culprit; an app setting the deployment pipeline also touches is the second most common.</p></div>
+</div>
+
+<div class="checkpoint" data-cp="rebuild">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP10</span>
+    <span class="checkpoint-title">The environment rebuilds from nothing, in the right order</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="rebuild">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> a manual step that crept in during development and was never written down — invisible until the day someone actually needs to rebuild the environment during an incident.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-rebuild.sh</span></div>
+<pre><code class="language-bash">cd environments/dev-databricks &amp;&amp; terraform destroy -auto-approve   # contents FIRST
+cd ../dev                        &amp;&amp; terraform destroy -auto-approve   # then the platform
+
+cd ../dev                        &amp;&amp; terraform apply  -auto-approve
+cd ../dev-databricks             &amp;&amp; terraform apply  -auto-approve
+
+# Confirm it is actually usable, not merely "applied without error".
+az storage fs list --account-name stanalyticsdevweu01 --auth-mode login
+az functionapp function list --name func-ingest-dev-weu-01 \
+  --resource-group rg-workloads-dev-weu-01 --query "length(@)" -o tsv</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> both applies complete with no manual intervention beyond the one documented step &mdash; repopulating the Key Vault secret, since Terraform deliberately never manages that value (Lesson 09) &mdash; and the two verification calls above succeed afterwards.</p>    <p style="margin-bottom:0"><strong>If anything else needs a manual fix to work again:</strong> that fix belongs in the configuration or in the README's deployment order, not in your memory. This checkpoint exists specifically to surface what &ldquo;it works on my machine&rdquo; was quietly depending on.</p></div>
+</div>
+
+<div class="checkpoint" data-cp="credential-audit">
+  <div class="checkpoint-head">
+    <span class="checkpoint-num">CP11</span>
+    <span class="checkpoint-title">No credential is sitting in state</span>
+    <button class="checkpoint-toggle" type="button" data-cp-btn="credential-audit">Mark as passed</button>
+  </div>
+  <div class="checkpoint-catches"><strong>Catches:</strong> exactly the failure Lesson 09 is built around: a value that looks handled because it is in Key Vault, while a plaintext copy sits in state with far broader read access than the vault ever had.</div>
+  <div class="checkpoint-body">
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">verify-no-credentials.sh</span></div>
+<pre><code class="language-bash">cd environments/prod
+terraform state pull &gt; /tmp/prod-state.json
+
+# Look for the shapes real credentials take. Anything found here needs a
+# named justification, not a shrug.
+jq -r '.. | strings | select(
+    test("AccountKey=") or
+    test("primary_access_key") or
+    test("BEGIN (RSA )?PRIVATE KEY") or
+    test("^[A-Za-z0-9+/]{80,}={0,2}$")   # a long base64 blob
+  )' /tmp/prod-state.json
+
+rm /tmp/prod-state.json   # it is itself exactly as sensitive as state</code></pre>
+</div>
+  </div>
+  <div class="checkpoint-pass">    <p><strong>Pass:</strong> no output, or output limited to a documented, accepted exception — in this platform, that is the Application Insights connection string (Lesson 13), which carries a low-sensitivity write-only ingestion key.</p>    <p style="margin-bottom:0"><strong>If a storage account key or a Key Vault secret value shows up:</strong> find the resource argument that put it there — a <code>data.azurerm_key_vault_secret</code> read, or a <code>primary_connection_string</code> passed into an app setting — and replace it with the identity or reference pattern from Lesson 09.</p></div>
+</div>
+
+<h2 id="extensions">Extensions</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>Straightforward</h4>
+    <ul style="margin-bottom:0">
+      <li>Add a <code>platinum</code> layer and confirm nothing else is touched.</li>
+      <li>Add diagnostic settings on every resource, routed to Log Analytics.</li>
+      <li>Add an Azure Policy assignment denying public storage accounts in the resource group.</li>
+      <li>Add Infracost to the pull-request pipeline.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Harder</h4>
+    <ul style="margin-bottom:0">
+      <li>Customer-managed keys on the lake — mind the circular dependency (Lesson 06).</li>
+      <li>Full Databricks private link, including <code>browser_authentication</code>.</li>
+      <li>Split into layered state (Structure D) with per-layer identities, using <code>moved</code> blocks so nothing is recreated.</li>
+      <li>A second region with peered VNets and geo-redundant storage failover.</li>
+      <li>Import a manually created storage account into the platform (Lesson 16).</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="self-assessment">Self-assessment</h2>
+
+<p>
+  The course opened with a sentence and a promise that every part of it would become transparent. Read it again
+  and check yourself — if any clause is still fuzzy, the lesson to revisit is named beside it.
+</p>
+
+<div class="qa">
+  <details>
+    <summary>“…creates an ADLS Gen2 storage account…”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A storage account with <code>is_hns_enabled = true</code>, which replaces the flat blob namespace with a
+        real directory tree — giving atomic directory renames (what Spark's commit protocol depends on),
+        POSIX-style ACLs, and cheap recursive deletes. It is ForceNew, so it must be right at creation.
+        <strong>Lesson 06.</strong>
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>“…configures its networking…”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>public_network_access_enabled = false</code>, plus private endpoints for <em>both</em>
+        <code>blob</code> and <code>dfs</code>, each with a private DNS zone of the exact documented name, linked
+        to the VNet, and a <code>private_dns_zone_group</code> that registers the A record. Miss any one of those
+        three and the endpoint exists but resolves publicly. <strong>Lesson 11.</strong>
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>“…creates the required containers…”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>for_each</code> over a map of medallion layers, so the state address is
+        <code>["silver"]</code> rather than <code>[2]</code> — meaning removing a layer destroys exactly that
+        layer instead of cascading through every later index. The map's values also carry each layer's lifecycle
+        policy. <strong>Lessons 06 and 15.</strong>
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>“…assigns a managed identity the appropriate RBAC roles…”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A user-assigned identity (or a Databricks access connector), granted a <em>data-plane</em> role such as
+        <code>Storage Blob Data Contributor</code> — because control-plane roles like <code>Contributor</code>
+        grant no data access — scoped to an individual container rather than the account. Azure manages the
+        credential, so nothing exists to leak or rotate. <strong>Lesson 08.</strong>
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>“…stores configuration in Key Vault…”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Terraform creates the vault in RBAC mode with purge protection and grants the workload identity
+        <code>Key Vault Secrets User</code> on a single secret. It does <strong>not</strong> write the secret's
+        value — that would put it in state in plaintext, and so would reading it with a data source. The app
+        setting holds a <code>@Microsoft.KeyVault(...)</code> reference the runtime resolves with its own
+        identity. <strong>Lesson 09.</strong>
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>“…exposes outputs consumed by the Databricks module.”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The storage module outputs <code>id</code>, <code>name</code>, <code>dfs_endpoint</code> and
+        <code>container_scopes</code> — never an access key. Those outputs are a public API: renaming one breaks
+        every caller. The root module wires them into role assignments and into the Databricks configuration.
+        <strong>Lesson 14.</strong>
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>“…Terraform tracks those resources in remote state…”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        An Azure Storage backend with <code>use_azuread_auth = true</code>, so access is Entra ID RBAC rather
+        than a shared account key, with blob versioning for recovery and a blob lease for locking. State maps
+        each configuration address to a real resource ID and caches every attribute — in plaintext — which is why
+        read access to state is equivalent to read access to every secret. <strong>Lesson 10.</strong>
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>“…the CI/CD pipeline generates a plan before applying changes.”</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A pull-request pipeline authenticating via OIDC federated credentials — no stored secret — that runs
+        fmt, validate, lint, scan and plan, checks the plan JSON against policy, and posts the plan as a comment
+        so a human reviews consequences rather than only the diff. Merging triggers an apply to dev, then to
+        production behind an approval gate bound to a protected environment, with a separate higher-privileged
+        identity. <strong>Lesson 18.</strong>
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="defend-your-design">Defend your design</h2>
+
+<p>
+  The checkpoints prove the platform works. These five are the questions an interviewer asks after you have
+  already described it &mdash; each one has a real trade-off behind it, not a single correct answer, and you
+  should be able to argue your own choice even where it differs from what is built here.
+</p>
+
+<div class="qa">
+<details class="defend">
+  <summary><span class="defend-tag">Lesson 13</span>Why is the Function App's runtime storage a separate account from the data lake?</summary>
+  <div class="defend-body">
+    <p>Because the Functions host writes its own trigger receipts, timer leases and, on Premium, a mounted file share into whatever account it is given &mdash; and it needs broad roles there (<code>Storage Blob Data Owner</code>, <code>Storage Queue Data Contributor</code>, <code>Storage Account Contributor</code>) to do it. Pointing that at the lake would mean granting the ingest identity far more than it needs on the data itself, and locking the lake down behind private endpoints would simultaneously risk breaking the runtime in ways that have nothing to do with data access.</p>    <p style="margin-bottom:0">The honest counter-argument: it is one more resource to manage and one more thing to name. For a single-function proof of concept, sharing an account is a defensible simplification &mdash; the separation earns its cost once the lake's security posture and the runtime's operational needs start pulling in different directions, which in this platform happens by Phase 4.</p>
+  </div>
+</details>
+<details class="defend">
+  <summary><span class="defend-tag">Lesson 12</span>Why does Unity Catalog configuration live in a second root module instead of the main one?</summary>
+  <div class="defend-body">
+    <p>Because the <code>databricks</code> provider must be configured from the workspace's URL, which does not exist until the workspace is created. Put both in one configuration and destroy can leave the provider unable to configure itself &mdash; the workspace gets deleted before the objects inside it, and Terraform has no way left to reach the API that would delete them, leaving orphaned state entries only <code>terraform state rm</code> can clear.</p>    <p style="margin-bottom:0">This is not really a Databricks rule; it is a rule about any provider configured from a resource you also create in the same apply &mdash; the same shape shows up with Kubernetes, PostgreSQL and Vault. The cost is two applies and two pipelines instead of one, which is worth naming explicitly if an interviewer asks why the repository has a <code>dev-databricks</code> directory that looks, at a glance, like duplication.</p>
+  </div>
+</details>
+<details class="defend">
+  <summary><span class="defend-tag">Lesson 11</span>Why does dev use service endpoints and public access instead of private endpoints?</summary>
+  <div class="defend-body">
+    <p>Cost, stated plainly. Private endpoints bill per endpoint-hour, and this platform alone needs five or six of them; multiplied across every developer's disposable environment, that adds up fast for a control that dev does not strictly need. Service endpoints plus a firewall allow-list exercise almost the same code path &mdash; the storage account still has <code>network_rules</code>, the container creation still depends on the deployer being let through it &mdash; without the recurring charge.</p>    <p style="margin-bottom:0">The risk this accepts: dev's network posture is not what will actually run in production, so a networking bug that only manifests behind a private endpoint (a missing DNS zone, say) will not be caught until the first prod deploy. That is a real gap, not a free lunch, and it is why Lesson 17's structure keeps the difference to a small, visible set of tfvars rather than letting environments diverge silently.</p>
+  </div>
+</details>
+<details class="defend">
+  <summary><span class="defend-tag">Lesson 08</span>Why is RBAC assigned per container instead of per storage account?</summary>
+  <div class="defend-body">
+    <p>Because the alternative &mdash; one role assignment covering the whole account &mdash; gives Databricks write access to <code>raw</code> as a side effect of needing write access to <code>silver</code>. Scoping to <code>.../blobServices/default/containers/&lt;layer&gt;</code> costs exactly as many lines of Terraform, since it is generated from the same <code>for_each</code> cross product, and it is what lets the platform actually enforce &ldquo;raw is immutable&rdquo; rather than merely document it.</p>    <p style="margin-bottom:0">The trade-off is legibility at scale: with a dozen containers and a dozen identities, the access matrix local becomes the single place a reviewer must read to understand the entire security posture &mdash; which is a feature until that table itself gets long enough to need its own review discipline.</p>
+  </div>
+</details>
+<details class="defend">
+  <summary><span class="defend-tag">Lesson 14</span>Is the naming module in Phase 1 justified, or is it the thin wrapper Lesson 14 warns against?</summary>
+  <div class="defend-body">
+    <p>Genuinely borderline, and worth arguing both ways rather than reciting one answer. In favour: three root modules consume it, and it encodes rules that are easy to get subtly wrong &mdash; the 24- and 32-character caps, the hyphen-stripping for globally-unique names, the region abbreviation table &mdash; so centralising them means a naming-scheme change happens in one place instead of three.</p>    <p>Against: its inputs map almost one-to-one onto a handful of string operations, it creates no Azure resources, and a caller could inline the same locals block with about the same line count. A module that only computes values is close to the thin-wrapper anti-pattern by definition.</p>    <p style="margin-bottom:0">The tie-breaker used here is reuse count plus error surface: at three call sites and with real character-limit bugs to avoid, it earns its place. At one call site, it would not, and the right answer would be a plain <code>locals</code> block in the root module. Being able to make that argument &mdash; rather than a blanket &ldquo;modules are good practice&rdquo; &mdash; is the actual skill Lesson 14 is testing for.</p>
+  </div>
+</details>
+</div>
+
+<h2 id="what-next">Where to go next</h2>
+
+<ul>
+  <li><strong>Read a real repository.</strong> The Azure Verified Modules source is a good, dense example of production module design — including the parts you will disagree with.</li>
+  <li><strong>Break things deliberately.</strong> In a sandbox: delete state and recover it; force a replacement and read the plan; import a manually created resource; corrupt state and restore a blob version. Every one of these is a skill you want to have practised <em>before</em> you need it.</li>
+  <li><strong>Operate it.</strong> Run the drift detection for a month. Nothing teaches the state model like watching real drift appear.</li>
+  <li><strong>Certification, optionally.</strong> HashiCorp's Terraform Associate covers roughly Lessons 1–16. It is a reasonable forcing function, though this course goes further on Azure specifics than the exam requires.</li>
+</ul>
+
+<div class="callout callout-ok">
+  <div class="callout-title">You are done</div>
+  <p style="margin-bottom:0">
+    If you built the dev variant, verified the checklist and can answer the eight self-assessment questions
+    without looking, you can read, write, modify, debug and review Terraform for Azure data infrastructure —
+    which was the goal. The remaining gap between here and senior is operational experience, and the only way to
+    get that is to run a platform for a while.
+  </p>
+</div>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

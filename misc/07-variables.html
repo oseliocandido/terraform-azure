@@ -1,0 +1,1037 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · Variables, locals, outputs &amp; environments — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="07">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-beginner">Beginner → Intermediate</span>
+    <span>Part 6</span><span>·</span><span>~65 min</span><span>·</span><span>Requires Lesson 05</span>
+  </div>
+  <h1>Variables, locals, outputs &amp; environments</h1>
+  <p class="lede">
+    A Terraform variable is not a programming variable — it is a parameter of a module's public interface,
+    bound once before evaluation begins and immutable thereafter. Getting that distinction right is what makes
+    one codebase deploy dev, test and prod without branching.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain how Terraform variables differ from variables in a programming language</li>
+      <li>Write precise type constraints, including <code>optional()</code> with defaults</li>
+      <li>Recite the variable precedence order and predict which value wins</li>
+      <li>Use <code>validation</code> blocks to fail at plan time instead of mid-apply</li>
+      <li>Explain what <code>sensitive = true</code> does and — crucially — what it does not</li>
+      <li>Structure a repository so dev/test/prod share code but not state</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Variables</span><span class="pill">Validation</span><span class="pill">tfvars</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="not-programming-variables">How Terraform variables differ</h2>
+
+<p>
+  You already know what a variable is. What matters here is the four ways Terraform's differ, because each one
+  changes how you design configuration.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Property</th><th>A Python variable</th><th>A Terraform <code>variable</code></th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Assignment</td>
+      <td>Any time, any number of times</td>
+      <td><strong>Once</strong>, before evaluation begins, from outside the configuration. Nothing inside the configuration can set one.</td>
+    </tr>
+    <tr>
+      <td>Scope</td>
+      <td>Function or module scope</td>
+      <td>The <strong>module</strong> it is declared in. A root variable is not visible inside a child module unless explicitly passed.</td>
+    </tr>
+    <tr>
+      <td>Purpose</td>
+      <td>Holding intermediate values</td>
+      <td>The module's <strong>public API</strong>. If a value is computed inside the configuration, it should be a <code>local</code>, not a variable.</td>
+    </tr>
+    <tr>
+      <td>Effect on the graph</td>
+      <td>None — it's just a value</td>
+      <td>Variables are resolved <strong>before</strong> the graph is walked, so a variable value can determine how many resources exist. Their values must be knowable at plan time.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">The design rule that follows</div>
+  <p style="margin-bottom:0">
+    <strong>Variables are inputs, locals are computation, outputs are exports.</strong> If you find yourself
+    giving a variable a default that no caller ever overrides, it should be a <code>local</code>. If you find
+    yourself writing the same expression in three resources, it should be a <code>local</code>. Variables
+    should be the things a <em>caller</em> genuinely needs to decide.
+  </p>
+</div>
+
+<h2 id="declaring">Declaring variables</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">variables.tf</span></div>
+<pre><code class="language-hcl">variable "environment" {
+  type        = string
+  description = "Deployment environment. Drives sizing, replication and network posture."
+
+  validation {
+    condition     = contains(["dev", "test", "prod"], var.environment)
+    error_message = "environment must be one of: dev, test, prod."
+  }
+}
+
+variable "location" {
+  type        = string
+  description = "Azure region, lowercase with no spaces (e.g. westeurope)."
+  default     = "westeurope"
+
+  validation {
+    condition     = can(regex("^[a-z]+[a-z0-9]*$", var.location))
+    error_message = "Use the lowercase no-space form, e.g. westeurope, not \"West Europe\"."
+  }
+}
+
+variable "medallion_layers" {
+  type        = set(string)
+  description = "Containers to create in the data lake."
+  default     = ["raw", "bronze", "silver", "gold"]
+
+  validation {
+    condition     = length(var.medallion_layers) &gt; 0
+    error_message = "At least one layer must be defined."
+  }
+
+  validation {
+    # Container names: 3-63 chars, lowercase alphanumeric and hyphens.
+    condition = alltrue([
+      for l in var.medallion_layers : can(regex("^[a-z0-9][a-z0-9-]{2,62}$", l))
+    ])
+    error_message = "Layer names must be 3-63 lowercase alphanumeric characters or hyphens."
+  }
+}
+
+variable "admin_group_object_id" {
+  type        = string
+  description = "Entra ID group granted Storage Blob Data Owner on the lake."
+  nullable    = false
+}
+
+variable "databricks_token" {
+  type        = string
+  description = "Databricks PAT. Prefer OAuth — see Lesson 12."
+  sensitive   = true
+  default     = null
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Argument</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>type</code></td><td>Type constraint. Always set one — without it the variable is <code>any</code> and errors surface late and cryptically.</td></tr>
+    <tr><td><code>description</code></td><td>Shown in errors, in <code>terraform console</code>, and in generated module documentation. For a shared module this is the API documentation.</td></tr>
+    <tr><td><code>default</code></td><td>Makes the variable optional. <strong>No default = required</strong>; Terraform prompts interactively or fails in CI.</td></tr>
+    <tr><td><code>sensitive</code></td><td>Redacts the value from plan and apply output. Does <em>not</em> encrypt it in state. See below.</td></tr>
+    <tr><td><code>nullable</code></td><td>Defaults to <code>true</code>. Setting <code>false</code> means an explicit <code>null</code> is rejected rather than falling back to the default.</td></tr>
+    <tr><td><code>validation</code></td><td>Zero or more blocks. Each has a <code>condition</code> and an <code>error_message</code>. All are evaluated, so a caller sees every problem at once.</td></tr>
+    <tr><td><code>ephemeral</code></td><td>Terraform 1.10+. The value may be used during an operation but is <strong>never persisted to state or plan files</strong>. The right choice for genuinely transient secrets.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="complex-types">Complex type constraints</h3>
+
+<p>
+  This is where Terraform's type system earns its keep — a well-typed object variable documents itself and
+  fails fast.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">variables.tf — a typed configuration object</span></div>
+<pre><code class="language-hcl">variable "lake" {
+  description = "Data lake storage account configuration."
+
+  type = object({
+    replication       = string
+    access_tier       = optional(string, "Hot")
+    versioning        = optional(bool, false)
+    soft_delete_days  = optional(number, 7)
+    allow_public      = optional(bool, false)
+
+    layers = map(object({
+      tier_after_days   = optional(number)
+      delete_after_days = optional(number)
+    }))
+  })
+
+  validation {
+    condition     = contains(["LRS", "ZRS", "GRS", "GZRS", "RAGZRS"], var.lake.replication)
+    error_message = "replication must be one of: LRS, ZRS, GRS, GZRS, RAGZRS."
+  }
+
+  validation {
+    condition     = var.lake.soft_delete_days &gt;= 1 &amp;&amp; var.lake.soft_delete_days &lt;= 365
+    error_message = "soft_delete_days must be between 1 and 365."
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title"><code>optional(type, default)</code> is the modern idiom</div>
+  <p style="margin-bottom:0">
+    Before it existed, callers had to supply every attribute of an object variable, or you used
+    <code>any</code> and lost all type checking. Now a caller can pass
+    <code>{ replication = "LRS", layers = {} }</code> and Terraform fills the rest in. Use it liberally — it is
+    what makes a typed module variable pleasant rather than punishing.
+  </p>
+</div>
+
+<h2 id="precedence">Where values come from, and which wins</h2>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    A["1 · Environment variables<br/><code>TF_VAR_environment=dev</code>"]
+    B["2 · terraform.tfvars"]
+    C["3 · terraform.tfvars.json"]
+    D["4 · *.auto.tfvars / *.auto.tfvars.json<br/><i>alphabetical order</i>"]
+    E["5 · -var-file=env/prod.tfvars<br/>and -var 'x=y'<br/><i>command-line order</i>"]
+
+    A --> B --> C --> D --> E --> WIN["Highest precedence wins"]
+
+    style A fill:#e6f2fb,stroke:#0078d4
+    style E fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+  </div>
+  <figcaption>
+    Later sources override earlier ones. Anything on the command line beats everything on disk, which beats the
+    environment.
+  </figcaption>
+</figure>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · the invisible <code>terraform.tfvars</code></div>
+  <p style="margin-bottom:0">
+    A file literally named <code>terraform.tfvars</code>, or anything ending <code>.auto.tfvars</code>, is
+    loaded <strong>automatically</strong> with no flag. A leftover <code>terraform.tfvars</code> from someone's
+    local experiment silently overrides defaults for everyone who clones the repo. Either commit it deliberately
+    as the shared default, or gitignore it and use explicit <code>-var-file</code> for everything.
+  </p>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">env/prod.tfvars</span></div>
+<pre><code class="language-hcl">environment = "prod"
+location    = "westeurope"
+
+lake = {
+  replication      = "GZRS"
+  access_tier      = "Hot"
+  versioning       = true
+  soft_delete_days = 30
+
+  layers = {
+    raw    = { tier_after_days = 30, delete_after_days = 2555 }
+    bronze = { tier_after_days = 180 }
+    silver = {}
+    gold   = {}
+  }
+}
+
+admin_group_object_id = "00000000-0000-0000-0000-000000000000"</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">using it</span></div>
+<pre><code class="language-bash">terraform plan -var-file=env/prod.tfvars -out=tfplan.prod
+
+# secrets never go in a tfvars file — pass them through the environment
+export TF_VAR_databricks_token="$(az keyvault secret show --vault-name kv-analytics-prod-weu-01 \
+  --name databricks-pat --query value -o tsv)"
+terraform plan -var-file=env/prod.tfvars</code></pre>
+</div>
+
+<h2 id="validation">Validation — failing early on purpose</h2>
+
+<p>
+  Every validation rule you write converts a confusing mid-apply Azure error into a clear message at plan time,
+  before anything is created. On a configuration that takes fifteen minutes to apply, this is the difference
+  between a five-second correction and a partial deployment.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">validation patterns worth stealing</span></div>
+<pre><code class="language-hcl">variable "storage_account_name" {
+  type = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9]{3,24}$", var.storage_account_name))
+    error_message = "Storage account names must be 3-24 lowercase letters and digits only, with no hyphens."
+  }
+}
+
+variable "subnet_cidrs" {
+  type = map(string)
+
+  validation {
+    # can() turns an error into false — the standard way to test "is this parseable"
+    condition     = alltrue([for c in values(var.subnet_cidrs) : can(cidrnetmask(c))])
+    error_message = "Every value must be a valid CIDR block, e.g. 10.10.1.0/24."
+  }
+}
+
+variable "retention_days" {
+  type    = number
+  default = 30
+
+  validation {
+    condition     = var.retention_days &gt;= 1 &amp;&amp; var.retention_days &lt;= 365
+    error_message = "retention_days must be between 1 and 365. Got ${var.retention_days}."
+  }
+}</code></pre>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">what a failed validation looks like</span></div>
+<pre><code class="language-bash">$ terraform plan -var 'environment=production'
+
+Error: Invalid value for variable
+
+  on variables.tf line 1:
+   1: variable "environment" {
+    ├────────────────
+    │ var.environment is "production"
+
+environment must be one of: dev, test, prod.
+
+This was checked by the validation rule at variables.tf:6,3-13.</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Related checks: preconditions and postconditions</div>
+  <p style="margin-bottom:0">
+    <code>validation</code> can only inspect that one variable. For rules spanning several values — “if
+    <code>public_network_access_enabled</code> is false then <code>private_endpoint_subnet_id</code> must be
+    set” — use a <code>lifecycle { precondition { ... } }</code> block on the resource, or a
+    <code>check</code> block for non-blocking assertions. Those run at plan time and can reference anything.
+  </p>
+</div>
+
+<h2 id="sensitive">Sensitive variables — what the flag really does</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">sensitive.tf</span></div>
+<pre><code class="language-hcl">variable "sql_admin_password" {
+  type      = string
+  sensitive = true
+}
+
+output "connection_string" {
+  value     = "Server=...;Password=${var.sql_admin_password}"
+  sensitive = true   # required — sensitivity propagates, and Terraform enforces it
+}</code></pre>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>✓ <code>sensitive = true</code> does</h4>
+    <ul style="margin-bottom:0">
+      <li>Redact the value in <code>plan</code> and <code>apply</code> output as <code>(sensitive value)</code></li>
+      <li>Propagate: anything derived from it becomes sensitive too</li>
+      <li>Force you to mark derived outputs sensitive, or error</li>
+      <li>Redact it in the JSON plan's human-facing rendering</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>✗ It does <strong>not</strong></h4>
+    <ul style="margin-bottom:0">
+      <li>Encrypt anything in the state file</li>
+      <li>Keep it out of state — it is written in plaintext</li>
+      <li>Keep it out of a saved plan file</li>
+      <li>Prevent <code>terraform output -raw</code> from printing it</li>
+      <li>Stop provider debug logs (<code>TF_LOG=DEBUG</code>) from containing it</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">This is the most misunderstood feature in Terraform</div>
+  <p>
+    <code>sensitive</code> is a <strong>display</strong> control, not a security control. Its purpose is stopping
+    a password appearing in a CI log that fifty people can read. It does nothing about the state file.
+  </p>
+  <p style="margin-bottom:0">
+    For values that genuinely must not persist, Terraform 1.10 added <strong>ephemeral</strong> values —
+    variables, outputs and resources whose values are never written to state or plan files — and 1.11 added
+    <strong>write-only arguments</strong>, which let a managed resource accept one. That is a real security control. Lesson 09 covers the whole secrets problem properly.
+  </p>
+</div>
+
+<h2 id="locals">Locals</h2>
+
+<p>
+  A <code>local</code> names an expression. It cannot be overridden from outside, takes no type constraint, and
+  exists purely to avoid repetition and to give intermediate values a meaningful name.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">locals.tf</span></div>
+<pre><code class="language-hcl">locals {
+  # 1 · derived naming — one place to change the scheme
+  suffix  = "${var.workload}-${var.environment}-${var.region_short}-${var.instance}"
+  rg_name = "rg-${local.suffix}"
+  kv_name = "kv-${local.suffix}"
+  sa_name = substr(lower(replace("st${local.suffix}", "-", "")), 0, 24)
+
+  # 2 · environment-driven behaviour, decided once
+  is_prod = var.environment == "prod"
+
+  # 3 · a sizing table beats a chain of conditionals
+  sizing = {
+    dev  = { replication = "LRS",    soft_delete = 7,  sku = "standard" }
+    test = { replication = "ZRS",    soft_delete = 14, sku = "standard" }
+    prod = { replication = "GZRS",   soft_delete = 30, sku = "premium"  }
+  }
+  env_config = local.sizing[var.environment]
+
+  # 4 · tags built once, merged everywhere
+  common_tags = {
+    workload    = var.workload
+    environment = var.environment
+    managed_by  = "terraform"
+    repository  = var.repository_url
+    # A deploy timestamp would cause a diff on every plan — don't.
+  }
+
+  # locals CAN reference other locals, but not themselves
+  lake_url = "https://${local.sa_name}.dfs.core.windows.net"
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · a timestamp in tags</div>
+  <p style="margin-bottom:0">
+    <code>deployed_at = timestamp()</code> looks helpful and is a trap: <code>timestamp()</code> returns a new
+    value on every evaluation, so <em>every plan shows a change on every tagged resource, forever</em>. If you
+    need deployment metadata, use a value that only changes when something real changes — the git commit SHA,
+    passed in as a variable from CI.
+  </p>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th><code>variable</code></th><th><code>local</code></th></tr></thead>
+  <tbody>
+    <tr><td>Set by</td><td>The caller, from outside</td><td>An expression inside the configuration</td></tr>
+    <tr><td>Type constraint</td><td>Yes</td><td>No — inferred</td></tr>
+    <tr><td>Validation</td><td>Yes</td><td>No</td></tr>
+    <tr><td>Can reference resources</td><td>No</td><td>Yes</td></tr>
+    <tr><td>Visible to a child module</td><td>Only if passed in</td><td>Never</td></tr>
+    <tr><td>Use for</td><td>Anything a caller decides</td><td>Anything computed from those decisions</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="outputs">Outputs</h2>
+
+<p>Outputs serve three distinct audiences, and it is worth knowing which you are writing for:</p>
+
+<ol>
+  <li><strong>Humans</strong> — printed after apply, and readable with <code>terraform output</code>.</li>
+  <li><strong>Parent modules</strong> — <code>module.storage.lake_id</code> is how one module feeds another.</li>
+  <li><strong>Other configurations</strong> — read across state boundaries via <code>terraform_remote_state</code>, or by a pipeline consuming <code>terraform output -json</code>.</li>
+</ol>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">outputs.tf</span></div>
+<pre><code class="language-hcl">output "lake_id" {
+  description = "Resource ID of the data lake storage account. Used as an RBAC scope."
+  value       = azurerm_storage_account.lake.id
+}
+
+output "lake_dfs_endpoint" {
+  description = "DFS endpoint for abfss:// access from Spark."
+  value       = azurerm_storage_account.lake.primary_dfs_endpoint
+}
+
+output "layer_paths" {
+  description = "Map of medallion layer name to its abfss:// URI."
+  value = {
+    for name, fs in azurerm_storage_data_lake_gen2_filesystem.layers :
+    name =&gt; "abfss://${name}@${azurerm_storage_account.lake.name}.dfs.core.windows.net/"
+  }
+}
+
+output "lake_primary_access_key" {
+  description = "Do not use. Present only to demonstrate sensitivity propagation."
+  value       = azurerm_storage_account.lake.primary_access_key
+  sensitive   = true
+}
+
+# An output can carry a postcondition — a self-check that runs at plan time.
+output "lake_is_hns" {
+  value = azurerm_storage_account.lake.is_hns_enabled
+
+  precondition {
+    condition     = azurerm_storage_account.lake.is_hns_enabled
+    error_message = "The lake storage account must have the hierarchical namespace enabled."
+  }
+}</code></pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">consuming outputs</span></div>
+<pre><code class="language-bash">terraform output                       # all outputs, human-readable
+terraform output lake_id               # one, quoted
+terraform output -raw lake_id          # one, unquoted — for shell scripts
+terraform output -json layer_paths     # structured — for pipelines
+
+# feeding the next pipeline stage
+LAKE_URL=$(terraform output -raw lake_dfs_endpoint)</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Outputs are stored in state, in plaintext</div>
+  <p style="margin-bottom:0">
+    Marking an output <code>sensitive</code> hides it from the console. It is still written to state, and
+    <code>terraform output -raw</code> will print it on demand. Never output a secret unless a consumer
+    genuinely needs it — and if one does, prefer outputting a <em>Key Vault secret ID</em> that the consumer
+    resolves itself, rather than the secret value.
+  </p>
+</div>
+
+<h2 id="environments">Running dev, test and prod from one codebase</h2>
+
+<p>
+  There are two workable patterns and one that people reach for and regret. Lesson 17 covers the trade-offs in
+  full; here is enough to structure your practice work.
+</p>
+
+<h3 id="pattern-tfvars">Pattern A — one root module, one tfvars and one backend key per environment</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">layout</span></div>
+<pre class="plain">terraform/
+├── main.tf
+├── variables.tf
+├── outputs.tf
+├── versions.tf
+└── env/
+    ├── dev.tfvars          ├── dev.backend.hcl
+    ├── test.tfvars         ├── test.backend.hcl
+    └── prod.tfvars         └── prod.backend.hcl</pre>
+</div>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">deploying</span></div>
+<pre><code class="language-bash">terraform init -reconfigure -backend-config=env/dev.backend.hcl
+terraform plan -var-file=env/dev.tfvars -out=tfplan
+terraform apply tfplan</code></pre>
+</div>
+
+<p>
+  <strong>Pro:</strong> zero code duplication; a change reaches every environment.
+  <strong>Con:</strong> the same code path serves prod, so a mistake can reach prod as easily as dev, and
+  <code>-reconfigure</code> between environments is easy to forget — which is how someone applies dev's plan to
+  prod's state.
+</p>
+
+<h3 id="pattern-dirs">Pattern B — a directory per environment</h3>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">layout</span></div>
+<pre class="plain">terraform/
+├── modules/
+│   ├── storage/
+│   ├── networking/
+│   └── databricks/
+└── environments/
+    ├── dev/     main.tf  backend.tf  terraform.tfvars
+    ├── test/    main.tf  backend.tf  terraform.tfvars
+    └── prod/    main.tf  backend.tf  terraform.tfvars</pre>
+</div>
+
+<p>
+  Each environment is its own root module calling shared modules with different inputs. Backend configuration
+  is committed per directory, so <code>cd environments/prod &amp;&amp; terraform apply</code> cannot possibly
+  touch dev's state.
+</p>
+
+<p>
+  <strong>Pro:</strong> explicit, safe, and environments can legitimately differ (prod has private endpoints,
+  dev does not) without conditionals everywhere.
+  <strong>Con:</strong> the <code>main.tf</code> files are similar, and a change must be applied in each — which
+  many teams consider a feature, since it forces promotion through environments.
+</p>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Do not use workspaces for environments</div>
+  <p style="margin-bottom:0">
+    <code>terraform workspace</code> gives you multiple states from one configuration and one backend. It is
+    tempting and it is the wrong tool here: every workspace shares one backend and therefore one set of access
+    controls, so anyone who can apply to dev can apply to prod; environments cannot differ structurally without
+    <code>count</code> hacks keyed on <code>terraform.workspace</code>; and it is easy to be in the wrong
+    workspace without noticing. HashiCorp's own guidance points to separate configurations for
+    environments. Workspaces are good for short-lived parallel copies — a per-pull-request preview environment.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Which value wins?</span>
+  </div>
+  <div class="exercise-body">
+    <p>Given all of the following, what is the final value of <code>var.environment</code>?</p>
+    <ul>
+      <li><code>variables.tf</code> declares <code>default = "dev"</code></li>
+      <li><code>terraform.tfvars</code> contains <code>environment = "test"</code></li>
+      <li><code>zz.auto.tfvars</code> contains <code>environment = "staging"</code></li>
+      <li>The shell has <code>TF_VAR_environment=qa</code> exported</li>
+      <li>The command is <code>terraform plan -var-file=env/prod.tfvars</code>, and that file contains <code>environment = "prod"</code></li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong><code>"prod"</code></strong>, from the explicit <code>-var-file</code>.</p>
+      <p>Applying the precedence order lowest to highest:</p>
+      <ol>
+        <li><code>default = "dev"</code> — the floor</li>
+        <li><code>TF_VAR_environment=qa</code> → <code>"qa"</code></li>
+        <li><code>terraform.tfvars</code> → <code>"test"</code></li>
+        <li><code>zz.auto.tfvars</code> → <code>"staging"</code></li>
+        <li><code>-var-file=env/prod.tfvars</code> → <strong><code>"prod"</code></strong></li>
+      </ol>
+      <p style="margin-bottom:0">
+        The real lesson is that a repository in this state is a hazard. Four sources silently competing means
+        nobody can predict what a plan will do. Pick one mechanism — explicit <code>-var-file</code> — and
+        gitignore <code>terraform.tfvars</code> and <code>*.auto.tfvars</code>.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">A validated network variable</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write a variable <code>subnets</code> that:</p>
+    <ul>
+      <li>Is a map from subnet name to an object with <code>address_prefix</code> (required), <code>service_endpoints</code> (optional, defaults to empty list) and <code>delegation</code> (optional, defaults to null).</li>
+      <li>Rejects any address prefix that is not a valid CIDR.</li>
+      <li>Requires at least one subnet named exactly <code>privatelink</code>.</li>
+      <li>Rejects subnets smaller than /28 (Azure's minimum).</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">solution</span></div>
+<pre><code class="language-hcl">variable "subnets" {
+  description = "Subnets to create in the platform VNet, keyed by short name."
+
+  type = map(object({
+    address_prefix    = string
+    service_endpoints = optional(list(string), [])
+    delegation        = optional(string, null)
+  }))
+
+  validation {
+    condition = alltrue([
+      for s in values(var.subnets) : can(cidrnetmask(s.address_prefix))
+    ])
+    error_message = "Every address_prefix must be a valid CIDR block, e.g. 10.10.1.0/24."
+  }
+
+  validation {
+    condition     = contains(keys(var.subnets), "privatelink")
+    error_message = "A subnet named \"privatelink\" is required for private endpoints."
+  }
+
+  validation {
+    condition = alltrue([
+      for s in values(var.subnets) :
+      tonumber(split("/", s.address_prefix)[1]) &lt;= 28
+    ])
+    error_message = "Azure subnets must be /28 or larger (a smaller prefix number)."
+  }
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Each rule is a separate <code>validation</code> block so a caller with three mistakes sees all three at
+        once. Note the third rule would crash on a malformed prefix — but it never runs on one, because
+        validation blocks all evaluate and the first rule reports the malformed input. If you want to be strict,
+        wrap it in <code>can()</code> too.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Design a typed, validated module input</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write a single <code>variable "lake"</code> that fully describes a data lake, so a caller can pass one object instead of eleven separate variables. It must:</p>    <ul>
+      <li>Require <code>replication</code> and <code>layers</code>; default everything else sensibly and securely.</li>
+      <li>Reject an invalid replication type, a soft-delete window outside 1&ndash;365, and any layer name that breaks Azure's container naming rules.</li>
+      <li>Let a caller write <code>{ replication = "LRS", layers = { raw = {} } }</code> and have it work.</li>
+    </ul>
+    <p style="margin-bottom:0">Then show the two-line caller.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">variables.tf</span></div>
+<pre><code class="language-hcl">variable "lake" {
+  description = "Data lake storage account configuration."
+
+  type = object({
+    replication      = string
+    access_tier      = optional(string, "Hot")
+    versioning       = optional(bool, true)
+    soft_delete_days = optional(number, 30)
+    public_access    = optional(bool, false)
+    shared_keys      = optional(bool, false)
+
+    layers = map(object({
+      cool_after_days   = optional(number)
+      delete_after_days = optional(number)
+    }))
+  })
+
+  validation {
+    condition     = contains(["LRS", "ZRS", "GRS", "GZRS", "RAGZRS"], var.lake.replication)
+    error_message = "lake.replication must be one of: LRS, ZRS, GRS, GZRS, RAGZRS."
+  }
+
+  validation {
+    condition     = var.lake.soft_delete_days &gt;= 1 &amp;&amp; var.lake.soft_delete_days &lt;= 365
+    error_message = "lake.soft_delete_days must be between 1 and 365."
+  }
+
+  validation {
+    # Container names: 3-63 chars, lowercase alphanumeric and hyphens,
+    # must start with a letter or digit.
+    condition = alltrue([
+      for name in keys(var.lake.layers) :
+      can(regex("^[a-z0-9][a-z0-9-]{2,62}$", name))
+    ])
+    error_message = "Every layer name must be 3-63 lowercase alphanumeric characters or hyphens."
+  }
+
+  validation {
+    condition     = contains(["Hot", "Cool", "Cold"], var.lake.access_tier)
+    error_message = "lake.access_tier must be Hot, Cool or Cold."
+  }
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">env/dev.tfvars</span></div>
+<pre><code class="language-hcl"># Everything else falls back to the optional() defaults, which are the
+# SECURE values - a caller must deliberately opt out of them.
+lake = {
+  replication = "LRS"
+  layers = {
+    raw    = { cool_after_days = 7 }
+    bronze = {}
+    silver = {}
+    gold   = {}
+  }
+}</code></pre>
+</div>    <p><code>optional(type, default)</code> is what makes a typed object variable pleasant rather than punishing &mdash; before it existed, a caller had to supply every attribute or you fell back to <code>any</code> and lost type checking entirely.</p>    <p style="margin-bottom:0">Note that the defaults are chosen so the <em>secure</em> configuration is the one you get by saying nothing: no public access, no shared keys, versioning on. A caller weakening any of those has to write it down, which means it shows up in the diff and in code review.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Replace a conditional chain with a lookup table</span>
+  </div>
+  <div class="exercise-body">
+    <p>This works and does not scale. Refactor it.</p><div class="code is-bad">
+  <div class="code-head"><span class="fname">bad.tf</span></div>
+<pre><code class="language-hcl">locals {
+  replication = var.environment == "prod" ? "GZRS" : (var.environment == "test" ? "ZRS" : "LRS")
+  sku         = var.environment == "prod" ? "premium" : "standard"
+  retention   = var.environment == "prod" ? 90 : (var.environment == "test" ? 30 : 7)
+  func_sku    = var.environment == "prod" ? "EP1" : (var.environment == "test" ? "EP1" : "Y1")
+  private_pe  = var.environment == "prod" ? true : false
+  node_count  = var.environment == "prod" ? 8 : (var.environment == "test" ? 4 : 2)
+}</code></pre>
+</div>    <p style="margin-bottom:0">Requirements: adding a <code>staging</code> environment must be a single localised edit, and an unknown environment must fail with a clear message rather than silently falling through to the dev values.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">locals.tf</span></div>
+<pre><code class="language-hcl">variable "environment" {
+  type = string
+
+  validation {
+    # A validation block can only reference its OWN variable - not a local,
+    # not another variable. So the list is repeated here deliberately.
+    condition     = contains(["dev", "test", "staging", "prod"], var.environment)
+    error_message = "environment must be one of: dev, test, staging, prod."
+  }
+}
+
+locals {
+  # One row per environment. Adding "staging" is one block, not six edits.
+  sizing = {
+    dev = {
+      replication = "LRS"
+      sku         = "standard"
+      retention   = 7
+      func_sku    = "Y1"
+      private_pe  = false
+      node_count  = 2
+    }
+    test = {
+      replication = "ZRS"
+      sku         = "standard"
+      retention   = 30
+      func_sku    = "EP1"
+      private_pe  = false
+      node_count  = 4
+    }
+    staging = {
+      replication = "ZRS"
+      sku         = "premium"
+      retention   = 30
+      func_sku    = "EP1"
+      private_pe  = true
+      node_count  = 4
+    }
+    prod = {
+      replication = "GZRS"
+      sku         = "premium"
+      retention   = 90
+      func_sku    = "EP1"
+      private_pe  = true
+      node_count  = 8
+    }
+  }
+
+  # A missing key errors loudly here rather than silently defaulting.
+  env = local.sizing[var.environment]
+}
+
+resource "azurerm_storage_account" "lake" {
+  account_replication_type = local.env.replication
+  # ...
+  blob_properties {
+    delete_retention_policy {
+      days = local.env.retention
+    }
+  }
+}</code></pre>
+</div>    <p>The table makes the <em>differences between environments</em> the readable artefact. With the conditional chain you have to trace six separate expressions to answer &ldquo;what is different about staging?&rdquo;; with the table you read one block.</p>    <p style="margin-bottom:0">It also removes a real class of bug. In the original, nothing stops someone setting <code>func_sku = "Y1"</code> alongside <code>private_pe = true</code> &mdash; an impossible combination, because Consumption plans cannot do VNet integration. Grouping the values per environment makes valid combinations the default and invalid ones visibly wrong.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">The secret that leaked anyway</span>
+  </div>
+  <div class="exercise-body">
+    <p>A team is confident their SQL password is protected. A security review disagrees. Find every leak:</p>
+    <div class="code is-bad">
+      <div class="code-head"><span class="fname">broken.tf</span></div>
+<pre><code class="language-hcl">variable "sql_admin_password" {
+  type      = string
+  sensitive = true
+}
+
+resource "azurerm_key_vault_secret" "sql" {
+  name         = "sql-admin-password"
+  value        = var.sql_admin_password
+  key_vault_id = azurerm_key_vault.main.id
+}
+
+output "sql_connection" {
+  value     = "Server=tcp:${azurerm_mssql_server.main.fqdn};User ID=sqladmin;Password=${var.sql_admin_password}"
+  sensitive = true
+}</code></pre>
+    </div>
+    <p>Their CI runs <code>terraform plan -out=tfplan</code>, uploads <code>tfplan</code> as a build artefact, and stores state in an Azure Storage backend.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>Four separate exposures, none prevented by <code>sensitive = true</code>:</p>
+      <ol>
+        <li>
+          <strong>State.</strong> <code>azurerm_key_vault_secret.sql.value</code> is stored in state in
+          plaintext. Anyone who can read the state blob has the password — regardless of their Key Vault
+          permissions. This is the central irony: putting a secret <em>into</em> Key Vault via Terraform copies
+          it somewhere less protected.
+        </li>
+        <li>
+          <strong>The plan artefact.</strong> <code>tfplan</code> contains the full planned attribute values,
+          including the secret. Uploading it as a build artefact makes it readable by everyone with access to the
+          build — often the whole engineering organisation.
+        </li>
+        <li>
+          <strong>The output.</strong> Stored in state, and printable at any time with
+          <code>terraform output -raw sql_connection</code> by anyone who can read the state.
+        </li>
+        <li>
+          <strong>Debug logs.</strong> If anyone ever runs with <code>TF_LOG=DEBUG</code> or
+          <code>TF_LOG=TRACE</code>, the provider logs request bodies — including the secret — and those logs
+          usually end up in the CI log store.
+        </li>
+      </ol>
+      <p><strong>What to do instead:</strong></p>
+      <ul>
+        <li>Do not create the secret with Terraform. Have Terraform create the <em>vault</em> and the RBAC, and let a human or a dedicated rotation job populate the value out of band.</li>
+        <li>If Terraform must generate one, use an <code>ephemeral</code> variable (Terraform 1.10+) together with a write-only argument such as <code>value_wo</code> (Terraform 1.11+, supported by <code>azurerm_key_vault_secret</code>) so the value never reaches state or the plan file.</li>
+        <li>Output the secret's <em>Key Vault ID</em>, not its value: consumers resolve it themselves with their own identity, which is also auditable.</li>
+        <li>Restrict plan artefacts to a short retention with tight access, and treat them as secrets.</li>
+        <li>Best of all: use a managed identity so there is no password. Lesson 08.</li>
+      </ul>
+      <p style="margin-bottom:0">Lesson 09 works through this whole problem.</p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>How do Terraform variables differ from variables in a normal programming language?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        They are inputs to a module, not mutable storage. They are bound once from outside the configuration
+        before evaluation begins, cannot be reassigned, and nothing inside the configuration can set one — that
+        is what <code>locals</code> are for. They are scoped to the module that declares them, so a root variable
+        is invisible to a child module unless passed explicitly. And because they are resolved before the
+        dependency graph is walked, their values can determine how many resources exist, which is why they must
+        be knowable at plan time.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the variable precedence order?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Lowest to highest: the declared <code>default</code>; <code>TF_VAR_</code> environment variables;
+        <code>terraform.tfvars</code>; <code>terraform.tfvars.json</code>; <code>*.auto.tfvars</code> files in
+        alphabetical order; then <code>-var-file</code> and <code>-var</code> on the command line, applied in the
+        order given. The practical point is that <code>terraform.tfvars</code> and <code>*.auto.tfvars</code> are
+        loaded with no flag, so a stray file can silently change a plan.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What does <code>sensitive = true</code> actually protect against?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Accidental display. It redacts the value in plan and apply output and propagates that marking to
+        anything derived from it. It does <strong>not</strong> encrypt or omit the value from state or from a
+        saved plan file, does not stop <code>terraform output -raw</code>, and does not affect provider debug
+        logs. It is a display control, not a security control. For values that must never persist, Terraform 1.10
+        added ephemeral values and 1.11 added write-only arguments, which genuinely are never written to state.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>When would you use a local instead of a variable?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        When the value is computed inside the configuration rather than decided by the caller. Derived names,
+        merged tag maps, an <code>is_prod</code> boolean, a lookup into an environment sizing table — all locals.
+        A variable whose default nobody ever overrides is a smell: it is advertising a decision point that does
+        not exist. Locals also keep the module's public API small, which matters a lot for shared modules.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you manage multiple Azure environments with Terraform?</summary>
+    <div class="details-body">
+      <p>
+        Two viable patterns. One root module with a tfvars file and a separate backend key per environment keeps
+        code duplication at zero but runs prod through the same code path as dev and depends on nobody forgetting
+        <code>-reconfigure</code>. A directory per environment, each a thin root module calling shared modules
+        with different inputs and its own committed backend configuration, is more verbose but makes it
+        structurally impossible to apply the wrong state, and lets environments differ genuinely — prod with
+        private endpoints, dev without.
+      </p>
+      <p style="margin-bottom:0">
+        I would use directories for anything with a production environment, and ideally separate subscriptions
+        per environment so the blast radius is bounded by Azure RBAC too. I would not use workspaces: they share
+        one backend and therefore one set of permissions, so they give isolation of state without isolation of
+        access.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why should you add validation blocks to variables?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        To convert a confusing failure deep in an apply into a clear message at plan time, before anything is
+        created. A storage account name with a hyphen, a region typed as “West Europe” instead of
+        <code>westeurope</code>, a retention value out of range — each of those otherwise fails minutes in, after
+        other resources already exist. Validations also document the contract for anyone calling a shared module.
+        For rules spanning multiple values I would use <code>precondition</code> blocks instead, since
+        <code>validation</code> can only see the one variable.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Variables are a module's API, bound once from outside. Locals are computation. Outputs are exports.</li>
+  <li>Always set <code>type</code> and <code>description</code>. Use <code>optional(type, default)</code> to make object variables usable.</li>
+  <li>Command line beats files beats environment. <code>terraform.tfvars</code> and <code>*.auto.tfvars</code> load with no flag — a real hazard.</li>
+  <li>Every <code>validation</code> block turns a mid-apply failure into a plan-time message.</li>
+  <li><code>sensitive = true</code> hides values from output. It does nothing to state. Ephemeral values are the real control.</li>
+  <li>Environments: tfvars-per-env or directory-per-env. Not workspaces.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

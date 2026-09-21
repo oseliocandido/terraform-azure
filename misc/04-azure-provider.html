@@ -1,0 +1,1062 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · The AzureRM provider &amp; authentication — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="04">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-beginner">Beginner</span>
+    <span>Part 3</span><span>·</span><span>~60 min</span><span>·</span><span>Requires Lesson 03</span>
+  </div>
+  <h1>The AzureRM provider &amp; authentication</h1>
+  <p class="lede">
+    The provider is the bridge between Terraform's cloud-agnostic core and the Azure Resource Manager API.
+    This lesson explains every line of the boilerplate you will copy a hundred times, the Azure identity
+    hierarchy underneath it, and the four ways to authenticate — ranked by how much you should trust them.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain what a provider plugin is and how core communicates with it</li>
+      <li>Write and justify a <code>required_providers</code> version constraint</li>
+      <li>Explain the <code>features {}</code> block and why it is mandatory</li>
+      <li>Place tenant, subscription, management group and resource group in the right hierarchy</li>
+      <li>Choose an authentication method per context: laptop, CI runner, Azure-hosted compute</li>
+      <li>Configure multiple subscriptions or regions with provider aliases</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">azurerm 5.x</span><span class="pill">Entra ID</span><span class="pill">OIDC</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="what-is-a-provider">What a provider actually is</h2>
+
+<p>
+  A provider is a <strong>separate executable</strong> that Terraform downloads during <code>init</code> and
+  runs as a child process, communicating over gRPC on a local socket. It is not a library, not a module, and
+  not part of the <code>terraform</code> binary.
+</p>
+
+<p>Each provider does three things:</p>
+
+<ol>
+  <li><strong>Publishes a schema.</strong> “I offer a resource type called <code>azurerm_storage_account</code>; it has these arguments, with these types, these are required, these force replacement when changed, these are computed.” This is what <code>terraform validate</code> checks against.</li>
+  <li><strong>Implements CRUD.</strong> For each resource type: Create, Read, Update, Delete — each mapping to one or more ARM REST calls, including polling the long-running operation until Azure says it finished.</li>
+  <li><strong>Handles authentication.</strong> It acquires an OAuth 2.0 token from Entra ID and attaches it to every request.</li>
+</ol>
+
+<figure class="diagram">
+  <div class="mermaid">
+sequenceDiagram
+    participant U as You
+    participant C as Terraform core
+    participant P as azurerm plugin<br/>(child process)
+    participant E as Entra ID
+    participant A as ARM API
+
+    U->>C: terraform apply
+    C->>P: ConfigureProvider(subscription_id, …)
+    P->>E: request token for management.azure.com
+    E-->>P: Bearer token (~1h)
+    C->>P: PlanResourceChange(azurerm_storage_account.lake)
+    P->>A: GET /subscriptions/…/storageAccounts/stanalytics…
+    A-->>P: 404 Not Found
+    P-->>C: diff = create
+    C->>P: ApplyResourceChange(create)
+    P->>A: PUT /subscriptions/…/storageAccounts/stanalytics…
+    A-->>P: 202 Accepted + Azure-AsyncOperation header
+    loop until terminal state
+        P->>A: GET the async operation URL
+        A-->>P: "InProgress" … then "Succeeded"
+    end
+    P-->>C: new state (id, computed attributes)
+    C->>C: write state
+  </div>
+  <figcaption>
+    One resource, end to end. The polling loop is why <code>apply</code> prints
+    <code>Still creating... [20s elapsed]</code>.
+  </figcaption>
+</figure>
+
+<h2 id="boilerplate">The boilerplate, line by line</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">versions.tf — the block you will write in every project</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~&gt; 5.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+
+  subscription_id = var.subscription_id
+}</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Line</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>terraform { }</code></td>
+      <td>The settings block. It configures Terraform itself, not any infrastructure. It may contain only literal values — <strong>no variables, no expressions</strong>, because it is read before variable evaluation.</td>
+    </tr>
+    <tr>
+      <td><code>required_version</code></td>
+      <td>Constrains the <em>CLI</em> version. Terraform refuses to run if the local binary does not satisfy it. Use a floor (<code>&gt;= 1.9.0</code>) rather than a pessimistic pin — you want colleagues on newer CLIs to work, you just need the features you rely on.</td>
+    </tr>
+    <tr>
+      <td><code>required_providers</code></td>
+      <td>Declares which providers this module needs. Without it Terraform would have to guess from resource-type prefixes — which it did in very old versions, and which breaks for third-party providers.</td>
+    </tr>
+    <tr>
+      <td><code>source = "hashicorp/azurerm"</code></td>
+      <td>Registry address, short for <code>registry.terraform.io/hashicorp/azurerm</code>. The namespace matters: <code>hashicorp/azurerm</code> and <code>databricks/databricks</code> are different publishers.</td>
+    </tr>
+    <tr>
+      <td><code>version = "~&gt; 5.0"</code></td>
+      <td>Version constraint. See below.</td>
+    </tr>
+    <tr>
+      <td><code>provider "azurerm" { }</code></td>
+      <td>Configures an <em>instance</em> of the plugin: which subscription, which credentials, which behaviours. Separate from <code>required_providers</code>, which only declares the dependency.</td>
+    </tr>
+    <tr>
+      <td><code>features {}</code></td>
+      <td>Mandatory, even when empty. See below.</td>
+    </tr>
+    <tr>
+      <td><code>subscription_id</code></td>
+      <td>Required for <code>plan</code> and <code>apply</code> since v4. Can come from <code>ARM_SUBSCRIPTION_ID</code> instead.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="version-constraints">Version constraints</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Constraint</th><th>Allows</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td><code>version = "5.4.0"</code></td><td>Exactly 5.4.0</td><td>Too rigid for a root module; sensible in some regulated environments. Prefer the lock file for exactness.</td></tr>
+    <tr><td><code>version = "~&gt; 5.0"</code></td><td>&ge; 5.0.0 and &lt; 6.0.0</td><td><strong>Standard for a root module.</strong> Allows minor and patch updates, blocks the breaking major.</td></tr>
+    <tr><td><code>version = "~&gt; 5.4.0"</code></td><td>&ge; 5.4.0 and &lt; 5.5.0</td><td>Patch-only. Useful when a specific minor has a bug you are avoiding.</td></tr>
+    <tr><td><code>version = "&gt;= 5.0"</code></td><td>Anything from 5.0 upward, including 6.x</td><td><strong>Correct for a shared child module</strong>, which should not over-constrain its consumers. Wrong for a root module — a major release will land silently.</td></tr>
+    <tr><td>omitted</td><td>Anything</td><td>Never do this.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-important">
+  <div class="callout-title">Constraint vs lock file</div>
+  <p style="margin-bottom:0">
+    The <code>version</code> constraint says <em>what is acceptable</em>. The <code>.terraform.lock.hcl</code>
+    says <em>what was actually chosen</em>. Together: a broad-ish constraint keeps you upgradeable, and the
+    committed lock file keeps every machine identical until someone deliberately runs
+    <code>terraform init -upgrade</code>. Do not try to achieve reproducibility with the constraint alone.
+  </p>
+</div>
+
+<h3 id="features-block">The <code>features {}</code> block</h3>
+
+<p>
+  It looks like pointless ceremony. It is not: it is where you configure the provider's behaviour for
+  operations that Azure treats specially, particularly around deletion.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">features — a realistic configuration</span></div>
+<pre><code class="language-hcl">provider "azurerm" {
+  subscription_id = var.subscription_id
+
+  features {
+    resource_group {
+      # Default is false. When false, destroying a resource group that still
+      # contains resources Terraform does not manage will FAIL rather than
+      # silently deleting them. Keep it false.
+      prevent_deletion_if_contains_resources = true
+    }
+
+    key_vault {
+      # Azure soft-deletes key vaults. If you destroy and immediately
+      # re-create one with the same name, creation fails unless the
+      # soft-deleted vault is purged or recovered first.
+      purge_soft_delete_on_destroy    = false   # true only in throwaway dev
+      recover_soft_deleted_key_vaults = true
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">These flags have real consequences</div>
+  <p style="margin-bottom:0">
+    <code>purge_soft_delete_on_destroy = true</code> means a <code>terraform destroy</code> permanently and
+    irrecoverably deletes the vault and every secret in it, bypassing Azure's safety net. That is convenient in
+    an ephemeral dev subscription where you re-create the same vault name repeatedly, and it is a serious
+    liability anywhere else. Set it per environment, not globally.
+  </p>
+</div>
+
+<h2 id="azure-hierarchy">The Azure hierarchy you are deploying into</h2>
+
+<p>
+  Terraform's <code>scope</code> arguments — for role assignments, policies and locks — refer to positions in
+  this tree, so it is worth getting straight now.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    T["<b>Entra ID tenant</b><br/>the identity boundary<br/>users, groups, service principals, app registrations<br/><i>one directory</i>"]
+    MG["<b>Management group</b><br/>policy and RBAC inheritance<br/><i>optional, can nest</i>"]
+    S1["<b>Subscription</b><br/>billing + quota boundary<br/><i>sub-analytics-prod</i>"]
+    S2["<b>Subscription</b><br/><i>sub-analytics-dev</i>"]
+    RG1["<b>Resource group</b><br/>lifecycle + RBAC container<br/><i>rg-analytics-prod-weu-01</i>"]
+    RG2["<b>Resource group</b><br/><i>rg-network-prod-weu-01</i>"]
+    R1["Storage account"]
+    R2["Key Vault"]
+    R3["Databricks workspace"]
+
+    T --> MG --> S1
+    MG --> S2
+    S1 --> RG1
+    S1 --> RG2
+    RG1 --> R1
+    RG1 --> R2
+    RG1 --> R3
+
+    style T fill:#efedfd,stroke:#5c4ee5
+    style S1 fill:#e6f2fb,stroke:#0078d4
+  </div>
+  <figcaption>
+    Identities live in the <strong>tenant</strong>. Resources live in <strong>subscriptions</strong>. A role
+    assignment connects the two, at a scope somewhere in this tree — Lesson 08.
+  </figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Level</th><th>What it is</th><th>Terraform relevance</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Tenant</strong></td>
+      <td>One Entra ID directory. Identified by a GUID. Contains all identities.</td>
+      <td><code>ARM_TENANT_ID</code>. Managed by the <code>azuread</code> provider, not <code>azurerm</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>Management group</strong></td>
+      <td>A container for subscriptions, used to apply policy and RBAC to many at once.</td>
+      <td>A valid role-assignment scope: <code>/providers/Microsoft.Management/managementGroups/mg-analytics</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>Subscription</strong></td>
+      <td>The billing and quota boundary. Resources belong to exactly one.</td>
+      <td><code>subscription_id</code> on the provider. Environment separation is very often subscription separation.</td>
+    </tr>
+    <tr>
+      <td><strong>Resource group</strong></td>
+      <td>A named container within a subscription, in a specific region. Deleting it deletes everything inside.</td>
+      <td>Nearly every resource takes <code>resource_group_name</code>. The most common RBAC scope.</td>
+    </tr>
+    <tr>
+      <td><strong>Resource</strong></td>
+      <td>The actual thing. Has a resource ID.</td>
+      <td>The finest-grained RBAC scope — e.g. granting access to one container in one storage account.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="authentication">Authentication — four methods, ranked</h2>
+
+<p>
+  The provider looks for credentials in a fixed order and uses the first it finds. What you should use depends
+  entirely on <em>where the code is running</em>.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    Q{"Where is Terraform<br/>running?"}
+    Q -->|"Your laptop"| A["<b>Azure CLI</b><br/>az login<br/><i>uses your own identity</i>"]
+    Q -->|"GitHub Actions /<br/>Azure DevOps"| B["<b>OIDC workload identity<br/>federation</b><br/>no stored secret at all"]
+    Q -->|"Azure VM, AKS,<br/>Container App"| C["<b>Managed identity</b><br/>token from the local<br/>instance metadata endpoint"]
+    Q -->|"Nothing else fits"| D["<b>Service principal<br/>+ client secret</b><br/><i>a password you must rotate</i>"]
+
+    style A fill:#e3f5ee,stroke:#1a7f5a
+    style B fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+    style C fill:#e3f5ee,stroke:#1a7f5a
+    style D fill:#fdf3e0,stroke:#a5670a
+  </div>
+  <figcaption>Decision tree. Three of the four options involve no long-lived secret anywhere.</figcaption>
+</figure>
+
+<h3 id="auth-cli">1 · Azure CLI — for local development</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">az login
+az account set --subscription "00000000-0000-0000-0000-000000000000"
+az account show --query '{sub:id, tenant:tenantId, user:user.name}' -o table
+
+# Terraform picks this session up automatically — nothing to configure
+terraform plan</code></pre>
+</div>
+
+<p>
+  The provider reads the token cache the CLI maintains. It uses <em>your</em> identity, so your plan is limited
+  by your own RBAC. That is a feature: if you cannot create a role assignment by hand, your Terraform should
+  not be able to either.
+</p>
+
+<h3 id="auth-oidc">2 · OIDC / workload identity federation — for CI/CD</h3>
+
+<p>
+  This is the modern answer and the one to name in an interview. Instead of storing a client secret in your CI
+  system, you register a <strong>federated credential</strong> on an Entra ID app registration that trusts
+  tokens issued by your CI platform for a specific repository, branch or environment.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+sequenceDiagram
+    participant R as GitHub Actions runner
+    participant G as GitHub OIDC issuer
+    participant E as Entra ID
+    participant A as ARM API
+
+    R->>G: request an OIDC token for this job
+    G-->>R: JWT (sub = repo:contoso/analytics:environment:prod)
+    R->>E: exchange JWT for an Azure access token
+    Note over E: checks the federated credential:<br/>does this app trust this issuer<br/>and this exact subject?
+    E-->>R: Azure access token (~1h)
+    R->>A: Terraform operations with that token
+  </div>
+  <figcaption>
+    No secret is stored anywhere. The trust is scoped to a repository and environment, so a token minted for a
+    feature branch cannot deploy production.
+  </figcaption>
+</figure>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">provider config for OIDC</span></div>
+<pre><code class="language-hcl">provider "azurerm" {
+  features {}
+
+  use_oidc        = true
+  subscription_id = var.subscription_id
+  tenant_id       = var.tenant_id
+  client_id       = var.client_id   # the app registration's client ID — not a secret
+}</code></pre>
+</div>
+
+<p>
+  In practice you set none of this in HCL and use environment variables instead, so the same code runs
+  unchanged on a laptop. Lesson 18 builds the full pipeline including the federated credential itself.
+</p>
+
+<h3 id="auth-msi">3 · Managed identity — for Terraform running on Azure compute</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">provider config for managed identity</span></div>
+<pre><code class="language-hcl">provider "azurerm" {
+  features {}
+  use_msi         = true
+  subscription_id = var.subscription_id
+}</code></pre>
+</div>
+
+<p>
+  The VM or container fetches a token from the Azure Instance Metadata Service at a link-local address. Azure
+  manages the credential lifecycle entirely — there is nothing to rotate and nothing to leak. Only usable when
+  the runner is Azure-hosted.
+</p>
+
+<h3 id="auth-sp">4 · Service principal with a client secret — the fallback</h3>
+
+<div class="code is-sh">
+  <div class="code-head"><span class="fname">environment variables — never in HCL</span></div>
+<pre><code class="language-bash">export ARM_CLIENT_ID="00000000-0000-0000-0000-000000000000"
+export ARM_CLIENT_SECRET="$(read from your secret store — never a literal in a file)"
+export ARM_TENANT_ID="00000000-0000-0000-0000-000000000000"
+export ARM_SUBSCRIPTION_ID="00000000-0000-0000-0000-000000000000"
+
+terraform plan   # provider picks these up with no HCL configuration at all</code></pre>
+</div>
+
+<p>
+  A client secret is a password. It expires (max two years, and Azure now defaults new ones much shorter), it
+  must be rotated, and anyone who obtains it has whatever access the principal has, from anywhere on the
+  internet. A certificate (<code>ARM_CLIENT_CERTIFICATE_PATH</code>) is a meaningful improvement. OIDC is
+  better than both.
+</p>
+
+<h3 id="env-vars">Environment variable reference</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Variable</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>ARM_SUBSCRIPTION_ID</code></td><td>Target subscription. <strong>Required</strong> for plan/apply since v4.</td></tr>
+    <tr><td><code>ARM_TENANT_ID</code></td><td>Entra ID tenant.</td></tr>
+    <tr><td><code>ARM_CLIENT_ID</code></td><td>Service principal / app registration ID. Not a secret.</td></tr>
+    <tr><td><code>ARM_CLIENT_SECRET</code></td><td>Client secret. <strong>Is</strong> a secret.</td></tr>
+    <tr><td><code>ARM_CLIENT_CERTIFICATE_PATH</code></td><td>Certificate-based authentication.</td></tr>
+    <tr><td><code>ARM_USE_OIDC</code></td><td>Enable workload identity federation.</td></tr>
+    <tr><td><code>ARM_USE_MSI</code></td><td>Enable managed identity.</td></tr>
+    <tr><td><code>ARM_USE_CLI</code></td><td>Use the <code>az</code> session. Defaults to <code>true</code>.</td></tr>
+    <tr><td><code>ARM_ENVIRONMENT</code></td><td><code>public</code> (default), <code>usgovernment</code>, <code>china</code>.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="never-hardcode">Why credentials never go in the configuration</h2>
+
+<div class="code is-bad">
+  <div class="code-head"><span class="fname">never-do-this.tf</span></div>
+<pre><code class="language-hcl">provider "azurerm" {
+  features {}
+  subscription_id = "00000000-0000-0000-0000-000000000000"
+  client_id       = "11111111-1111-1111-1111-111111111111"
+  client_secret   = "abc123~ThisIsASecretAndNowItIsInGitForever"   # ✗✗✗
+  tenant_id       = "22222222-2222-2222-2222-222222222222"
+}</code></pre>
+</div>
+
+<p>Four distinct failures, each sufficient on its own:</p>
+
+<ol>
+  <li><strong>Git history is permanent.</strong> Deleting the line in a later commit does not remove it — anyone with clone access can read it forever. Remediation means rotating the credential, not editing the file.</li>
+  <li><strong>Secret scanners find it in minutes.</strong> Public repositories are continuously scraped. There are documented cases of leaked cloud credentials being exploited within minutes of a push.</li>
+  <li><strong>It may land in state.</strong> Provider configuration is not itself stored in state, but this habit generalises to resource arguments that <em>are</em>.</li>
+  <li><strong>It destroys portability.</strong> One hardcoded subscription means the same code cannot deploy dev and prod — which is the entire point of IaC.</li>
+</ol>
+
+<div class="callout callout-important">
+  <div class="callout-title">The rule</div>
+  <p style="margin-bottom:0">
+    Credentials come from the <strong>environment</strong> (env vars, a CLI session, a federated token, an
+    instance metadata endpoint) — never from the configuration. Non-secret identifiers such as
+    <code>subscription_id</code> and <code>client_id</code> are fine as variables, and are usually supplied per
+    environment via <code>tfvars</code> or CI variables anyway.
+  </p>
+</div>
+
+<h2 id="aliases">Multiple provider configurations</h2>
+
+<p>
+  A single configuration often needs to touch two subscriptions — for instance, a private DNS zone in a shared
+  connectivity subscription while everything else lives in the workload subscription.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">aliases.tf</span></div>
+<pre><code class="language-hcl">provider "azurerm" {
+  features {}
+  subscription_id = var.workload_subscription_id
+  # no alias → this is the default configuration
+}
+
+provider "azurerm" {
+  alias           = "connectivity"
+  features {}
+  subscription_id = var.connectivity_subscription_id
+}
+
+# uses the default provider
+resource "azurerm_storage_account" "lake" {
+  name                     = local.sa_name
+  resource_group_name      = azurerm_resource_group.analytics.name
+  location                 = var.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  is_hns_enabled           = true
+}
+
+# explicitly uses the aliased one — in the OTHER subscription
+resource "azurerm_private_dns_zone" "blob" {
+  provider            = azurerm.connectivity
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = var.connectivity_rg_name
+}</code></pre>
+</div>
+
+<h3 id="providers-in-modules">Passing providers into modules</h3>
+
+<p>
+  Child modules inherit the default provider automatically. To give a module an aliased one, pass it
+  explicitly — and the module must declare that it expects it.
+</p>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">root main.tf</span></div>
+<pre><code class="language-hcl">module "private_endpoints" {
+  source = "./modules/private-endpoints"
+
+  providers = {
+    azurerm              = azurerm               # default → module's default
+    azurerm.connectivity = azurerm.connectivity  # alias → module's alias
+  }
+
+  storage_account_id = azurerm_storage_account.lake.id
+  subnet_id          = module.network.privatelink_subnet_id
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/private-endpoints/versions.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_providers {
+    azurerm = {
+      source                = "hashicorp/azurerm"
+      version               = "&gt;= 5.0"
+      configuration_aliases  = [azurerm.connectivity]   # declares the expectation
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · declaring a provider block inside a reusable module</div>
+  <p style="margin-bottom:0">
+    A child module should contain <code>required_providers</code> but <strong>not</strong> a
+    <code>provider</code> block. A module that configures its own provider cannot be used with
+    <code>for_each</code> or <code>count</code>, cannot be removed cleanly (Terraform needs the provider
+    configuration to destroy the resources it created), and takes configuration decisions away from the root
+    module. Terraform warns about this; take the warning seriously.
+  </p>
+</div>
+
+<h2 id="other-providers">The other providers in an Azure data platform</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Provider</th><th>Manages</th><th>Why it is separate</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>hashicorp/azurerm</code></td>
+      <td>ARM resources: storage, networking, Key Vault, Databricks <em>workspaces</em>, Function Apps, role assignments</td>
+      <td>The main one. Talks to <code>management.azure.com</code>.</td>
+    </tr>
+    <tr>
+      <td><code>hashicorp/azuread</code></td>
+      <td>Entra ID objects: groups, app registrations, service principals</td>
+      <td>Entra ID is Microsoft Graph, a completely different API from ARM.</td>
+    </tr>
+    <tr>
+      <td><code>databricks/databricks</code></td>
+      <td>Everything <em>inside</em> a workspace: clusters, jobs, secret scopes, Unity Catalog</td>
+      <td>Those objects live behind the workspace's own API, not ARM. Lesson 12.</td>
+    </tr>
+    <tr>
+      <td><code>azure/azapi</code></td>
+      <td>Any ARM resource, via the raw API</td>
+      <td>Escape hatch for Azure features <code>azurerm</code> has not implemented yet. Use sparingly — you lose the typed schema and get no validation.</td>
+    </tr>
+    <tr>
+      <td><code>hashicorp/random</code>, <code>hashicorp/time</code>, <code>hashicorp/null</code></td>
+      <td>Utility values</td>
+      <td>Generating unique name suffixes, mostly.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">versions.tf — a realistic multi-provider declaration</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~&gt; 5.0"
+    }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~&gt; 3.0"
+    }
+    databricks = {
+      source  = "databricks/databricks"
+      version = "~&gt; 1.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~&gt; 3.6"
+    }
+  }
+}</code></pre>
+</div>
+
+<h2 id="v5-changes">What changed in azurerm 5.0</h2>
+
+<div class="callout callout-version">
+  <div class="callout-title">⚠ Reading older repositories and tutorials</div>
+  <p>
+    These provider-level changes catch people out when they copy from a v3/v4 example. Resource-level renames
+    are flagged in the lessons where they appear.
+  </p>
+  <div class="table-wrap" style="margin-bottom:0">
+  <table>
+    <thead><tr><th>v3 / v4</th><th>v5</th></tr></thead>
+    <tbody>
+      <tr><td><code>skip_provider_registration = true</code></td><td>Removed. Use <code>resource_provider_registrations = "none"</code>.</td></tr>
+      <tr><td>Resource providers auto-registered by default</td><td>Default is now <code>none</code> — nothing is registered automatically. Set <code>"legacy"</code> to restore old behaviour, or register providers out of band.</td></tr>
+      <tr><td><code>subscription_id</code> optional</td><td>Required for plan and apply (from v4). <code>validate</code> still works without it.</td></tr>
+      <tr><td><code>enable_rbac_authorization</code> on Key Vault</td><td><code>rbac_authorization_enabled</code></td></tr>
+      <tr><td><code>enable_https_traffic_only</code> on storage</td><td><code>https_traffic_only_enabled</code></td></tr>
+      <tr><td><code>storage_account_name</code> on containers</td><td><code>storage_account_id</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Resource provider registration in restricted subscriptions</div>
+  <p style="margin-bottom:0">
+    Azure requires each resource provider namespace (<code>Microsoft.Databricks</code>,
+    <code>Microsoft.KeyVault</code>…) to be registered on a subscription before you can create resources in it.
+    Registration needs subscription-level write permission, which a least-privilege deployment principal often
+    lacks — which is exactly why v5 defaults to <code>none</code>. If you hit
+    <code>MissingSubscriptionRegistration</code>, have a subscription owner run
+    <code>az provider register --namespace Microsoft.Databricks</code> once, rather than widening your
+    pipeline's permissions.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Pick the auth method</span>
+  </div>
+  <div class="exercise-body">
+    <p>Choose an authentication method and justify it in one line:</p>
+    <ol>
+      <li>A data engineer running <code>terraform plan</code> on their laptop against a dev subscription.</li>
+      <li>A GitHub Actions workflow deploying to production on merge to <code>main</code>.</li>
+      <li>A self-hosted Azure DevOps agent running on an Azure VM.</li>
+      <li>A contractor's build server hosted outside Azure with no OIDC support.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong>Azure CLI.</strong> <code>az login</code>, zero configuration, and the engineer's own RBAC bounds what they can do — so their Terraform cannot exceed their own permissions.</li>
+        <li><strong>OIDC workload identity federation.</strong> No stored secret, and the federated credential is bound to <code>repo:org/repo:environment:prod</code>, so a feature branch cannot deploy production even if a workflow file is tampered with.</li>
+        <li><strong>Managed identity</strong> (<code>use_msi</code>). The VM is Azure-hosted, so it can get a token from the instance metadata endpoint with nothing to rotate.</li>
+        <li><strong>Service principal with a certificate</strong>, falling back to a client secret. Whichever you choose: store it in a real secret manager, scope the principal to only the resource groups it needs, and set a short expiry with rotation automated.</li>
+      </ol>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Two subscriptions, one configuration</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write the provider configuration for a setup where:</p>
+    <ul>
+      <li>Data platform resources go into a workload subscription.</li>
+      <li>Private DNS zones live in a central connectivity subscription owned by the network team.</li>
+      <li>Neither subscription ID is hardcoded.</li>
+      <li>The provider is pinned to the 5.x line.</li>
+      <li>Destroying a resource group that still contains unmanaged resources must fail rather than proceed.</li>
+    </ul>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">versions.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~&gt; 5.0"
+    }
+  }
+}
+
+variable "workload_subscription_id" {
+  type        = string
+  description = "Subscription hosting the data platform resources."
+}
+
+variable "connectivity_subscription_id" {
+  type        = string
+  description = "Central subscription hosting shared private DNS zones."
+}
+
+provider "azurerm" {
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = true
+    }
+  }
+  subscription_id = var.workload_subscription_id
+}
+
+provider "azurerm" {
+  alias = "connectivity"
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = true
+    }
+  }
+  subscription_id = var.connectivity_subscription_id
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        Note that <code>features</code> must be repeated — each provider configuration is independent and
+        nothing is inherited between them. Credentials come from the environment, so nothing sensitive appears
+        here. In practice the deployment principal needs rights in both subscriptions, which is a good reason to
+        question whether the DNS zones should be in this configuration at all rather than referenced as a data
+        source.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Write versions.tf for a real multi-provider project</span>
+  </div>
+  <div class="exercise-body">
+    <p>The platform needs <code>azurerm</code> for Azure resources, <code>azuread</code> for Entra ID groups, <code>databricks</code> for workspace objects and <code>random</code> for name suffixes. Private DNS zones live in a separate connectivity subscription.</p>    <p style="margin-bottom:0">Write the settings and provider blocks. Pin appropriately for a <strong>root</strong> module, keep credentials out of the configuration, and make the Key Vault deletion behaviour depend on the environment.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">versions.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm    = { source = "hashicorp/azurerm",     version = "~&gt; 5.0" }
+    azuread    = { source = "hashicorp/azuread",     version = "~&gt; 3.0" }
+    databricks = { source = "databricks/databricks", version = "~&gt; 1.0" }
+    random     = { source = "hashicorp/random",      version = "~&gt; 3.6" }
+  }
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">providers.tf</span></div>
+<pre><code class="language-hcl">variable "workload_subscription_id" {
+  type        = string
+  description = "Subscription hosting the data platform."
+}
+
+variable "connectivity_subscription_id" {
+  type        = string
+  description = "Central subscription hosting shared private DNS zones."
+}
+
+variable "environment" {
+  type = string
+}
+
+locals {
+  is_ephemeral = var.environment == "dev"
+}
+
+provider "azurerm" {
+  subscription_id = var.workload_subscription_id
+
+  features {
+    resource_group {
+      # Fail rather than silently deleting resources Terraform does not manage.
+      prevent_deletion_if_contains_resources = true
+    }
+
+    key_vault {
+      # Purging on destroy is convenient in a throwaway dev subscription and a
+      # serious liability anywhere else - it bypasses Azure's safety net.
+      purge_soft_delete_on_destroy    = local.is_ephemeral
+      recover_soft_deleted_key_vaults = true
+    }
+  }
+}
+
+provider "azurerm" {
+  alias           = "connectivity"
+  subscription_id = var.connectivity_subscription_id
+
+  # features is NOT inherited - each provider configuration is independent.
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = true
+    }
+  }
+}
+
+provider "azuread" {}
+
+# NOTE: no provider "databricks" here. It needs the workspace URL, which does
+# not exist until apply - so workspace CONTENTS belong in a second root module
+# whose provider reads the workspace from a data source. Lesson 12.</code></pre>
+</div>    <p>Three things being tested. <code>~&gt; 5.0</code> for a root module &mdash; minor and patch updates allowed, the breaking major blocked. No credentials anywhere: they come from the environment, and only non-secret subscription IDs are variables. And <code>features {}</code> repeated in full for the alias, because provider configurations inherit nothing from each other.</p>    <p style="margin-bottom:0">The most important line is the comment at the bottom. Declaring the Databricks provider here would work on a first apply and break on destroy.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Make a module accept an aliased provider</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write a <code>modules/private-dns</code> child module that creates a private DNS zone in the <em>connectivity</em> subscription and links it to a VNet in the <em>workload</em> subscription &mdash; so it needs both provider configurations.</p>    <p style="margin-bottom:0">Show the module's provider declaration, the resources, and the call from the root module.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/private-dns/versions.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source = "hashicorp/azurerm"
+
+      # A floor, not a pessimistic pin: a child module should not
+      # over-constrain the root module that consumes it.
+      version = "&gt;= 5.0"
+
+      # Declares "I expect to be handed a second, aliased configuration".
+      configuration_aliases = [azurerm.connectivity]
+    }
+  }
+}
+
+# NO provider blocks here. A child module that configures its own provider
+# cannot be used with for_each or count, and cannot be cleanly removed -
+# Terraform needs the provider configuration in order to destroy what it made.</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/private-dns/main.tf</span></div>
+<pre><code class="language-hcl">variable "zone_name"            { type = string }
+variable "resource_group_name"  { type = string }
+variable "virtual_network_id"   { type = string }
+variable "tags" {
+  type    = map(string)
+  default = {}
+}
+
+# Created in the CONNECTIVITY subscription.
+resource "azurerm_private_dns_zone" "this" {
+  provider            = azurerm.connectivity
+  name                = var.zone_name
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
+
+# The LINK also lives with the zone, but references a VNet in the other
+# subscription - which is legal, and exactly why both configurations are needed.
+resource "azurerm_private_dns_zone_virtual_network_link" "this" {
+  provider              = azurerm.connectivity
+  name                  = "link-${replace(var.zone_name, ".", "-")}"
+  resource_group_name   = var.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.this.name
+  virtual_network_id    = var.virtual_network_id
+  registration_enabled  = false
+  tags                  = var.tags
+}
+
+output "zone_id" {
+  value = azurerm_private_dns_zone.this.id
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">root main.tf</span></div>
+<pre><code class="language-hcl">module "dns_blob" {
+  source = "./modules/private-dns"
+
+  providers = {
+    # left = the name INSIDE the module, right = the configuration out here
+    azurerm              = azurerm
+    azurerm.connectivity = azurerm.connectivity
+  }
+
+  zone_name           = "privatelink.blob.core.windows.net"
+  resource_group_name = var.connectivity_rg_name
+  virtual_network_id  = module.networking.vnet_id
+  tags                = local.common_tags
+}</code></pre>
+</div>    <p style="margin-bottom:0">The mapping direction in the <code>providers</code> block trips people up: the key is the name the module uses internally, the value is the configuration in the calling module. Without <code>configuration_aliases</code>, Terraform rejects the call with <em>provider configuration not present</em>, because the module never declared that it expects a second one.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">Four errors on a fresh clone</span>
+  </div>
+  <div class="exercise-body">
+    <p>A new joiner clones the repository and hits these in sequence. Diagnose each.</p>
+    <ol>
+      <li><code>Error: Insufficient features blocks — at least 1 "features" blocks are required</code></li>
+      <li><code>Error: building account: could not acquire access token to parse claims: no valid authentication method found</code></li>
+      <li><code>Error: subscription ID could not be determined and was not specified</code></li>
+      <li><code>Error: Failed to query available provider packages — no available releases match the given constraints ~&gt; 4.0, &gt;= 5.0</code></li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p><strong>1</strong> — The <code>provider "azurerm"</code> block is missing <code>features {}</code>. It is mandatory even when empty. Purely a configuration error; no Azure call was made.</p>
+
+      <p><strong>2</strong> — No credentials available. They have not run <code>az login</code>, and no <code>ARM_*</code> environment variables are set. The provider tried every method in order and found nothing.</p>
+
+      <p><strong>3</strong> — They are logged in, but no subscription is selected and none is configured. Since v4 the subscription ID must be explicit. Fix with <code>az account set --subscription &lt;id&gt;</code>, or set <code>ARM_SUBSCRIPTION_ID</code>, or pass <code>-var</code>. Note this error does <em>not</em> appear on <code>terraform validate</code>, which is why validate-only CI misses it.</p>
+
+      <p style="margin-bottom:0"><strong>4</strong> — Conflicting constraints. The root module asks for <code>~&gt; 4.0</code> while a child module (or a second <code>required_providers</code> block) demands <code>&gt;= 5.0</code>; no single version satisfies both. Run <code>terraform providers</code> to see which module requires what, then align them — usually by upgrading the root and dealing with the v5 renames.</p>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is a Terraform provider?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        A plugin binary that Terraform core runs as a child process and talks to over gRPC. It publishes a
+        schema of resource and data-source types, implements CRUD for each of them against a real API, and
+        handles authentication. Core itself knows nothing about Azure — the plugin architecture is what lets
+        thousands of providers ship independently of the CLI.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How should Terraform authenticate to Azure in a CI/CD pipeline?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        With OIDC workload identity federation. You register a federated credential on an Entra ID app
+        registration that trusts tokens from your CI platform for a specific repository and environment; the
+        runner exchanges a short-lived OIDC token for an Azure access token. No secret is stored anywhere, there
+        is nothing to rotate, and the trust is scoped so that a feature branch cannot deploy production. If the
+        platform does not support OIDC, a service principal with a certificate is the next best option, and a
+        client secret the last.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why is the <code>features {}</code> block required even when empty?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        It is where provider-level behaviours are configured, chiefly around deletion semantics that Azure
+        treats specially — whether destroying a resource group that still contains unmanaged resources should
+        fail, and whether a soft-deleted Key Vault should be purged or recovered. Making it mandatory forces the
+        author to acknowledge that these behaviours exist. In practice you should almost always set the Key
+        Vault and resource group options rather than leaving it empty.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What does <code>version = "~&gt; 5.0"</code> mean, and how does it relate to the lock file?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The pessimistic constraint operator: at least 5.0.0 and less than 6.0.0 — minor and patch updates are
+        allowed, the next major is not. The constraint defines what is <em>acceptable</em>; the lock file records
+        what was actually <em>selected</em> plus checksums. So the constraint keeps you upgradeable and the
+        committed lock file keeps everyone reproducible. For a shared child module I would use a floor like
+        <code>&gt;= 5.0</code> instead, so as not to over-constrain consumers.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you deploy to two subscriptions from one configuration?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Declare a second <code>provider "azurerm"</code> block with an <code>alias</code> and its own
+        <code>subscription_id</code>, then set <code>provider = azurerm.&lt;alias&gt;</code> on the resources that
+        belong there, or pass it into a module via the <code>providers</code> map. The module must declare
+        <code>configuration_aliases</code> in its <code>required_providers</code>. The deployment identity needs
+        appropriate rights in both subscriptions — which is often a reason to reconsider and split the
+        configurations instead.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the difference between the <code>azurerm</code> and <code>azuread</code> providers?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        <code>azurerm</code> manages Azure Resource Manager resources — anything with a subscription-scoped
+        resource ID. <code>azuread</code> manages Entra ID directory objects such as groups, app registrations
+        and service principals, through Microsoft Graph. They are separate because they are different APIs with
+        different permission models: ARM uses Azure RBAC, Graph uses directory roles and application permissions,
+        and a principal that can create storage accounts typically cannot create groups.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why should credentials never appear in <code>.tf</code> files?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Because git history is permanent — removing the line later does not remove it from the repository, so
+        the only real remediation is rotating the credential. Public repositories are continuously scanned by
+        automated tooling, and leaked cloud credentials have been exploited within minutes of a push. It also
+        breaks portability: hardcoding a subscription means the same code cannot deploy multiple environments.
+        Credentials belong in the environment — env vars, a CLI session, a federated token, or an instance
+        metadata endpoint.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>A provider is a separate binary speaking gRPC to core and REST to Azure. It owns the schema, the CRUD implementation and authentication.</li>
+  <li><code>required_providers</code> declares the dependency; the <code>provider</code> block configures an instance of it. They are different things.</li>
+  <li><code>~&gt; 5.0</code> in root modules, <code>&gt;= 5.0</code> in shared child modules, and let the lock file provide exactness.</li>
+  <li><code>features {}</code> is mandatory and worth configuring — especially the Key Vault purge behaviour.</li>
+  <li>Authenticate from the environment: CLI locally, OIDC in CI, managed identity on Azure compute, secrets last.</li>
+  <li>v5 changed provider-level defaults: no automatic resource provider registration, and <code>subscription_id</code> is required.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

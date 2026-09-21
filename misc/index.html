@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terraform on Azure — Data Engineering Track</title>
+<meta name="description" content="A progressive Terraform course taught entirely through Azure data engineering infrastructure: ADLS Gen2, Key Vault, RBAC, private endpoints, Databricks and Functions.">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body>
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+  <header class="hero">
+    <div class="crumbs">
+      <span class="pill">Course</span>
+      <span>Beginner → production-ready</span>
+      <span>·</span>
+      <span>Updated September 2026</span>
+    </div>
+    <h1>Terraform on Azure</h1>
+    <p class="lede">
+      A complete Terraform course taught entirely through <strong>Azure data engineering infrastructure</strong>.
+      Not a generic IaC tutorial with AWS examples bolted on — every concept is introduced by building
+      something a data platform actually needs: a data lake, a key vault, a private network, a Databricks
+      workspace, a function app, and the CI/CD pipeline that deploys them.
+    </p>
+
+    <div class="stat-row" id="courseStats"></div>
+  </header>
+
+  <div class="progress-card">
+    <div class="progress-head">
+      <strong>Your progress</strong>
+      <span id="progressLabel">0 of 20 complete · 0%</span>
+    </div>
+    <div class="progress-track"><div class="progress-fill"></div></div>
+    <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:12.5px;color:var(--text-faint)">
+        Click the ✓ circle on any lesson card to toggle completion. Stored in this browser's local storage.
+      </span>
+      <button class="btn btn-ghost" id="resetProgress" type="button" style="font-size:12.5px;padding:5px 12px">Reset progress</button>
+    </div>
+  </div>
+
+  <h2 id="what-you-will-be-able-to-do">What you will be able to do at the end</h2>
+
+  <p>
+    The goal is not syntax recall. The goal is that this sentence becomes fully transparent to you — every
+    noun in it, and every arrow between the nouns:
+  </p>
+
+  <div class="callout callout-important">
+    <div class="callout-title">The target sentence</div>
+    <p style="margin-bottom:0">
+      “This Terraform module creates an ADLS Gen2 storage account, configures its networking, creates the
+      required containers, assigns a managed identity the appropriate RBAC roles, stores configuration in Key
+      Vault, and exposes outputs consumed by the Databricks module. Terraform tracks those resources in remote
+      state and the CI/CD pipeline generates a plan before applying changes.”
+    </p>
+  </div>
+
+  <p>Concretely, you should be able to:</p>
+
+  <ul>
+    <li><strong>Read</strong> an unfamiliar Terraform repository and describe its architecture, module boundaries and state layout without running anything.</li>
+    <li><strong>Write</strong> Azure infrastructure that follows current provider syntax, uses managed identities instead of keys, and separates environments cleanly.</li>
+    <li><strong>Modify</strong> existing configuration and predict what the plan will say <em>before</em> you run it — in particular, whether a change is an in-place update or a destroy-and-recreate.</li>
+    <li><strong>Debug</strong> drift, failed applies, state mismatches, dependency cycles and provider errors.</li>
+    <li><strong>Review</strong> someone else's Terraform pull request and spot the security and blast-radius problems.</li>
+  </ul>
+
+  <h2 id="prerequisites">Prerequisites</h2>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>Assumed — the course will not re-teach these</h4>
+      <ul style="margin-bottom:0">
+        <li>General programming: variables, types, functions, loops, version control</li>
+        <li>Cloud fundamentals: what a VM, a network, an API and an identity are</li>
+        <li>Data engineering context: lakes, warehouses, ETL/ELT, Spark, orchestration</li>
+        <li>Comfortable in a terminal and reading JSON/YAML</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Taught from zero — no prior exposure needed</h4>
+      <ul style="margin-bottom:0">
+        <li>Terraform, HCL, providers, state, modules — all of it</li>
+        <li>Azure Resource Manager and how resource IDs are shaped</li>
+        <li>Azure RBAC, Entra ID identities, managed identities</li>
+        <li>Private endpoints and private DNS resolution</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 id="tooling">Tooling you will want</h3>
+
+  <p>
+    You can read the entire course without installing anything. To do the Level&nbsp;2 exercises you need a
+    terminal, and to do the Azure exercises you need a subscription — the free tier plus a
+    <code>Standard_LRS</code> storage account costs cents, but <strong>Databricks and private endpoints are not
+    free</strong>, so read those lessons before you apply them.
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Version used in this course</th><th>Why it matters</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Terraform CLI</td>
+        <td><code>1.16.x</code></td>
+        <td>Needs to be ≥ 1.5 for <code>import</code> blocks, ≥ 1.6 for <code>terraform test</code>, ≥ 1.7 for <code>removed</code> blocks. All three are used later in the course.</td>
+      </tr>
+      <tr>
+        <td><code>hashicorp/azurerm</code></td>
+        <td><code>~&gt; 5.0</code> (5.4.0 current)</td>
+        <td>The Azure provider. Version 5 renamed several arguments you will see in every older blog post — the course flags each one.</td>
+      </tr>
+      <tr>
+        <td><code>hashicorp/azuread</code></td>
+        <td><code>~&gt; 3.0</code></td>
+        <td>Entra ID objects (app registrations, groups). Separate from <code>azurerm</code> because Entra ID is not an ARM resource provider.</td>
+      </tr>
+      <tr>
+        <td><code>databricks/databricks</code></td>
+        <td><code>~&gt; 1.0</code></td>
+        <td>Everything <em>inside</em> a Databricks workspace. Lesson 12 explains exactly where <code>azurerm</code> stops and this begins.</td>
+      </tr>
+      <tr>
+        <td>Azure CLI</td>
+        <td><code>az</code> 2.x</td>
+        <td>Used for local authentication (<code>az login</code>) and for inspecting what Terraform created.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout callout-version">
+    <div class="callout-title">⚠ Version note — this is the single biggest trap for a new learner</div>
+    <p>
+      Almost every Terraform-on-Azure tutorial you will find online targets <code>azurerm</code> v3 or v4. The
+      v5 provider (released 2026) renamed or removed arguments those tutorials use. Copying them produces
+      confusing errors like <code>An argument named "enable_rbac_authorization" is not expected here</code>.
+    </p>
+    <p style="margin-bottom:0">
+      This course teaches <strong>v5 syntax</strong> and marks every changed argument with a version callout,
+      so you can also read v3/v4 repositories at work and know what you are looking at.
+    </p>
+  </div>
+
+  <h2 id="how-the-course-works">How the course works</h2>
+
+  <p>Every lesson follows the same shape, so you always know where to find things:</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>1 · Concept</h4>
+      <p style="margin-bottom:0">The Terraform mental model, explained for someone who already programs. Short.</p>
+    </div>
+    <div class="card">
+      <h4>2 · Minimal example</h4>
+      <p style="margin-bottom:0">The smallest possible snippet that demonstrates the concept, with nothing else in the way.</p>
+    </div>
+    <div class="card">
+      <h4>3 · Azure example</h4>
+      <p style="margin-bottom:0">The same concept applied to real data-platform infrastructure, using the running example that continues across lessons.</p>
+    </div>
+    <div class="card">
+      <h4>4 · Code → Azure → state</h4>
+      <p style="margin-bottom:0">What the AzureRM API is actually called with, what gets created, and what Terraform writes into state.</p>
+    </div>
+    <div class="card">
+      <h4>5 · Common mistakes</h4>
+      <p style="margin-bottom:0">The specific errors this concept produces, with the real error text you'll see.</p>
+    </div>
+    <div class="card">
+      <h4>6 · Exercises &amp; interview questions</h4>
+      <p style="margin-bottom:0">Three levels — understand, implement, troubleshoot — plus interview questions with answers.</p>
+    </div>
+  </div>
+
+  <h3 id="running-example">The running example</h3>
+
+  <p>
+    One fictional company carries through the whole course, so that resources can genuinely reference each
+    other rather than being disconnected snippets. From Lesson 5 onward you are building
+    <strong>Contoso Analytics' data platform</strong>: a medallion data lake, secured with private networking
+    and managed identities, consumed by Databricks and Azure Functions.
+  </p>
+
+  <p>
+    Naming follows the widely used Azure convention <code>&lt;type&gt;-&lt;workload&gt;-&lt;env&gt;-&lt;region&gt;-&lt;instance&gt;</code>
+    — for example <code>rg-analytics-dev-weu-01</code>. Lesson 5 explains why storage accounts are the one
+    resource that cannot follow it.
+  </p>
+
+  <h2 id="learning-path">Recommended learning order</h2>
+
+  <p>
+    The lessons are numbered in the order you should read them. The dependency graph below shows which
+    lessons genuinely depend on which — useful if you already know part of this and want to skip ahead.
+  </p>
+
+  <figure class="diagram">
+    <div class="mermaid">
+flowchart TD
+    subgraph F["Foundations"]
+        L1["01 · IaC concepts"] --> L2["02 · Workflow &amp; CLI"]
+        L2 --> L3["03 · HCL"]
+        L3 --> L4["04 · AzureRM provider"]
+        L4 --> L5["05 · First infrastructure"]
+        L5 --> L6["06 · ADLS Gen2"]
+        L5 --> L7["07 · Variables"]
+    end
+
+    subgraph I["Intermediate"]
+        L7 --> L10["10 · State &amp; backends"]
+        L6 --> L8["08 · Identity &amp; RBAC"]
+        L7 --> L8
+        L8 --> L9["09 · Key Vault"]
+        L10 --> L11["11 · Networking"]
+        L6 --> L11
+        L11 --> L12["12 · Databricks"]
+        L9 --> L12
+        L11 --> L13["13 · Functions"]
+        L6 --> L14["14 · Modules"]
+        L7 --> L14
+        L14 --> L15["15 · for_each &amp; lifecycle"]
+        L10 --> L16["16 · Plans &amp; import"]
+        L15 --> L16
+    end
+
+    subgraph P["Production"]
+        L14 --> L17["17 · Production structure"]
+        L16 --> L17
+        L17 --> L18["18 · CI/CD"]
+        L17 --> L19["19 · Testing"]
+    end
+
+    L12 --> L20["20 · Final project"]
+    L13 --> L20
+    L18 --> L20
+    L19 --> L20
+
+    style L10 fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+    style L20 fill:#fdf3e0,stroke:#a5670a,stroke-width:2px
+    </div>
+    <figcaption>
+      Lesson 10 (state) is highlighted because it is the concept that most often separates people who
+      “use Terraform” from people who understand it. Do not skip it.
+    </figcaption>
+  </figure>
+
+  <h2 id="curriculum">Curriculum</h2>
+
+  <div id="courseIndex"></div>
+
+  <h2 id="final-project">The final project</h2>
+
+  <p>
+    Lesson 20 is a substantial build, not a summary. You assemble everything into a working Azure data
+    platform with module boundaries, remote state, environment separation and a deployment pipeline. This is
+    the architecture you end up with:
+  </p>
+
+  <figure class="diagram">
+    <div class="mermaid">
+flowchart TB
+    subgraph CICD["CI/CD — GitHub Actions or Azure DevOps"]
+        GH["Pull request"] --> PLAN["terraform plan<br/>(saved plan artifact)"]
+        PLAN --> APPR["Manual approval gate"]
+        APPR --> APPLY["terraform apply"]
+    end
+
+    APPLY -->|"OIDC federated credential<br/>no stored secrets"| ARM["Azure Resource Manager"]
+
+    subgraph RG["Resource group — rg-analytics-prod-weu-01"]
+        subgraph NET["Virtual network"]
+            SNP["snet-privatelink"]
+            SNH["snet-databricks-host"]
+            SNC["snet-databricks-container"]
+            SNF["snet-functions<br/>(delegated)"]
+        end
+
+        LAKE[("ADLS Gen2<br/>raw / bronze / silver / gold")]
+        KV["Key Vault<br/>RBAC mode"]
+        DBW["Databricks workspace<br/>VNet-injected, no public IP"]
+        FUNC["Function App<br/>Linux, managed identity"]
+        AC["Databricks<br/>Access Connector"]
+        PE["Private endpoints"]
+        DNS["Private DNS zones"]
+    end
+
+    ARM --> RG
+
+    SNP --- PE
+    PE --> LAKE
+    PE --> KV
+    PE --- DNS
+
+    DBW --- SNH
+    DBW --- SNC
+    FUNC --- SNF
+
+    AC -->|"Storage Blob Data Contributor"| LAKE
+    DBW --> AC
+    FUNC -->|"Storage Blob Data Contributor<br/>via system-assigned identity"| LAKE
+    FUNC -->|"Key Vault Secrets User"| KV
+
+    BE[("Remote state<br/>Azure Storage backend<br/>blob lease locking")]
+    APPLY -.->|"reads / writes state"| BE
+
+    style LAKE fill:#e6f2fb,stroke:#0078d4,stroke-width:2px
+    style KV fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+    style BE fill:#e3f5ee,stroke:#1a7f5a,stroke-width:2px
+    </div>
+    <figcaption>
+      Target architecture for the capstone. Every arrow in this diagram is something you will have built and
+      understood by the time you get there.
+    </figcaption>
+  </figure>
+
+  <div class="callout callout-note">
+    <div class="callout-title">Cost warning</div>
+    <p style="margin-bottom:0">
+      The capstone architecture is <strong>not free</strong>. Private endpoints bill per hour per endpoint, and a
+      Databricks workspace bills for its compute. If you apply it, apply it to a dev subscription and run
+      <code>terraform destroy</code> the same day. Lesson 20 includes a cost-reduced variant that skips private
+      endpoints so you can complete the exercise cheaply.
+    </p>
+  </div>
+
+  <h2 id="start">Where to start</h2>
+
+  <p>
+    If you have never written Terraform: start at Lesson 01 and go in order.<br>
+    If you have written some Terraform but never understood state: read Lesson 10 first, then come back.<br>
+    If you are preparing for an interview: each lesson ends with an <em>Interview questions</em> section — those
+    twenty sections together cover the great majority of what gets asked.
+  </p>
+
+  <p style="margin-top:26px">
+    <a class="btn" href="01-infrastructure-as-code.html" style="text-decoration:none;display:inline-block">
+      Start Lesson 01 — Infrastructure as Code →
+    </a>
+  </p>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>

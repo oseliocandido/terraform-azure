@@ -1,0 +1,1190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14 · Modules — Terraform on Azure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body data-lesson="14">
+<script>try{if(localStorage.getItem("tfaz.sidebar.v1")==="collapsed")document.documentElement.classList.add("sidebar-collapsed")}catch(e){}</script>
+
+<main class="content">
+
+<header class="lesson-head">
+  <div class="crumbs">
+    <span class="pill pill-intermediate">Intermediate</span>
+    <span>Part 13</span><span>·</span><span>~80 min</span><span>·</span><span>Requires Lessons 06, 07</span>
+  </div>
+  <h1>Modules</h1>
+  <p class="lede">
+    A module is a directory of Terraform files with a deliberate input/output contract. The technical mechanism
+    takes ten minutes to learn; the hard part is deciding <em>where the boundaries go</em>, which is an API
+    design problem and the thing that separates a maintainable repository from a painful one.
+  </p>
+
+  <div class="objectives">
+    <h3>By the end of this lesson you can</h3>
+    <ul>
+      <li>Explain root vs child modules, and why every directory is already a module</li>
+      <li>Design a module's inputs and outputs as a stable public API</li>
+      <li>Choose module sources and pin versions correctly</li>
+      <li>Refactor duplicated configuration into modules without destroying anything</li>
+      <li>Recognise the thin-wrapper anti-pattern and know when <em>not</em> to write a module</li>
+      <li>Use <code>for_each</code> on a module call</li>
+    </ul>
+    <div class="meta-row">
+      <span class="pill">Modules</span><span class="pill">Composition</span><span class="pill">moved blocks</span>
+    </div>
+  </div>
+</header>
+
+<h2 id="what-is-a-module">Every directory is a module</h2>
+
+<p>
+  There is no special syntax that makes something a module. A module is simply a directory containing
+  <code>.tf</code> files. You have been writing modules since Lesson 05 without noticing.
+</p>
+
+<figure class="diagram">
+  <div class="mermaid">
+flowchart TB
+    ROOT["<b>Root module</b><br/>the directory you run terraform in<br/>owns the backend, the providers,<br/>and the environment's decisions"]
+
+    ROOT -->|"module &quot;networking&quot; { source = ... }"| M1["<b>Child module</b><br/>modules/networking"]
+    ROOT -->|"module &quot;storage&quot; { ... }"| M2["<b>Child module</b><br/>modules/storage"]
+    ROOT -->|"module &quot;databricks&quot; { ... }"| M3["<b>Child module</b><br/>modules/databricks"]
+
+    M3 -->|"can call further modules,<br/>but usually should not"| M4["Grandchild module"]
+
+    ROOT -.->|"variables in ↓"| M2
+    M2 -.->|"outputs out ↑"| ROOT
+
+    style ROOT fill:#efedfd,stroke:#5c4ee5,stroke-width:2px
+    style M4 fill:#fdf3e0,stroke:#a5670a
+  </div>
+  <figcaption>
+    The root module is the only one that configures providers and a backend. Deep nesting (the orange node)
+    is where module trees become hard to reason about.
+  </figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Root module</th><th>Child module</th></tr></thead>
+  <tbody>
+    <tr><td>Where you run <code>terraform</code></td><td>Yes</td><td>No</td></tr>
+    <tr><td>Declares a <code>backend</code></td><td>Yes</td><td><strong>Never</strong></td></tr>
+    <tr><td>Declares <code>provider</code> blocks</td><td>Yes</td><td><strong>Never</strong> — only <code>required_providers</code></td></tr>
+    <tr><td>Gets variable values from</td><td><code>tfvars</code>, CLI, environment</td><td>The calling <code>module</code> block</td></tr>
+    <tr><td>Outputs consumed by</td><td>Humans, CI, other configurations</td><td>The calling module</td></tr>
+    <tr><td>Contains environment decisions</td><td>Yes — “prod uses GZRS”</td><td>No — it accepts a replication type as input</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="why">Why modules exist</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h4>Good reasons</h4>
+    <ul style="margin-bottom:0">
+      <li><strong>Encapsulation.</strong> “A data lake” is one concept; a caller should not need to know it is a storage account plus four filesystems plus a lifecycle policy plus two private endpoints.</li>
+      <li><strong>Enforced standards.</strong> If every storage account comes from your module, every storage account has TLS 1.2, no public blobs and no shared keys — by construction, not by review.</li>
+      <li><strong>Reuse across environments</strong> with different inputs.</li>
+      <li><strong>A testable unit.</strong> <code>terraform test</code> operates on a module.</li>
+      <li><strong>Smaller review surface.</strong> A change to the module is reviewed once, not in three environments.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Bad reasons</h4>
+    <ul style="margin-bottom:0">
+      <li><strong>“Modules are best practice.”</strong> A module used once, with inputs mapping one-to-one onto a resource's arguments, adds indirection and nothing else.</li>
+      <li><strong>Wrapping a single resource.</strong> The thin-wrapper anti-pattern — see below.</li>
+      <li><strong>Making things look tidy.</strong> Fewer lines in <code>main.tf</code> is not the goal; a stable interface is.</li>
+      <li><strong>Premature abstraction.</strong> Write it twice concretely. Extract on the third.</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="anatomy">Module anatomy</h2>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">modules/storage/</span></div>
+<pre class="plain">modules/storage/
+├── main.tf          the resources
+├── variables.tf     the inputs — the public API
+├── outputs.tf       the outputs — also the public API
+├── versions.tf      required_version + required_providers (NO provider blocks)
+├── README.md        what it does, inputs, outputs, an example
+└── tests/
+    └── defaults.tftest.hcl</pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/storage/variables.tf</span></div>
+<pre><code class="language-hcl">variable "name" {
+  type        = string
+  description = "Storage account name. 3-24 lowercase alphanumeric characters, globally unique."
+
+  validation {
+    condition     = can(regex("^[a-z0-9]{3,24}$", var.name))
+    error_message = "name must be 3-24 lowercase letters and digits, with no hyphens."
+  }
+}
+
+variable "resource_group_name" {
+  type        = string
+  description = "Resource group to create the account in."
+}
+
+variable "location" {
+  type        = string
+  description = "Azure region."
+}
+
+variable "replication_type" {
+  type        = string
+  description = "Replication: LRS, ZRS, GRS, GZRS or RAGZRS."
+  default     = "LRS"
+
+  validation {
+    condition     = contains(["LRS", "ZRS", "GRS", "GZRS", "RAGZRS"], var.replication_type)
+    error_message = "replication_type must be one of: LRS, ZRS, GRS, GZRS, RAGZRS."
+  }
+}
+
+variable "containers" {
+  type = map(object({
+    tier_after_days   = optional(number)
+    delete_after_days = optional(number)
+  }))
+  description = "Containers to create, keyed by name, with their lifecycle policy."
+  default     = {}
+}
+
+variable "allow_public_network_access" {
+  type        = bool
+  description = "Whether the account is reachable from the public internet. Set false in production."
+  default     = false
+}
+
+variable "allow_shared_key_access" {
+  type        = bool
+  description = "Whether account keys may be used. Set false to force Entra ID authentication."
+  default     = false
+}
+
+variable "tags" {
+  type        = map(string)
+  description = "Tags applied to every resource in this module."
+  default     = {}
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/storage/main.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_storage_account" "this" {
+  name                = var.name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+
+  account_tier             = "Standard"
+  account_kind             = "StorageV2"
+  account_replication_type = var.replication_type
+
+  # Opinions the module enforces — callers cannot weaken these.
+  is_hns_enabled                  = true
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+  default_to_oauth_authentication = true
+
+  # Opinions the module allows the caller to set.
+  public_network_access_enabled = var.allow_public_network_access
+  shared_access_key_enabled     = var.allow_shared_key_access
+
+  blob_properties {
+    versioning_enabled = true
+    delete_retention_policy {
+      days = 30
+    }
+  }
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = var.tags
+}
+
+resource "azurerm_storage_data_lake_gen2_filesystem" "this" {
+  for_each = var.containers
+
+  name               = each.key
+  storage_account_id = azurerm_storage_account.this.id
+}
+
+resource "azurerm_storage_management_policy" "this" {
+  # Only create the policy if at least one container has a lifecycle rule.
+  count = length([
+    for c in var.containers : c
+    if c.tier_after_days != null || c.delete_after_days != null
+  ]) &gt; 0 ? 1 : 0
+
+  storage_account_id = azurerm_storage_account.this.id
+
+  dynamic "rule" {
+    for_each = {
+      for k, v in var.containers : k =&gt; v
+      if v.tier_after_days != null || v.delete_after_days != null
+    }
+
+    content {
+      name    = "lifecycle-${rule.key}"
+      enabled = true
+
+      filters {
+        prefix_match = ["${rule.key}/"]
+        blob_types   = ["blockBlob"]
+      }
+
+      actions {
+        base_blob {
+          tier_to_cool_after_days_since_modification_greater_than = rule.value.tier_after_days
+          delete_after_days_since_modification_greater_than       = rule.value.delete_after_days
+        }
+        version {
+          delete_after_days_since_creation = 90
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/storage/outputs.tf</span></div>
+<pre><code class="language-hcl">output "id" {
+  description = "Resource ID of the storage account. Use as an RBAC scope."
+  value       = azurerm_storage_account.this.id
+}
+
+output "name" {
+  description = "Storage account name."
+  value       = azurerm_storage_account.this.name
+}
+
+output "dfs_endpoint" {
+  description = "DFS endpoint for abfss:// access."
+  value       = azurerm_storage_account.this.primary_dfs_endpoint
+}
+
+output "principal_id" {
+  description = "Principal ID of the account's system-assigned identity, for customer-managed keys."
+  value       = azurerm_storage_account.this.identity[0].principal_id
+}
+
+output "container_scopes" {
+  description = "Map of container name to its RBAC scope, for per-container role assignments."
+  value = {
+    for name, fs in azurerm_storage_data_lake_gen2_filesystem.this :
+    name =&gt; "${azurerm_storage_account.this.id}/blobServices/default/containers/${name}"
+  }
+}
+
+# NOTE: deliberately NOT output — a caller who needs it has designed
+# something wrong, and outputting it copies a credential into the
+# caller's state too.
+# output "primary_access_key" { ... }</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/storage/versions.tf</span></div>
+<pre><code class="language-hcl">terraform {
+  required_version = "&gt;= 1.9.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      # A floor, not a pessimistic pin — a child module should not
+      # over-constrain the root module that consumes it.
+      version = "&gt;= 5.0"
+    }
+  }
+}
+
+# NO provider "azurerm" block here. Providers are configured by the root
+# module and inherited.</code></pre>
+</div>
+
+<h2 id="api-design">Designing the interface</h2>
+
+<div class="callout callout-important">
+  <div class="callout-title">A module's inputs and outputs are a public API</div>
+  <p style="margin-bottom:0">
+    Every variable you add is a promise. Removing one, renaming one, or changing its type is a breaking change
+    for every caller. Adding a required variable is breaking. Adding an optional one with a default is not. Think
+    about this before publishing, because module interfaces are far harder to change than the resources behind
+    them.
+  </p>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Principle</th><th>Applied</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Accept intent, not plumbing</strong></td>
+      <td><code>containers = { raw = { delete_after_days = 2555 } }</code> — not a pre-built management policy JSON document. The module knows how to turn intent into resources.</td>
+    </tr>
+    <tr>
+      <td><strong>Enforce the non-negotiables</strong></td>
+      <td>TLS 1.2 and “no public blobs” are hardcoded, not variables. If a caller could turn them off, the module is not enforcing a standard.</td>
+    </tr>
+    <tr>
+      <td><strong>Default to secure</strong></td>
+      <td><code>allow_public_network_access = false</code>. A caller must deliberately weaken it, and that appears in the diff.</td>
+    </tr>
+    <tr>
+      <td><strong>Output IDs and scopes, never secrets</strong></td>
+      <td><code>container_scopes</code> lets the caller make per-container role assignments without the module needing to know about identities.</td>
+    </tr>
+    <tr>
+      <td><strong>Do not take a <code>location</code> from thin air</strong></td>
+      <td>Accept it as an input rather than defaulting it. A wrong-region resource is expensive to fix.</td>
+    </tr>
+    <tr>
+      <td><strong>Take a <code>tags</code> map</strong></td>
+      <td>And merge it, so the caller's governance tags reach every resource inside.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="calling">Calling a module</h2>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">environments/prod/main.tf</span></div>
+<pre><code class="language-hcl">module "lake" {
+  source = "../../modules/storage"
+
+  name                = "stanalyticsprodweu01"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = azurerm_resource_group.analytics.location
+
+  replication_type            = "GZRS"
+  allow_public_network_access = false
+  allow_shared_key_access     = false
+
+  containers = {
+    raw    = { tier_after_days = 30,  delete_after_days = 2555 }
+    bronze = { tier_after_days = 180, delete_after_days = 1095 }
+    silver = { tier_after_days = 365 }
+    gold   = {}
+  }
+
+  tags = local.common_tags
+}
+
+# Consume its outputs.
+resource "azurerm_role_assignment" "databricks_silver" {
+  scope                = module.lake.container_scopes["silver"]
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_databricks_access_connector.unity.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+output "lake_dfs_endpoint" {
+  value = module.lake.dfs_endpoint
+}</code></pre>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Module outputs are not automatic</div>
+  <p style="margin-bottom:0">
+    A root module does not expose a child's outputs to the outside world unless it declares its own
+    <code>output</code> re-exporting them. This surprises people: <code>terraform output</code> shows nothing
+    even though the module defines outputs.
+  </p>
+</div>
+
+<h3 id="module-meta">Meta-arguments on module calls</h3>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">for_each on a module</span></div>
+<pre><code class="language-hcl">module "lake" {
+  source   = "../../modules/storage"
+  for_each = var.data_domains     # { finance = {...}, marketing = {...} }
+
+  name                = "st${each.key}${var.environment}weu01"
+  resource_group_name = azurerm_resource_group.analytics.name
+  location            = var.location
+  replication_type    = each.value.replication
+  containers          = each.value.containers
+  tags                = merge(local.common_tags, { domain = each.key })
+}
+
+# addresses become module.lake["finance"].id, module.lake["marketing"].id
+output "domain_endpoints" {
+  value = { for k, m in module.lake : k =&gt; m.dfs_endpoint }
+}</code></pre>
+</div>
+
+<p>
+  <code>count</code>, <code>for_each</code>, <code>depends_on</code> and <code>providers</code> all work on
+  <code>module</code> blocks. Note that <code>depends_on</code> at module level is coarse — it waits for
+  <em>everything</em> in the target module — so prefer passing an output through as an input, which creates a
+  precise edge.
+</p>
+
+<h2 id="sources">Module sources and versioning</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Source</th><th>Example</th><th>Versioning</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Local path</td>
+      <td><code>source = "../../modules/storage"</code></td>
+      <td>None — it is whatever is in the repo. Fine for modules that live with their callers.</td>
+    </tr>
+    <tr>
+      <td>Public registry</td>
+      <td><code>source = "Azure/avm-res-storage-storageaccount/azurerm"</code></td>
+      <td><code>version = "~&gt; 0.5"</code></td>
+    </tr>
+    <tr>
+      <td>Git over HTTPS</td>
+      <td><code>source = "git::https://github.com/contoso/tf-modules.git//storage?ref=v1.4.0"</code></td>
+      <td>The <code>ref</code> — <strong>always pin to a tag</strong>, never a branch</td>
+    </tr>
+    <tr>
+      <td>Git over SSH</td>
+      <td><code>source = "git::ssh://git@github.com/contoso/tf-modules.git//storage?ref=v1.4.0"</code></td>
+      <td>Same. Needed for private repos with SSH keys.</td>
+    </tr>
+    <tr>
+      <td>Private registry</td>
+      <td><code>source = "app.terraform.io/contoso/storage/azurerm"</code></td>
+      <td><code>version</code>, with the registry enforcing semver</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Common mistake · <code>?ref=main</code></div>
+  <p style="margin-bottom:0">
+    Pointing a module source at a branch means the module's content can change under you between two runs of
+    <code>terraform init -upgrade</code>, with no diff in your repository to explain it. Pin to an immutable tag
+    or a commit SHA. This is the same discipline as pinning provider versions — and it matters more, because
+    module changes create and destroy resources.
+  </p>
+</div>
+
+<div class="callout callout-note">
+  <div class="callout-title">Azure Verified Modules</div>
+  <p style="margin-bottom:0">
+    Microsoft publishes <strong>AVM</strong> — a set of Azure-maintained Terraform modules following a common
+    specification, covering storage, networking, Key Vault and much else. They are worth knowing about: they
+    encode a lot of Well-Architected guidance you would otherwise rediscover. They are also large and
+    highly parameterised, which is a real cost in readability. A reasonable position is to use AVM for
+    complicated resources you do not want to own, and write your own thin, opinionated modules where you want
+    the standard to be <em>yours</em>.
+  </p>
+</div>
+
+<h2 id="refactoring">Refactoring into modules without destroying anything</h2>
+
+<p>
+  Moving a resource into a module changes its <strong>address</strong> — from
+  <code>azurerm_storage_account.lake</code> to <code>module.lake.azurerm_storage_account.this</code>. To state,
+  one resource disappeared and another appeared.
+</p>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">what happens without a moved block</span></div>
+<pre><code class="language-bash">  # azurerm_storage_account.lake will be destroyed
+  - resource "azurerm_storage_account" "lake" { ... }
+
+  # module.lake.azurerm_storage_account.this will be created
+  + resource "azurerm_storage_account" "this" { ... }
+
+Plan: 1 to add, 0 to change, 1 to destroy.</code></pre>
+</div>
+
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">moved.tf — the fix</span></div>
+<pre><code class="language-hcl">moved {
+  from = azurerm_storage_account.lake
+  to   = module.lake.azurerm_storage_account.this
+}
+
+moved {
+  from = azurerm_storage_data_lake_gen2_filesystem.layers
+  to   = module.lake.azurerm_storage_data_lake_gen2_filesystem.this
+}</code></pre>
+</div>
+
+<div class="code is-out">
+  <div class="code-head"><span class="fname">the plan afterwards</span></div>
+<pre><code class="language-bash">Terraform will perform the following actions:
+
+  # azurerm_storage_account.lake has moved to module.lake.azurerm_storage_account.this
+    resource "azurerm_storage_account" "this" {
+        id = "/subscriptions/.../stanalyticsprodweu01"
+        # (no changes)
+    }
+
+Plan: 0 to add, 0 to change, 0 to destroy.</code></pre>
+</div>
+
+<div class="callout callout-ok">
+  <div class="callout-title">This is the correct way to refactor</div>
+  <p style="margin-bottom:0">
+    <code>moved</code> blocks are declarative, reviewable in a pull request, and applied as part of a normal
+    plan — unlike <code>terraform state mv</code>, which mutates state immediately with no review and no record.
+    Leave them in the repository for a release or two so colleagues on older checkouts are covered, then delete
+    them. Lesson 16 covers <code>moved</code>, <code>import</code> and <code>removed</code> together.
+  </p>
+</div>
+
+<h2 id="anti-patterns">Anti-patterns</h2>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">The thin wrapper</div>
+  <div class="code is-bad" style="margin-top:12px">
+    <div class="code-head"><span class="fname">modules/resource-group/main.tf</span></div>
+<pre><code class="language-hcl">variable "name"     { type = string }
+variable "location" { type = string }
+variable "tags"     { type = map(string) }
+
+resource "azurerm_resource_group" "this" {
+  name     = var.name
+  location = var.location
+  tags     = var.tags
+}</code></pre>
+  </div>
+  <p style="margin-bottom:0">
+    This adds nothing. It has the same arguments as the resource, enforces no standard, and now every caller
+    must learn a second name for the same thing — plus you have lost direct access to any argument the wrapper
+    forgot to expose. A module should <strong>hide complexity or enforce policy</strong>. If it does neither, use
+    the resource.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">Deep nesting</div>
+  <p style="margin-bottom:0">
+    A root module calling a “platform” module calling a “data” module calling a “storage” module. Every layer
+    must re-declare and forward every variable, so adding one input means editing four files, and reading a plan
+    requires holding the whole tree in your head. Prefer <strong>flat composition</strong>: the root module calls
+    several sibling modules and wires their outputs to each other. Two levels is usually the sensible limit.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">A provider block inside a child module</div>
+  <p style="margin-bottom:0">
+    Covered in Lesson 04 and worth repeating: a child module with its own <code>provider</code> block cannot be
+    used with <code>for_each</code> or <code>count</code>, and cannot be cleanly removed because Terraform needs
+    the provider configuration in order to destroy what it created. Child modules declare
+    <code>required_providers</code> only.
+  </p>
+</div>
+
+<div class="callout callout-mistake">
+  <div class="callout-title">The mega-module</div>
+  <p style="margin-bottom:0">
+    One module taking eighty variables and building the entire platform. It cannot be tested in parts, cannot be
+    reused partially, and every change touches everything. If a module's variable list does not fit on a screen,
+    it is probably two modules.
+  </p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-1">Level 1 · Understand</span>
+    <span class="exercise-title">Module or not?</span>
+  </div>
+  <div class="exercise-body">
+    <p>For each, say whether you would write a module and why:</p>
+    <ol>
+      <li>A resource group. Used in every configuration.</li>
+      <li>A data lake: storage account + four filesystems + lifecycle policy + two private endpoints + two DNS zones.</li>
+      <li>The single Databricks workspace in your platform.</li>
+      <li>A “private endpoint + DNS zone + VNet link” trio, needed for storage, Key Vault and Databricks.</li>
+      <li>Your organisation's standard tagging scheme.</li>
+    </ol>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong>No.</strong> Thin wrapper. Same arguments as the resource, no complexity hidden, no policy enforced.</li>
+        <li><strong>Yes.</strong> Nine resources behind one concept, with real opinions to enforce — HNS, TLS, no public access, no shared keys. This is what modules are for.</li>
+        <li><strong>Probably not yet.</strong> Used once. Write it inline; extract it if a second workspace appears or another team wants your configuration. Premature abstraction costs more than duplication at n=1.</li>
+        <li><strong>Yes.</strong> Three coupled resources with a fiddly, easy-to-get-wrong relationship, needed three times. Highest-value module in the list.</li>
+        <li><strong>No — use a <code>local</code>.</strong> A module that only computes a value and outputs it is a very awkward function. Put the tag map in a <code>locals</code> block, or in a shared <code>.tfvars</code>.</li>
+      </ol>
+      <p style="margin-bottom:0">
+        The test: does it hide meaningful complexity, or enforce a standard that would otherwise depend on
+        someone remembering? If neither, skip it.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">A private endpoint module</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      Write <code>modules/private-endpoint</code> creating a private endpoint, its private DNS zone and the VNet
+      link. It should work for storage-blob, storage-dfs, Key Vault and Databricks, and it should not create a
+      duplicate DNS zone when called several times for the same zone.
+    </p>
+    <p>Consider carefully where the zone should live. Then write the calling code for a lake and a vault.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>The key design decision:</strong> the DNS zone must <em>not</em> be inside the module. Two calls
+        for blob and dfs would each create a zone — fine — but two calls for two storage accounts' blob endpoints
+        would try to create the same zone twice and fail. Zones are shared infrastructure with a different
+        lifecycle from endpoints.
+      </p>
+      <p>So the module creates only the endpoint and accepts a zone ID as input:</p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">modules/private-endpoint/variables.tf</span></div>
+<pre><code class="language-hcl">variable "name"                { type = string }
+variable "resource_group_name" { type = string }
+variable "location"            { type = string }
+variable "subnet_id"           { type = string }
+
+variable "target_resource_id" {
+  type        = string
+  description = "Resource ID of the PaaS resource to connect to."
+}
+
+variable "subresource_name" {
+  type        = string
+  description = "Subresource: blob, dfs, vault, sites, databricks_ui_api, ..."
+}
+
+variable "private_dns_zone_ids" {
+  type        = list(string)
+  description = "Zones to register the A record in. Created and owned by the caller."
+}
+
+variable "tags" {
+  type    = map(string)
+  default = {}
+}</code></pre>
+      </div>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">modules/private-endpoint/main.tf</span></div>
+<pre><code class="language-hcl">resource "azurerm_private_endpoint" "this" {
+  name                = var.name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  subnet_id           = var.subnet_id
+  tags                = var.tags
+
+  private_service_connection {
+    name                           = "psc-${var.name}"
+    private_connection_resource_id = var.target_resource_id
+    subresource_names              = [var.subresource_name]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "pdz-${var.subresource_name}"
+    private_dns_zone_ids = var.private_dns_zone_ids
+  }
+}
+
+output "id"         { value = azurerm_private_endpoint.this.id }
+output "private_ip" { value = azurerm_private_endpoint.this.private_service_connection[0].private_ip_address }</code></pre>
+      </div>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">the caller — zones created once, deduplicated</span></div>
+<pre><code class="language-hcl">locals {
+  endpoints = {
+    lake_blob = { target = module.lake.id,           sub = "blob",  zone = "privatelink.blob.core.windows.net" }
+    lake_dfs  = { target = module.lake.id,           sub = "dfs",   zone = "privatelink.dfs.core.windows.net" }
+    keyvault  = { target = azurerm_key_vault.main.id, sub = "vault", zone = "privatelink.vaultcore.azure.net" }
+  }
+
+  zones = toset([for e in local.endpoints : e.zone])
+}
+
+resource "azurerm_private_dns_zone" "this" {
+  for_each            = local.zones
+  name                = each.value
+  resource_group_name = azurerm_resource_group.analytics.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "this" {
+  for_each              = local.zones
+  name                  = "link-${replace(each.value, ".", "-")}"
+  resource_group_name   = azurerm_resource_group.analytics.name
+  private_dns_zone_name = azurerm_private_dns_zone.this[each.value].name
+  virtual_network_id    = module.networking.vnet_id
+}
+
+module "private_endpoints" {
+  source   = "../../modules/private-endpoint"
+  for_each = local.endpoints
+
+  name                 = "pe-${replace(each.key, "_", "-")}-${local.suffix}"
+  resource_group_name  = azurerm_resource_group.analytics.name
+  location             = var.location
+  subnet_id            = module.networking.privatelink_subnet_id
+  target_resource_id   = each.value.target
+  subresource_name     = each.value.sub
+  private_dns_zone_ids = [azurerm_private_dns_zone.this[each.value.zone].id]
+  tags                 = local.common_tags
+}</code></pre>
+      </div>
+      <p style="margin-bottom:0">
+        This is a genuine module-design lesson: <strong>resources with different lifecycles belong in different
+        modules</strong>. Endpoints come and go with workloads; zones are long-lived shared infrastructure, often
+        owned by a different team in a different subscription entirely.
+      </p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Design a Key Vault module's public interface</span>
+  </div>
+  <div class="exercise-body">
+    <p>Write <code>modules/key-vault</code>. Before writing resources, decide what belongs in the interface: what the caller controls, what the module hardcodes, and what it exposes.</p>    <p style="margin-bottom:0">Deliberately make some settings non-negotiable, and be able to justify each choice.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/key-vault/variables.tf</span></div>
+<pre><code class="language-hcl">variable "name" {
+  type = string
+
+  validation {
+    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$", var.name))
+    error_message = "Key Vault names are 3-24 chars, alphanumerics and hyphens, starting with a letter."
+  }
+}
+
+variable "resource_group_name" { type = string }
+variable "location"            { type = string }
+
+variable "sku_name" {
+  type        = string
+  default     = "standard"
+  description = "Use premium only when HSM-backed keys are required."
+
+  validation {
+    condition     = contains(["standard", "premium"], var.sku_name)
+    error_message = "sku_name must be standard or premium."
+  }
+}
+
+# CALLER CONTROLS: these legitimately differ between environments.
+variable "purge_protection_enabled" {
+  type        = bool
+  default     = true
+  description = "Cannot be disabled once enabled. Consider carefully for ephemeral environments."
+}
+
+variable "soft_delete_retention_days" {
+  type    = number
+  default = 90
+
+  validation {
+    condition     = var.soft_delete_retention_days &gt;= 7 &amp;&amp; var.soft_delete_retention_days &lt;= 90
+    error_message = "soft_delete_retention_days must be between 7 and 90."
+  }
+}
+
+variable "public_network_access_enabled" {
+  type    = bool
+  default = false
+}
+
+variable "allowed_ip_ranges" {
+  type        = list(string)
+  default     = []
+  description = "Public IPs permitted through the firewall, e.g. a CI runner."
+}
+
+variable "role_assignments" {
+  description = "Roles to grant, keyed by a stable name."
+
+  type = map(object({
+    role         = string
+    principal_id = string
+    principal_type = optional(string, "ServicePrincipal")
+    secret_name  = optional(string)   # scope to ONE secret when set
+  }))
+
+  default = {}
+}
+
+variable "exposed_secret_names" {
+  type        = list(string)
+  default     = []
+  description = "Secret names to build app-setting references for. Values are never read."
+}
+
+variable "tags" {
+  type    = map(string)
+  default = {}
+}</code></pre>
+</div><div class="code is-hcl">
+  <div class="code-head"><span class="fname">modules/key-vault/main.tf</span></div>
+<pre><code class="language-hcl">data "azurerm_client_config" "current" {}
+
+resource "azurerm_key_vault" "this" {
+  name                = var.name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  sku_name            = var.sku_name
+
+  # MODULE HARDCODES - a caller cannot weaken these. That is the point of
+  # having a module at all: the standard is enforced by construction.
+  rbac_authorization_enabled = true   # never access policies
+
+  # CALLER CONTROLS
+  purge_protection_enabled      = var.purge_protection_enabled
+  soft_delete_retention_days    = var.soft_delete_retention_days
+  public_network_access_enabled = var.public_network_access_enabled
+
+  network_acls {
+    default_action = var.public_network_access_enabled ? "Allow" : "Deny"
+    bypass         = "AzureServices"
+    ip_rules       = var.allowed_ip_ranges
+  }
+
+  tags = var.tags
+}
+
+locals {
+  # Scope to a single secret when asked, otherwise the whole vault.
+  # Computed here because a multi-line ternary is not valid inside an
+  # argument - HCL needs it on one line, or hoisted like this.
+  assignment_scopes = {
+    for k, v in var.role_assignments :
+    k =&gt; v.secret_name == null ? azurerm_key_vault.this.id : "${azurerm_key_vault.this.id}/secrets/${v.secret_name}"
+  }
+}
+
+resource "azurerm_role_assignment" "this" {
+  for_each = var.role_assignments
+
+  scope                = local.assignment_scopes[each.key]
+  role_definition_name = each.value.role
+  principal_id         = each.value.principal_id
+  principal_type       = each.value.principal_type
+}
+
+output "id"        { value = azurerm_key_vault.this.id }
+output "name"      { value = azurerm_key_vault.this.name }
+output "vault_uri" { value = azurerm_key_vault.this.vault_uri }
+
+# Helper so callers can build @Microsoft.KeyVault(...) references without
+# ever reading a secret value.
+output "secret_reference" {
+  description = "Function returning an app-setting reference for a secret name."
+  value       = { for n in var.exposed_secret_names :
+                  n =&gt; "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.this.name};SecretName=${n})" }
+}
+
+# DELIBERATELY ABSENT: no azurerm_key_vault_secret resources, and no output
+# of any secret value. Creating secrets here would write them into the
+# caller's state in plaintext.</code></pre>
+</div>    <p>The interface design is the real content. <code>rbac_authorization_enabled</code> is hardcoded because a module that lets callers pick the legacy access-policy model is not enforcing a standard. Purge protection and network access are caller-controlled because they legitimately differ between an ephemeral dev vault and production.</p>    <p style="margin-bottom:0">And the most important line is the comment at the end. A vault module that offers to create secrets for you is a trap: it copies every value into the calling configuration's state. The module's job is the vault and its RBAC; populating it is somebody else's.</p>
+    </div>
+  </details>
+</div>
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-2">Level 2 · Implement</span>
+    <span class="exercise-title">Refactor into modules without destroying anything</span>
+  </div>
+  <div class="exercise-body">
+    <p>You have a working production configuration with these state addresses:</p><div class="code is-out">
+  <div class="code-head"><span class="fname">terraform state list</span></div>
+<pre><code class="language-bash">azurerm_resource_group.analytics
+azurerm_storage_account.lake
+azurerm_storage_container.layers["raw"]
+azurerm_storage_container.layers["bronze"]
+azurerm_storage_container.layers["silver"]
+azurerm_storage_container.layers["gold"]
+azurerm_virtual_network.main
+azurerm_subnet.this["privatelink"]
+azurerm_subnet.this["functions"]
+azurerm_key_vault.main</code></pre>
+</div>    <p style="margin-bottom:0">You are moving the storage resources into <code>module.lake</code>, the network into <code>module.networking</code>, and the vault into <code>module.key_vault</code>. Inside each module the resources are named <code>this</code>. Write what makes this safe, and the command that proves it.</p>
+  </div>
+  <details>
+    <summary>Show solution</summary>
+    <div class="details-body">
+<div class="code is-hcl">
+  <div class="code-head"><span class="fname">moved.tf</span></div>
+<pre><code class="language-hcl"># A moved block renames an address in STATE. Nothing in Azure is touched.
+# Without these, Terraform sees old addresses disappear and new ones appear,
+# and plans to destroy and recreate all ten resources - which on the lake
+# means deleting the data.
+
+moved {
+  from = azurerm_storage_account.lake
+  to   = module.lake.azurerm_storage_account.this
+}
+
+# for_each instances move as a SET - you do not enumerate every key.
+moved {
+  from = azurerm_storage_container.layers
+  to   = module.lake.azurerm_storage_container.this
+}
+
+moved {
+  from = azurerm_virtual_network.main
+  to   = module.networking.azurerm_virtual_network.this
+}
+
+moved {
+  from = azurerm_subnet.this
+  to   = module.networking.azurerm_subnet.this
+}
+
+moved {
+  from = azurerm_key_vault.main
+  to   = module.key_vault.azurerm_key_vault.this
+}
+
+# azurerm_resource_group.analytics is NOT moving - it stays in the root
+# module, which is correct: it is the container the modules deploy into.</code></pre>
+</div><div class="code is-sh">
+  <div class="code-head"><span class="fname">verify.sh</span></div>
+<pre><code class="language-bash"># The safety property is that the plan must be COMPLETELY EMPTY.
+terraform plan -var-file=env/prod.tfvars -out=tfplan
+
+# Machine-check it rather than eyeballing 10 resources:
+terraform show -json tfplan | jq -r '
+  .resource_changes[]
+  | select(.change.actions != ["no-op"])
+  | "\(.change.actions | join(",")): \(.address)"'
+# -> must print NOTHING.
+
+# Terraform also names the moves it recognised, which makes a missing
+# moved block easy to spot:
+terraform show tfplan | grep "has moved to"
+
+terraform apply tfplan</code></pre>
+</div>    <p>Two things that make this safe rather than nerve-wracking. <code>moved</code> blocks are <em>declarative and reviewable</em> &mdash; a colleague sees them in the pull request, unlike <code>terraform state mv</code> which mutates state on someone's laptop with no record. And <code>for_each</code> instances move as a group, so you write one block rather than four.</p>    <p style="margin-bottom:0"><strong>Do this refactor in its own commit.</strong> The entire safety check is &ldquo;the plan is empty&rdquo;; if the same pull request also adds a container and changes a firewall rule, you can no longer use emptiness as your proof. Refactor, verify zero changes, merge &mdash; then change behaviour separately.</p>
+    </div>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-head">
+    <span class="exercise-level lvl-3">Level 3 · Troubleshoot</span>
+    <span class="exercise-title">A refactor that would destroy production</span>
+  </div>
+  <div class="exercise-body">
+    <p>
+      An engineer refactors a working production configuration into modules. Their plan says
+      <code>Plan: 23 to add, 0 to change, 23 to destroy</code>. They ask whether that is expected “since it is
+      just moving code around”.
+    </p>
+    <p>Explain what is happening, what to do, and how to verify before applying.</p>
+  </div>
+  <details>
+    <summary>Show answer</summary>
+    <div class="details-body">
+      <p>
+        <strong>Not expected, and applying it would delete production</strong> — including the data lake and the
+        Key Vault. State keys resources by address. Moving <code>azurerm_storage_account.lake</code> into a module
+        makes its address <code>module.lake.azurerm_storage_account.this</code>. Terraform sees the old address
+        gone and a new one appearing, and plans a destroy and a create. It has no way to know they are the same
+        resource — that is exactly what <code>moved</code> blocks are for.
+      </p>
+      <p><strong>Step 1 — enumerate the old addresses.</strong></p>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">shell</span></div>
+<pre><code class="language-bash">terraform state list &gt; /tmp/before.txt</code></pre>
+      </div>
+      <p><strong>Step 2 — write a <code>moved</code> block for each.</strong></p>
+      <div class="code is-hcl">
+        <div class="code-head"><span class="fname">moved.tf</span></div>
+<pre><code class="language-hcl">moved {
+  from = azurerm_storage_account.lake
+  to   = module.lake.azurerm_storage_account.this
+}
+
+# for_each instances move as a set — no need to enumerate every key
+moved {
+  from = azurerm_storage_data_lake_gen2_filesystem.layers
+  to   = module.lake.azurerm_storage_data_lake_gen2_filesystem.this
+}
+
+moved {
+  from = azurerm_virtual_network.main
+  to   = module.networking.azurerm_virtual_network.this
+}
+
+moved {
+  from = azurerm_subnet.this
+  to   = module.networking.azurerm_subnet.this
+}
+# ... one per moved resource</code></pre>
+      </div>
+      <p><strong>Step 3 — verify. The target plan is exactly zero changes.</strong></p>
+      <div class="code is-sh">
+        <div class="code-head"><span class="fname">verification</span></div>
+<pre><code class="language-bash">terraform plan -var-file=env/prod.tfvars -out=tfplan
+
+# machine-check that nothing is destroyed
+terraform show -json tfplan \
+  | jq -r '.resource_changes[]
+           | select(.change.actions | index("delete") or index("create"))
+           | .address'
+# → must print NOTHING</code></pre>
+      </div>
+      <p>
+        If any resource still shows create/destroy, a <code>moved</code> block is missing or has the wrong target
+        address. Terraform's plan output names the moves it recognised, which makes the gaps easy to spot.
+      </p>
+      <div class="callout callout-warn" style="margin-top:16px;margin-bottom:0">
+        <div class="callout-title">Do this refactor on its own</div>
+        <p style="margin-bottom:0">
+          Never combine a module refactor with a functional change. The whole safety property here is “the plan
+          must be empty”; if the same pull request also adds a container and changes a firewall rule, you can no
+          longer use emptiness as your check. Refactor, verify zero changes, merge. Then change behaviour in a
+          separate commit.
+        </p>
+      </div>
+    </div>
+  </details>
+</div>
+
+<h2 id="interview">Interview questions</h2>
+
+<div class="qa">
+  <details>
+    <summary>What is a Terraform module and why use one?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Any directory of Terraform files — the one you run <code>terraform</code> in is the root module, and any
+        it calls with a <code>module</code> block is a child module. The reasons to extract one are encapsulating
+        a concept so callers do not need to know its parts, enforcing standards by construction so every storage
+        account the organisation creates has the right security posture, reuse across environments with different
+        inputs, and having a testable unit. The reason <em>not</em> to is a wrapper that exposes the same
+        arguments as the underlying resource — that adds indirection with no benefit.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What is the difference between a root module and a child module?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        The root module is where you run Terraform. It configures the backend and the providers, holds the
+        environment's decisions, and receives variable values from tfvars, the CLI and the environment. A child
+        module never declares a backend or a <code>provider</code> block — only <code>required_providers</code> —
+        receives its values from the calling <code>module</code> block, and should contain no
+        environment-specific decisions, taking them as inputs instead.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you version modules?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        For registry modules, a <code>version</code> constraint alongside the source. For git sources, a
+        <code>?ref=</code> pinned to an immutable tag or commit SHA — never a branch, because then module content
+        can change between runs with no diff in your repository to explain it. Local path modules are versioned
+        by the repository itself. In the module's own <code>required_providers</code> I would use a floor like
+        <code>&gt;= 5.0</code> rather than <code>~&gt; 5.0</code>, so the module does not over-constrain the root
+        modules consuming it.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you refactor existing resources into a module safely?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        With <code>moved</code> blocks. Moving a resource into a module changes its state address, so without
+        them Terraform plans to destroy the old address and create the new one — on a data lake that is data
+        loss. A <code>moved</code> block declares the rename, is reviewable in a pull request, and is applied as
+        part of a normal plan, unlike <code>terraform state mv</code> which mutates state immediately with no
+        record. The verification is that the resulting plan shows zero changes, which is why the refactor should
+        be its own commit with no functional changes mixed in.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you design a module's interface?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        Treat inputs and outputs as a public API — removing or renaming one is a breaking change for every
+        caller. I would accept intent rather than plumbing, so a caller passes a map of containers with retention
+        policies rather than a pre-built lifecycle document. Hardcode the non-negotiables so a caller cannot
+        weaken the standard, and default the rest to secure so weakening is visible in the diff. Output resource
+        IDs and RBAC scopes so callers can wire things up, and never output secrets — that just copies them into
+        the caller's state too. And take a <code>tags</code> map so governance tags reach everything inside.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>When should you <em>not</em> write a module?</summary>
+    <div class="details-body">
+      <p style="margin-bottom:0">
+        When it wraps a single resource with the same arguments — that hides nothing and enforces nothing. When
+        it is used once, since duplication at n=1 is cheaper than premature abstraction; I would write it twice
+        concretely and extract on the third. When it only computes a value, which is what <code>locals</code> are
+        for. And I would avoid deep nesting: modules calling modules calling modules means every input must be
+        forwarded through every layer, so adding one variable becomes a four-file change and reading a plan
+        requires holding the whole tree in your head.
+      </p>
+    </div>
+  </details>
+</div>
+
+<h2 id="key-takeaways">Key takeaways</h2>
+
+<ul>
+  <li>Every directory is a module. The root one owns the backend and providers; child modules must not.</li>
+  <li>A module earns its place by hiding complexity or enforcing a standard. If it does neither, use the resource.</li>
+  <li>Inputs and outputs are a public API. Accept intent, hardcode non-negotiables, default to secure, never output secrets.</li>
+  <li>Pin git module sources to tags, never branches.</li>
+  <li>Refactor with <code>moved</code> blocks and verify the plan is empty. Never mix a refactor with a behaviour change.</li>
+  <li>Prefer flat composition in the root module over deep nesting.</li>
+</ul>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-hcl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script src="assets/course.js"></script>
+</body>
+</html>
