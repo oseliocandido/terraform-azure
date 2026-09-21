@@ -8,9 +8,9 @@ decisions and their reasons are listed under [Key decisions](#5-key-decisions).
   identity exchange.
 - **[Part 2: Analytics platform](#part-2--analytics-platform-databricks-and-unity-catalog)**:
   the Azure / Databricks / Terraform design that satisfies
-  [PRD.md](analytics-platform/PRD.md). Every module and object, and how they are operated, is in
-  [IMPLEMENTATION.md](analytics-platform/IMPLEMENTATION.md); open work is in
-  [BACKLOG.md](analytics-platform/BACKLOG.md).
+  [PRD.md](PRD.md). Every module and object, and how they are operated, is in
+  [IMPLEMENTATION.md](IMPLEMENTATION.md); open work is in
+  [BACKLOG.md](BACKLOG.md).
 
 ## Part 1 — Repository, pipeline and identity
 
@@ -58,7 +58,7 @@ The Databricks/Unity Catalog design (catalog-per-domain, single ingestion
 bronze, workspace-bound catalogs, group-based access) is in
 [Part 2](#part-2--analytics-platform-databricks-and-unity-catalog) below, with
 every object described in
-[analytics-platform/IMPLEMENTATION.md](analytics-platform/IMPLEMENTATION.md).
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 Each root has its own `terraform.tfvars` (environment-specific values:
 `instance`, `budget_amount`, an optional `storage_account_suffix`) and

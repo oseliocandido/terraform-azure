@@ -46,5 +46,5 @@ variable "ci_group_name" {
 variable "enable_grants" {
   type        = bool
   default     = false
-  description = "Gates the three databricks_grants resources below. Defaults to false because none of their referenced principals (grp-sales-*-<env>, the CI service principal) exist as recognized Databricks identities yet -- applying would fail on every run, not just the first. Flip to true once BACKLOG.md's pending group provisioning is done (see docs/analytics-platform/BACKLOG.md#identity-grp-sales--groups-not-yet-provisioned-blocks-grants--ownership)."
+  description = "Gates the three databricks_grants resources below. Defaults to false because none of their referenced principals (grp-sales-*-<env>, the CI service principal) exist as recognized Databricks identities yet -- applying would fail on every run, not just the first. Flip to true once BACKLOG.md's pending group provisioning is done (see docs/BACKLOG.md#identity-grp-sales--groups-not-yet-provisioned-blocks-grants--ownership)."
 }

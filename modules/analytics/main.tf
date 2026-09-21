@@ -340,7 +340,7 @@ resource "azurerm_storage_container" "managed_domain_protected" {
   }
 }
 
-# Enforces the 5-year retention requirement (docs/analytics-platform/PRD.md
+# Enforces the 5-year retention requirement (docs/PRD.md
 # §9) at the infrastructure level, scoped to the raw landing containers, not
 # bronze -- see azurerm_storage_container.bronze's own comment for why a
 # blob-age-based Azure policy targeting bronze specifically would be unsafe

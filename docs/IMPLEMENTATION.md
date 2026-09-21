@@ -1,6 +1,6 @@
 # Implementation — Retail Sales Analytics Platform
 
-What is built, object by object. [ARCHITECTURE.md](../ARCHITECTURE.md) explains
+What is built, object by object. [ARCHITECTURE.md](ARCHITECTURE.md) explains
 the design; this document lists every module, the objects it creates, and the
 mechanics that matter when operating it. The repo is the source of truth for exact
 arguments.
@@ -216,7 +216,7 @@ instead of creating another. Never wire the pre-staged access connector in the
 workspace's managed resource group to anything: it inherits that workspace's lifecycle
 and cannot be deleted.
 
-**Groups.** Create each `grp-*` group in Entra ID (`docs/azure-setup-commands.sh`) and
+**Groups.** Create each `grp-*` group in Entra ID and
 register it in the Databricks account before any grant that references it applies.
 
 ## Prod bootstrap

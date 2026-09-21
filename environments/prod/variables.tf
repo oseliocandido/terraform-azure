@@ -51,22 +51,22 @@ variable "storage_account_suffix" {
 
 variable "managed_by" {
   type        = string
-  description = "Tag value -- see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section."
+  description = "Tag value -- see README.md's \"Working with the repo\" section."
 }
 
 variable "repository" {
   type        = string
-  description = "Tag value -- see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section."
+  description = "Tag value -- see README.md's \"Working with the repo\" section."
 }
 
 variable "cost_center" {
   type        = string
-  description = "Tag value -- see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section."
+  description = "Tag value -- see README.md's \"Working with the repo\" section."
 }
 
 variable "data_owner" {
   type        = string
-  description = "Tag value -- see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section."
+  description = "Tag value -- see README.md's \"Working with the repo\" section."
 }
 
 variable "azure_tenant_id" {

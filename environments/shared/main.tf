@@ -48,8 +48,8 @@ resource "databricks_metastore" "primary" {
   # avoids the same succession risk a named person would carry. On
   # reflection that reasoning conflated two different things: the SP is
   # right for *authenticating* Terraform's account-level applies (see
-  # terraform.tf's provider block and docs/azure-setup-commands.sh step
-  # 8) -- an automation identity, not a person, appropriate for running
+  # terraform.tf's provider block; sp-databricks-account-admin was created
+  # once with the az CLI) -- an automation identity, not a person, appropriate for running
   # changes. Owner is a different role: who administers the metastore
   # itself (grant/revoke, reassign, drop) if something goes wrong outside
   # Terraform, or who Databricks support/audit trails point to

@@ -27,8 +27,8 @@ locals {
 
 ## -----------------------------------------------------------------------
 ## Resources -- stage 1 of the bootstrap sequence documented in
-## docs/analytics-platform/IMPLEMENTATION.md ("Resolved: provider
-## authentication and bootstrap order"). Only azurerm-provider resources
+## docs/IMPLEMENTATION.md ("Providers and
+## authentication"). Only azurerm-provider resources
 ## live here: a provider block can't reference this workspace's own
 ## computed workspace_url in the same apply that creates it, so nothing
 ## needing the databricks provider (storage credential, external

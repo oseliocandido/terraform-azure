@@ -1,7 +1,7 @@
 # Backlog — Retail Sales Analytics Platform
 
 Open work and known gaps only. What is already built is described in
-[ARCHITECTURE.md](../ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
+[ARCHITECTURE.md](ARCHITECTURE.md) and [IMPLEMENTATION.md](IMPLEMENTATION.md).
 Items are ordered roughly by how soon they matter.
 
 ## 1. Apply `prod` for the first time
@@ -21,7 +21,7 @@ the `production` approval gate.
 
 ## 2. Register the remaining groups
 
-Groups are created in Entra ID (`docs/azure-setup-commands.sh`) and registered
+Groups are created in Entra ID and registered
 at the Databricks account level by hand (Account Console → User management →
 Groups). Terraform only references them by name.
 

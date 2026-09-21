@@ -70,5 +70,5 @@ variable "landing_source_systems" {
 
 variable "tags" {
   type        = map(string)
-  description = "Base tags applied to every taggable resource this module creates, merged with workload/environment (see docs/analytics-platform/IMPLEMENTATION.md's \"Tagging\" section for the required keys and why each exists). Passed in from the calling root module rather than hardcoded here, since managed_by/repository/cost_center/data_owner are account-wide constants, not module-specific."
+  description = "Base tags applied to every taggable resource this module creates, merged with workload/environment (see README.md's \"Working with the repo\" section for the required keys and why each exists). Passed in from the calling root module rather than hardcoded here, since managed_by/repository/cost_center/data_owner are account-wide constants, not module-specific."
 }

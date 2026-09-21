@@ -23,8 +23,7 @@ terraform {
 # this repo: locally this resolves via the signed-in `az login` session
 # (currently an Account Admin); in CI it resolves via the same ARM_* OIDC
 # environment variables already used for sp-terraform-dev/prod, once
-# sp-databricks-account-admin is wired into a workflow (see
-# docs/azure-setup-commands.sh step 8).
+# sp-databricks-account-admin is wired into a workflow.
 provider "databricks" {
   host            = "https://accounts.azuredatabricks.net"
   account_id      = var.databricks_account_id

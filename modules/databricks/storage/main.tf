@@ -358,7 +358,7 @@ resource "databricks_volume" "landing" {
   # read the files. Existing volumes are updated in place.
   owner            = local.platform_group_name
   storage_location = databricks_external_location.landing[each.key].url
-  comment          = "Ingestion landing zone for ${each.key} source files -- see docs/analytics-platform/BACKLOG.md#bronze-ingestion-file-driven-triggering-auto-loader--file-events for the future consumer."
+  comment          = "Ingestion landing zone for ${each.key} source files. Read-only from Databricks; the source system writes here directly."
 }
 
 moved {
@@ -435,7 +435,7 @@ moved {
 
 # Whatever runs an Auto Loader stream needs READ VOLUME + WRITE VOLUME here,
 # since it owns this state rather than just consuming it. There is no
-# pipeline service principal yet (docs/analytics-platform/BACKLOG.md), so for
+# pipeline service principal yet (docs/BACKLOG.md), so for
 # now the human engineer group gets it, in dev only
 # (var.bronze_consumer_can_write). In prod, grant it to the pipeline SP once
 # it exists instead of a human group.

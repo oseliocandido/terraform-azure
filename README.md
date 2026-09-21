@@ -78,7 +78,7 @@ metastore. `unity_catalog` is called once per business domain, so adding a domai
 is one more module call. `storage` is called once per environment because the
 storage credential and the raw ingestion layer are shared by every domain.
 The module diagram and every object are in [ARCHITECTURE](docs/ARCHITECTURE.md)
-and [IMPLEMENTATION](docs/analytics-platform/IMPLEMENTATION.md).
+and [IMPLEMENTATION](docs/IMPLEMENTATION.md).
 
 ## How a change reaches Azure
 
@@ -141,7 +141,6 @@ terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars
 - On a brand-new environment, apply the workspace first
   (`-target=module.databricks_workspace.azurerm_databricks_workspace.this`), then
   run a normal apply. Later applies are a single step.
-- `deploy.sh` is a helper for a manual, reviewed prod plan and apply.
 
 Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 `data_owner`, `terraform_layer`, `workload` and `environment`. Names follow
@@ -151,11 +150,10 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 
 | Document | Read it for |
 |---|---|
-| [PRD](docs/analytics-platform/PRD.md) | The business requirements |
+| [PRD](docs/PRD.md) | The business requirements |
 | [Architecture](docs/ARCHITECTURE.md) | Repo and pipeline design, the analytics platform design, and the key decisions |
-| [Implementation](docs/analytics-platform/IMPLEMENTATION.md) | Every module and object, the CI permission model, bootstrap |
-| [Backlog](docs/analytics-platform/BACKLOG.md) | Open work and known gaps |
-| [`docs/azure-setup-commands.sh`](docs/azure-setup-commands.sh) | The one-time Azure bootstrap (identities, backend) |
+| [Implementation](docs/IMPLEMENTATION.md) | Every module and object, the CI permission model, bootstrap |
+| [Backlog](docs/BACKLOG.md) | Open work and known gaps |
 
 ## Repo layout
 
@@ -173,11 +171,11 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 │   ├── dev/  prod/           # root modules, own state and tfvars
 │   └── shared/               # account-level metastore, applied by hand
 ├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── analytics-platform/   # PRD, IMPLEMENTATION, BACKLOG
-│   └── azure-setup-commands.sh
-├── .github/workflows/        # terraform.yml (plan/apply), drift-detection.yml
-└── deploy.sh                 # manual prod plan/apply helper
+│   ├── PRD.md                # business requirements
+│   ├── ARCHITECTURE.md       # repo/CI-CD design (part 1) and platform design (part 2)
+│   ├── IMPLEMENTATION.md     # every module and object
+│   └── BACKLOG.md            # open work
+└── .github/workflows/        # terraform.yml (plan/apply), drift-detection.yml
 ```
 
 ## Known limitations
