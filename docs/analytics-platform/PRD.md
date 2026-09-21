@@ -107,7 +107,7 @@ foundation capable of supporting:
 **Store count and daily transaction volume are deliberately not stated
 as targets here.** No capacity/throughput sizing study has been done yet,
 and this project does not include cluster or compute sizing work (see
-[BACKLOG.md](BACKLOG.md#compute--cluster-architecture--not-yet-specified)).
+[BACKLOG.md](BACKLOG.md#4-compute-architecture)).
 Publishing an unvalidated number invites design decisions (storage
 tiering, cluster sizing, partitioning) to silently anchor on a figure
 nobody actually confirmed. The infrastructure is designed to scale
@@ -237,7 +237,7 @@ vocabularies for the same concept.
 The exact storage/organizational implementation of these stages —
 including how many stages, and their concrete names — is an architecture
 decision, not fixed by this requirement — see
-[ARCHITECTURE.md](ARCHITECTURE.md#analytical-data-layering).
+[ARCHITECTURE.md](ARCHITECTURE.md#unity-catalog-model).
 
 The infrastructure must provide the storage and analytical capabilities
 required to implement this layering when pipelines are built in the future.
@@ -259,7 +259,7 @@ of the point-of-sale and e-commerce source systems.
 
 The infrastructure should therefore support scalable, durable, and
 cost-tiered analytical storage with an enforced retention period — see
-[ARCHITECTURE.md](ARCHITECTURE.md#data-retention-and-lifecycle-policy) for
+[ARCHITECTURE.md](ARCHITECTURE.md#storage) for
 how this is technically enforced.
 
 ---

@@ -7,28 +7,48 @@ each section.
 
 ## 1. Module / environment composition
 
-Two reusable modules, composed once per root. Nothing in `modules/` holds
+Five reusable modules, composed per root. Nothing in `modules/` holds
 its own state or backend — each root under `environments/` is what
-actually gets applied.
+actually gets applied. `environments/shared` is a third root holding the
+account-level Databricks metastore (applied by hand, no CI yet).
 
 ```mermaid
 flowchart TB
     subgraph modules["modules/ — shared, reusable, stateless"]
-        AG["analytics_group\nResource group + ADLS Gen2 storage account"]
+        AG["analytics\nRG + ADLS Gen2 + containers"]
         BA["budget_alert\nResource-group-scoped consumption budget"]
+        subgraph dbx["databricks/"]
+            WS["workspaces\nworkspace, access connector, metastore assignment"]
+            ST["storage (once per env)\ncredential, external locations, ingestion catalog"]
+            UC["unity_catalog (once per domain)\ncatalog, silver/gold, grants"]
+        end
     end
 
     subgraph dev["environments/dev (root module)"]
         DM["main.tf"] -->|module block| AG
         DM -->|module block, resource_group_id| BA
+        DM --> WS
+        DM --> ST
+        DM -->|sales, marketing| UC
     end
-    subgraph prod["environments/prod (root module)"]
+    subgraph prod["environments/prod (root module, not yet applied)"]
         PM["main.tf"] -->|module block| AG
         PM -->|module block, resource_group_id| BA
+        PM --> WS
+        PM --> ST
+        PM -->|sales, marketing| UC
     end
 
     AG -.output: resource_group_id.-> BA
+    AG -.containers.-> ST
+    WS -.access connector, workspace_id.-> ST
+    ST -.credential name.-> UC
 ```
+
+The Databricks/Unity Catalog design (catalog-per-domain, single ingestion
+bronze, workspace-bound catalogs, group-based access) is documented in
+[analytics-platform/ARCHITECTURE.md](analytics-platform/ARCHITECTURE.md) and
+[analytics-platform/IMPLEMENTATION.md](analytics-platform/IMPLEMENTATION.md).
 
 Each root has its own `terraform.tfvars` (environment-specific values:
 `instance`, `budget_amount`, an optional `storage_account_suffix`) and
@@ -58,6 +78,8 @@ flowchart TB
     style rgbackend fill:#2c3e50,stroke:#95a5a6
 ```
 
+Each environment's resource group also holds the Databricks workspace and access
+connector; the workspace's own managed resource group is budgeted separately.
 Each resource group holds one budget alert, scoped to that resource group
 (not the subscription — see
 [ADR-0002](adr/0002-pipeline-and-identity-architecture.md#budget-scope)),
