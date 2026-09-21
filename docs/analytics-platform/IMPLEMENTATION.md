@@ -225,7 +225,7 @@ resource "databricks_schema" "bronze" {
   storage_root = var.bronze_storage_root
   owner        = local.platform_group_name
 }
-resource "databricks_grants" "bronze_schema" { count = var.enable_grants ? 1 : 0 ... } # USE_SCHEMA, SELECT
+resource "databricks_grants" "bronze_schema" { count = var.enable_grants ? 1 : 0 ... } # USE_SCHEMA, SELECT (+ CREATE_TABLE if bronze_consumer_can_write)
 
 # One EXTERNAL volume per source system. Group-owned so it is not tied to
 # whoever created it. Consumers get READ VOLUME only (gated); sources write
@@ -253,6 +253,13 @@ resource "databricks_volume" "checkpoints" {
   name        = "checkpoints"
   volume_type = "MANAGED"
   ...
+}
+# Dev only (bronze_consumer_can_write): engineers may experiment by hand.
+# In prod this belongs to the pipeline service principal once it exists.
+resource "databricks_grants" "checkpoints_volume" {
+  count  = var.enable_grants && var.bronze_consumer_can_write ? 1 : 0
+  volume = databricks_volume.checkpoints.id
+  ...                                               # READ VOLUME, WRITE VOLUME
 }
 ```
 

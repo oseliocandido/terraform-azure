@@ -139,7 +139,7 @@ spans environments.
 |---|---|---|
 | `grp-<domain>-stakeholders-<env>` | Report consumers | `gold` read |
 | `grp-<domain>-analysts-<env>` | Ad hoc analysis | `silver`, `gold` read |
-| `grp-<domain>-data-engineers-<env>` | Build and operate the domain's pipelines | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `MODIFY` on the catalog; read on raw `ingestion_<env>` (sales only today) |
+| `grp-<domain>-data-engineers-<env>` | Build and operate the domain's pipelines | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `MODIFY` on the catalog; read on raw `ingestion_<env>` (sales only today); in dev also write on the `checkpoints` volume and `CREATE_TABLE` on the bronze schema |
 | `grp-<domain>-data-governance-<env>` | Owns the domain catalog and its schemas | Ownership only, kept separate from operators |
 | `grp-databricks-platform-<env>` | Owns environment-wide infrastructure | Owner of the credential, bronze/landing/ingestion locations, `ingestion_<env>` and its volumes |
 | `grp-databricks-ci-<env>` | CI identity plumbing | Workspace membership and metastore `CREATE_*`; contains `sp-terraform-<env>` |
