@@ -187,6 +187,11 @@ resource "databricks_schema" "silver" {
   name         = "silver"
   owner        = local.data_governance_group_name
   comment      = "Silver layer schema for the ${var.domain} catalog"
+
+  # CI's catalog grant (CREATE_SCHEMA) must exist first, or the very first
+  # apply on a new catalog races it and fails with "does not have CREATE
+  # SCHEMA and USE CATALOG".
+  depends_on = [databricks_grants.catalog]
 }
 
 resource "databricks_schema" "gold" {
@@ -194,57 +199,55 @@ resource "databricks_schema" "gold" {
   name         = "gold"
   owner        = local.data_governance_group_name
   comment      = "Gold layer schema for the ${var.domain} catalog"
+
+  # CI's catalog grant (CREATE_SCHEMA) must exist first, or the very first
+  # apply on a new catalog races it and fails with "does not have CREATE
+  # SCHEMA and USE CATALOG".
+  depends_on = [databricks_grants.catalog]
+}
+
+moved {
+  from = databricks_grants.catalog[0]
+  to   = databricks_grants.catalog
 }
 
 # databricks_grants (plural, authoritative) chosen deliberately over the
 # newer databricks_grant (singular, additive) -- see
 # IMPLEMENTATION.md's modules/unity_catalog section. Terraform should be
 # the single source of truth for who can access what.
+# Not count-gated any more: CI's own grant (last block below) has to exist
+# even when enable_grants is false -- otherwise a catalog whose business
+# groups aren't provisioned yet (marketing) has NO grants for CI at all, and
+# CI cannot create schemas in it or read its workspace binding. Only the
+# business-group grants are gated, via the dynamic block. One resource per
+# securable, since databricks_grants is authoritative for its whole target.
 resource "databricks_grants" "catalog" {
-  count = var.enable_grants ? 1 : 0
-
   catalog = databricks_catalog.this.name
 
-  # USE_CATALOG only -- lets these two address the catalog; grants no
-  # schema visibility by itself. Layer access for them comes from the
-  # schema-scoped grants below, not from this catalog-level block.
+  # Business groups (gated by enable_grants). stakeholders/analysts get
+  # USE_CATALOG only -- lets them address the catalog; grants no schema
+  # visibility by itself, layer access comes from the schema-scoped grants
+  # below. data-engineers need every layer, so their catalog-scoped grant
+  # inherits to all current and future schemas (blanket MODIFY, not
+  # fine-grained INSERT/UPDATE/DELETE -- this metastore's privilege version
+  # 1.0 doesn't support those at the catalog level).
   #
   # var.domain, not a literal "sales" -- every grant principal in this
   # resource used to be hardcoded to sales' own groups regardless of which
   # domain called this module; see this file's locals block for the fuller
   # reasoning (found via the first real second-domain call, marketing).
-  grant {
-    principal  = "grp-${var.domain}-stakeholders-${var.environment}"
-    privileges = ["USE_CATALOG"]
-  }
-  grant {
-    principal  = "grp-${var.domain}-analysts-${var.environment}"
-    privileges = ["USE_CATALOG"]
+  dynamic "grant" {
+    for_each = var.enable_grants ? {
+      "grp-${var.domain}-stakeholders-${var.environment}"   = ["USE_CATALOG"]
+      "grp-${var.domain}-analysts-${var.environment}"       = ["USE_CATALOG"]
+      "grp-${var.domain}-data-engineers-${var.environment}" = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY"]
+    } : {}
+    content {
+      principal  = grant.key
+      privileges = grant.value
+    }
   }
 
-  # Catalog-scoped on purpose: these two need every layer, so inheriting
-  # to all current and future schemas is the intended behavior.
-  #
-  # Blanket MODIFY, not the fine-grained INSERT/UPDATE/DELETE split an
-  # earlier version of this grant used -- that was a deliberate attempt to
-  # withhold DELETE specifically in prod (Databricks' own Unity Catalog
-  # best-practices doc recommends reserving direct MODIFY-class access on
-  # production tables for service principals only, with humans writing
-  # through pipelines instead; there's no pipeline yet that owns these
-  # writes, so the team still needs SOME direct human write path). Reverted
-  # after `terraform apply` failed outright: "Privilege UPDATE is not
-  # applicable to this entity [CATALOG/CATALOG_STANDARD]... check the
-  # privilege version of the metastore in use [1.0]" -- this metastore's
-  # privilege version doesn't support the fine-grained DML privileges at
-  # the catalog level at all, in either environment, so the dev/prod DELETE
-  # distinction wasn't actually available to begin with. MODIFY includes
-  # DELETE in both environments now -- revisit if this metastore is ever
-  # upgraded to a privilege version that supports the fine-grained split
-  # (see BACKLOG.md).
-  grant {
-    principal  = "grp-${var.domain}-data-engineers-${var.environment}"
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY"]
-  }
   # READ METADATA added preemptively, matching the fix applied to
   # modules/databricks/storage's identical ingestion-catalog CI grant after
   # a real CI run failed with "cannot read workspace binding: User does not
