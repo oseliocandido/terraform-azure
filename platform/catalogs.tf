@@ -74,7 +74,7 @@ module "unity_catalog_marketing" {
   workspace_id              = module.databricks_workspace.workspace_id
   ci_service_principal_name = var.ci_service_principal_name
   ci_group_name             = local.ci_group_name
-  enable_grants             = false
+  enable_grants             = var.enable_grants
   storage_credential_name   = module.uc_storage.storage_credential_name
   catalog_storage_root      = "abfss://${module.datalake.additional_managed_container_names["marketing"]}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
 
