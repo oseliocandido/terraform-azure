@@ -21,7 +21,3 @@ ci_service_principal_name = "5e93b219-9bc5-4a7b-8956-40d6c3648c1d"
 # USE_CATALOG/USE_SCHEMA on the catalog itself -- without this, CI can't
 # even read back the catalog/schemas it manages, only create new ones.
 enable_grants = true
-
-# westeurope rejected new storage accounts for this subscription
-# (RequestDisallowedByAzure). northeurope works -- persisted here so a
-# plain `terraform plan` never silently drifts back to the default.

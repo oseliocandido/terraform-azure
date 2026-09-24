@@ -38,7 +38,7 @@ resource "databricks_entitlements" "ci_group" {
 # stakeholders. They get plain USER membership plus the entitlements needed to
 # open the workspace and use SQL; what they may do with compute is set in
 # compute.tf. The domains come from var.workspace_user_domains; empty means no
-# one is added (prod, until its groups exist).
+# one is added. Each listed domain's groups must already exist in the account.
 locals {
   data_engineer_groups = [for d in var.workspace_user_domains : "grp-${d}-data-engineers-${var.environment}"]
   consumer_groups = flatten([
