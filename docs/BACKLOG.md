@@ -13,15 +13,18 @@ block in `main.tf` keeps them (see IMPLEMENTATION.html, Prod bootstrap).
 
 - Run the first apply locally as a metastore admin: the metastore grant is
   admin-only and CI plans ignore it.
-- Register the `-prod` groups it references at the Databricks account level
-  (table below), in particular `grp-sales-data-governance-prod`.
+- The `-prod` groups it references are registered at the Databricks account
+  level (table below).
 - Expect the two-stage workspace apply (`-target` on the workspace, then a
   normal apply) and the manual metastore-grant step.
 - Nest `grp-databricks-ci-prod` in `grp-databricks-platform-prod` and in every
   `grp-<domain>-data-governance-prod` group (Entra ID). Without it CI loses
   `MANAGE` on a catalog as soon as ownership moves to the governance group.
+- After the workspace exists, grant `sp-terraform-prod` `Cost Management
+  Contributor` on the workspace's managed resource group, by hand (it also
+  needs `Contributor` on the resource group).
 
-## 2. Register the remaining groups
+## 2. Groups and marketing grants
 
 Groups are created in Entra ID and registered at the Databricks account level by
 hand (Account Console → User management → Groups). Terraform only references them
@@ -34,14 +37,15 @@ by name.
 | `grp-databricks-platform-dev` / `-prod` | Registered | Owner of the credential, ingestion catalog, and landing/bronze locations |
 | `grp-sales-{stakeholders,analysts,data-engineers,data-governance}-dev` | Registered | Sales catalog ownership and grants (`enable_grants = true` in dev) |
 | `grp-sales-{stakeholders,analysts,data-engineers}-prod` | Registered | Sales grants in prod |
-| `grp-sales-data-governance-prod` | Verify | Owner of `sales_prod` |
+| `grp-sales-data-governance-prod` | Registered | Owner of `sales_prod` |
 | `grp-marketing-data-governance-dev` | Registered | Owner of `marketing_dev` |
-| `grp-marketing-{stakeholders,analysts,data-engineers}-dev` | Not registered | Marketing business-group grants |
-| `grp-marketing-*-prod` (all four) | Not registered | Marketing in prod |
+| `grp-marketing-{stakeholders,analysts,data-engineers}-dev` | Registered | Marketing business-group grants (still off, see below) and dev workspace users |
+| `grp-marketing-*-prod` (all four) | Registered | Marketing in prod, and prod's workspace users |
 
-**Enable marketing grants.** `unity_catalog_marketing` has `enable_grants` as a
-literal `false` in both roots. Once its business groups are registered, switch
-it to `var.enable_grants`.
+**Enable marketing grants.** All marketing groups are registered, so this is
+unblocked. `unity_catalog_marketing` still has `enable_grants` as a literal
+`false` in `platform/catalogs.tf`; switch it to `var.enable_grants` (a code
+change, applied in dev first).
 
 ## 3. Ingestion pipeline
 
@@ -66,25 +70,23 @@ out of scope for this repo (PRD §16) and belongs in a Databricks Asset Bundle.
 
 ## 4. Compute architecture
 
-No compute resource (cluster, SQL warehouse, or serverless) or workspace-level
-ACL is specified. Unity Catalog grants and compute permissions are separate: a
-user with `SELECT` still needs `CAN_ATTACH_TO` on some compute in the
-workspace. A capacity study is also missing (PRD §3 states no volume target).
-The PRD acceptance criterion "supports the expected initial data volumes" is
-deferred with this: it can't be checked until compute is sized against a real
-volume figure.
+Dev has a serverless SQL warehouse (`modules/databricks/compute`, 2X-Small,
+stops after 10 idle minutes) with `CAN_USE` for every workspace group. A
+single-node cluster exists behind `enable_cluster` (off, see 4a), and prod has
+no compute yet. Unity Catalog grants and compute permissions are separate: a
+user with `SELECT` still needs `CAN_ATTACH_TO` (cluster) or `CAN_USE`
+(warehouse) on some compute. A capacity study is still missing (PRD §3 states
+no volume target). The PRD acceptance criterion "supports the expected initial
+data volumes" is deferred with this: it can't be checked until compute is
+sized against a real volume figure.
 
-Decide before adding it to ARCHITECTURE.html:
+Still to decide:
 
-- Serverless SQL warehouses (fully managed, always Unity Catalog enforced)
-  versus provisioned clusters.
-- For clusters: access mode (standard or dedicated only; both reach Unity
-  Catalog) and minimum runtime (dedicated needs 15.4 LTS+ for fine-grained
-  access control).
-- Whether to dedicate compute to a group such as
-  `grp-sales-data-engineers-<env>` so attach rights and data grants align.
-- Per-group ACLs (`CAN_ATTACH_TO`, `CAN_RESTART`, `CAN_MANAGE`) via
-  `databricks_permissions`.
+- Compute for prod, and who needs it.
+- For clusters, once one can run: access mode (standard or dedicated only; both
+  reach Unity Catalog), minimum runtime (dedicated needs 15.4 LTS+ for
+  fine-grained access control), and whether to dedicate compute to a group such
+  as `grp-sales-data-engineers-<env>` so attach rights and data grants align.
 
 ## 4a. Enable the shared cluster
 
@@ -141,8 +143,11 @@ lifecycle handling once real volumes exist.
   see drift in resources with `ignore_changes` (the metastore grant), and its prod
   job is only meaningful after prod's first apply.
 - **Cost visibility (PRD §12).** Tags and per-resource-group budgets exist, but
-  budgets only notify. Check whether the metastore's own resource group has a
-  budget, and tag compute for DBU cost once compute exists.
+  budgets only notify. Each workspace's NAT gateway costs about 1 EUR a day
+  (about 31 EUR a month) with no compute running, more than the dev budget of
+  20; this is accepted. `no_public_ip = false` on the workspace would remove it
+  but probably forces a workspace rebuild (not checked). Check whether the
+  metastore's own resource group has a budget, and tag compute for DBU cost.
 - **Lint and security scanning.** CI runs `fmt`, `validate`, and `plan` only.
   Add `tflint` and a scanner such as `checkov` or `trivy config`.
 - **Fine-grained DML privileges.** Engineers get blanket `MODIFY` because the

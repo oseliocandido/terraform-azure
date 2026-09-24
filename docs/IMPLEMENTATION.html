@@ -152,7 +152,7 @@ the design; this document lists every module, the objects it creates, and the
 mechanics that matter when operating it. The repo is the source of truth for exact
 arguments.</p>
 <p><strong>Status.</strong> <code>dev</code> is applied and converged (<code>terraform plan</code> shows no changes).
-<code>prod</code> is coded identically but never applied; see <a href="#prod-bootstrap">Prod bootstrap</a>.</p></div>
+<code>prod</code> uses the same root and is planned, but has never had a full apply; see <a href="#prod-bootstrap">Prod bootstrap</a>.</p></div>
 <section id="layout"><h2><span class="num">01</span>Layout</h2><pre class="code"><code class="language-text">modules/
 ├── naming/                name suffix and tags, no resources
 ├── azure/
@@ -236,7 +236,10 @@ environment. To destroy one on purpose, remove its <code>prevent_destroy</code> 
 version declared each resource twice so only prod was protected; <code>moved</code> blocks carried dev's existing state over to
 the single resources.)</p>
 <p>A new source system is one entry in <code>landing_source_systems</code>; its container,
-retention prefix, external location, and volumes follow from it.</p>
+retention prefix, external location, and volumes follow from it. The list must not be empty: the
+retention policy's <code>prefix_match</code> is built from it, and a rule with no prefix applies to every blob in the
+account, including the bronze and managed containers that hold Delta tables (a variable validation enforces this).
+Azure allows at most 10 prefixes per rule.</p>
 <h3><code>modules/azure/cost_budget</code></h3>
 <div style="overflow-x:auto"><table>
 <thead>
@@ -290,6 +293,12 @@ workspace's own managed resource group.</p>
 The credential and external locations are not here: they need metastore grants, and
 this module holds the workspace the <code>databricks</code> provider's <code>host</code> depends on, so
 depending on those grants would create a cycle.</p>
+<p><strong>Managed resource group.</strong> Azure creates <code>databricks-rg-&lt;workspace resource group&gt;</code> for every workspace; Terraform
+does not manage it. The link is Azure's own: the group's <code>managedBy</code> property (not a tag) holds the workspace ID and the
+workspace's <code>managedResourceGroupId</code> holds the group's. It holds the workspace's VNet, NSG, NAT gateway and public IP, DBFS root
+storage and cluster VMs, is locked against edits, is deleted with the workspace, and receives the workspace's tags. The NAT gateway bills
+about 1 EUR a day (about 31 EUR a month) even with no compute running; setting <code>no_public_ip = false</code> would remove it but was not
+adopted.</p>
 <h3><code>modules/databricks/uc_storage</code> (once per environment)</h3>
 <p>Everything is owned by <code>grp-databricks-platform-&lt;env&gt;</code>, referenced as a bare string
 so the group needs no workspace membership.</p>
@@ -626,7 +635,10 @@ is enough to create it and the access connector.</p></section>
 </table></div>
 <p><code>drift-detection.yml</code> is a manual workflow that never applies. It runs <code>plan -refresh-only</code>
 (state vs Azure/Databricks; a warning, since it can show provider spelling noise) and a
-plain <code>plan</code> (code vs reality; fails on any diff). <code>shared</code> has no CI job.</p></section>
+plain <code>plan</code> (code vs reality; fails on any diff). <code>shared</code> has no CI job.</p>
+<p><strong>Azure roles.</strong> Each <code>sp-terraform-&lt;env&gt;</code> needs <code>Contributor</code> on its environment's resource group and
+<code>Cost Management Contributor</code> on the workspace's managed resource group, so CI can read the budget there. Both are granted by hand, outside
+Terraform, and are lost when the resource groups are recreated: grant them again after a rebuild, once the workspace's managed group exists.</p></section>
 <section id="naming"><h2><span class="num">06</span>Naming</h2><div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -693,7 +705,12 @@ instead of creating another. Never wire the pre-staged access connector in the
 workspace's managed resource group to anything: it inherits that workspace's lifecycle
 and cannot be deleted.</p>
 <p><strong>Groups.</strong> Create each <code>grp-*</code> group in Entra ID and register it in the Databricks
-account before any grant that references it applies.</p></section>
+account before any grant that references it applies.</p>
+<p><strong>Rebuilding an environment.</strong> Unity Catalog objects belong to the metastore, not to a workspace: the storage credential, external
+locations and catalogs survive a workspace's deletion. Recreating the workspace without removing them fails with "already exists". An
+isolated catalog bound only to the deleted workspace is unreachable until it is bound to the new one, which is needed before it can be deleted.
+After a rebuild also grant the CI service principal its Azure roles again (see the CI permission model) and confirm the Entra group nesting.
+Because storage now has <code>prevent_destroy</code>, a full destroy of an environment first needs a reviewed change removing it.</p></section>
 <section id="prod-bootstrap"><h2><span class="num">09</span>Prod bootstrap</h2><p>Prod (<code>platform</code> with <code>config/prod/values.tfvars</code>) has never had a full apply; <code>apply-prod</code> waits
 on the <code>production</code> approval. Its state already holds an early resource group, storage account and budget, under the old
 <code>module.analytics_group</code> address; a <code>moved</code> block in <code>main.tf</code> maps them to <code>module.datalake</code> so an apply
@@ -702,9 +719,11 @@ updates them in place instead of destroying the real prod storage. Before approv
 <li>Run the first prod apply locally as a metastore admin (the metastore grant is
    admin-only and ignored by CI).</li>
 <li>Register the <code>-prod</code> groups the config references: <code>grp-databricks-ci-prod</code>,
-   <code>grp-databricks-platform-prod</code>, and <code>grp-sales-*-prod</code>. <code>grp-marketing-*-prod</code>
-   may stay unregistered.</li>
-<li>Expect the two-stage workspace apply on the first run.</li>
+   <code>grp-databricks-platform-prod</code>, <code>grp-sales-*-prod</code> and <code>grp-marketing-*-prod</code>. All are registered
+   today, and they are required: prod lists both domains in <code>workspace_user_domains</code>.</li>
+<li>Nest <code>grp-databricks-ci-prod</code> in <code>grp-databricks-platform-prod</code> and every <code>grp-&lt;domain&gt;-data-governance-prod</code> in Entra ID.</li>
+<li>Expect the two-stage workspace apply on the first run, then grant <code>sp-terraform-prod</code> <code>Cost Management Contributor</code> on the
+   workspace's managed resource group.</li>
 </ol></section>
 
     <div class="footer">

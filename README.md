@@ -16,7 +16,7 @@ it are not.
 | **Analytics** | Azure Databricks, Unity Catalog |
 | **IaC** | Terraform (`azurerm`, `databricks` providers) |
 | **CI/CD** | GitHub Actions, OIDC (no client secrets) |
-| **Status** | `dev` applied and converged · `prod` coded, not yet applied |
+| **Status** | `dev` applied and converged · `prod` planned, not yet fully applied |
 
 ## What it builds
 
@@ -36,6 +36,9 @@ flowchart LR
   catalog with refined and business-ready schemas.
 - **Access:** report consumers see gold, analysts see silver and gold, data
   engineers see all stages. Every object is owned by a group, never a person.
+- **Compute:** a serverless SQL warehouse (2X-Small, stops after 10 idle minutes)
+  in dev. A single-node cluster is in the code but switched off, because no
+  classic cluster can start on this subscription (see Known limitations).
 
 ## Architecture at a glance
 
@@ -120,6 +123,8 @@ flowchart LR
 - **CI is not a metastore admin.** It holds explicit grants on what it manages.
   A few metastore-level grants are applied once by an admin and ignored by CI plans.
 - **Storage is protected**: `prevent_destroy` on the storage account and containers in every environment, plus 14-day soft delete in prod (7 elsewhere).
+- **Cost alerts.** Each environment's resource group, and each workspace's managed
+  resource group, has a monthly budget that emails at 20% and 40% of the amount.
 
 ## Environments
 
@@ -145,6 +150,10 @@ terraform plan -var-file=../config/common.tfvars -var-file=../config/dev/values.
 ```
 
 - Sign in first with `az login`. Databricks resources use the same Azure identity.
+- The backend file, the values file and the environment must all be the same one
+  (`dev` or `prod`). Mixing them, for example prod state with dev values, plans to
+  destroy the other environment's resources. Add `-reconfigure` to `init` when
+  switching; never answer yes to a prompt that offers to copy state.
 - On a brand-new environment, apply the workspace first
   (`-target=module.databricks_workspace.azurerm_databricks_workspace.this`), then
   run a normal apply. Later applies are a single step.
@@ -200,6 +209,15 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
   boundary. Splitting prod later is a configuration change, not a redesign.
 - App registrations, the metastore, and Entra ID groups were created by one-time
   steps outside Terraform, because a pipeline cannot create the identity it runs as.
-- Business-group grants for `marketing` are off until its Entra groups are
-  registered in Databricks, and the ingestion job that fills bronze is not built.
+- Business-group grants for `marketing` are still switched off in code (a literal
+  `false`), although its groups are now registered in Databricks. The ingestion
+  job that fills bronze is not built.
+- **Compute is limited by the subscription.** It has a 4 vCPU regional quota in
+  `northeurope`, and the usual small VM sizes are restricted, so no classic
+  cluster can start. Only a serverless SQL warehouse runs; Python runs on
+  serverless notebook compute. See [Backlog](docs/BACKLOG.md), item 4a.
+- **Fixed cost.** Each workspace's managed network has a NAT gateway that bills
+  about 1 EUR a day (about 31 EUR a month) whether or not anything runs. This is
+  accepted for now.
+- `shared` is applied once, by hand, and has no CI job.
 - Networking is deferred: public defaults, no private endpoints or VNet injection.
