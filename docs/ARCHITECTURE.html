@@ -236,17 +236,19 @@ auto-loaded and must always be passed explicitly with <code>-var-file</code>.</p
     <section id="p1-azure-resource-topology">
       <div class="decision-block">
         <h2><span class="num">1.2</span>Azure resource topology</h2>
-        <p>One subscription (the account tier allows only one), three resource groups, and
-one shared Terraform backend storage account.</p>
+        <p>One subscription (the account tier allows only one), three resource groups you create, one
+managed resource group Azure adds per workspace, and one shared Terraform backend storage account.</p>
 <pre class="mermaid">
 flowchart TB
     subgraph sub[&quot;Subscription (single, shared by all environments)&quot;]
         rgbackend[&quot;rg-terraform-backend&lt;br/&gt;sttfstateanalyticsneu01 / container tfstate&lt;br/&gt;holds ALL environments&#x27; state files&quot;]
         rgdev[&quot;rg-analytics-dev-neu-01&lt;br/&gt;stanalyticsdevneu01&quot;]
         rgprod[&quot;rg-analytics-prod-neu-01&lt;br/&gt;stanalyticsprodneu01b&quot;]
+        mrgdev[&quot;databricks-rg-rg-analytics-dev-neu-01&lt;br/&gt;managed by the workspace: network, NAT gateway, DBFS&quot;]
     end
 
-    spdev[&quot;sp-terraform-dev&lt;br/&gt;Contributor on rgdev only&quot;] --&gt;|scoped to| rgdev
+    spdev[&quot;sp-terraform-dev&lt;br/&gt;Contributor on rgdev, Cost Management Contributor on its managed group&quot;] --&gt;|scoped to| rgdev
+    rgdev -.-&gt;|workspace creates| mrgdev
     spprod[&quot;sp-terraform-prod&lt;br/&gt;Contributor on rgprod only&quot;] --&gt;|scoped to| rgprod
 
     style rgbackend fill:#2c3e50,stroke:#95a5a6
@@ -256,6 +258,12 @@ flowchart TB
 connector; the workspace's own managed resource group is budgeted separately.
 Each resource group holds one budget, scoped to that resource group and
 notifying at 20% and 40% of the configured monthly amount.</p>
+<p>Azure creates the managed resource group itself, named <code>databricks-rg-&lt;workspace resource group&gt;</code>
+by default (prod's appears after its first full apply). The link is stored by Azure in both directions: the group's
+<code>managedBy</code> property (not a tag) holds the workspace's resource ID, and the workspace's
+<code>managedResourceGroupId</code> holds the group's. <code>az group list --query "[?managedBy!=null]"</code> lists every pair.
+The group holds the workspace's network (including a NAT gateway), DBFS root storage and cluster VMs. It is locked against
+edits, deleted with the workspace, and gets the workspace's tags copied onto it, so its costs carry the same tags.</p>
 <p><code>stanalyticsprodneu01b</code> carries a trailing <code>b</code> because storage account names are
 globally unique across all of Azure. <code>storage_account_suffix</code> sets it and changes
 only the storage account name, never the resource group's.</p>
@@ -342,8 +350,8 @@ pipeline run cannot mint a token that authenticates as <code>prod</code>.</p>
 </thead>
 <tbody>
 <tr>
-<td>One Terraform root per environment, each with its own state, instead of one root with per-environment conditionals</td>
-<td>A <code>dev</code> change cannot surface in a <code>prod</code> plan, and one state file never spans every environment</td>
+<td>One Terraform root for both environments, with a state, a backend key and a values file per environment</td>
+<td>The composition exists once, so dev and prod cannot drift apart in code. A <code>dev</code> change still cannot surface in a <code>prod</code> plan, because each environment has its own state and values, and one state file never spans both. Differences are variables (<code>enable_compute</code>, <code>workspace_user_domains</code>, <code>bronze_consumer_can_write</code>); only the state key is in <code>config/&lt;env&gt;/backend.hcl</code></td>
 </tr>
 <tr>
 <td>One OIDC identity (App Registration and federated credential) per environment</td>
@@ -364,6 +372,18 @@ pipeline run cannot mint a token that authenticates as <code>prod</code>.</p>
 <tr>
 <td>Destructive-change detection flags any <code>delete</code> in a plan</td>
 <td>A resource-type swap appears as a separate delete and create, not a paired replace. The warning is informational and never blocks a merge</td>
+</tr>
+<tr>
+<td>The name suffix and the tags are built once, in the <code>naming</code> module</td>
+<td>The region-code map and the tag set were duplicated in two modules and could drift. The root computes both once and passes them down</td>
+</tr>
+<tr>
+<td>Storage has <code>prevent_destroy</code> in every environment, not only prod</td>
+<td>Terraform cannot make <code>prevent_destroy</code> conditional, so it sits on the single resources. Destroying dev storage now needs a reviewed change that removes it first</td>
+</tr>
+<tr>
+<td>Compute is a serverless SQL warehouse; the cluster is switched off</td>
+<td>The subscription has a 4 vCPU regional quota and restricts the common small VM sizes, so no classic cluster can start. Serverless compute does not use that quota</td>
 </tr>
 </tbody>
 </table></div>
@@ -386,7 +406,7 @@ flowchart TB
   S2 --> G2["marketing_‹env›.gold"]
         </pre>
         <p>One Azure resource group per environment holds a premium Databricks
-        workspace, an access connector, and one ADLS Gen2 account. One Unity
+        workspace, an access connector, and one ADLS Gen2 account (Azure adds a managed resource group for the workspace's own network and compute). One Unity
         Catalog metastore per region is shared by <span class="pill dev">dev</span>
         and <span class="pill prod">prod</span>.</p>
       </div>
@@ -397,7 +417,7 @@ flowchart TB
         <h2><span class="num">2.2</span>Environments &amp; isolation</h2>
         <div class="cdc dec"><span class="tag">Decision</span>
           <ul>
-            <li>One Azure subscription. Each environment has its own resource group and its own CI service principal with <code>Contributor</code> scoped to that group only.</li>
+            <li>One Azure subscription. Each environment has its own resource group and its own CI service principal with <code>Contributor</code> scoped to that group, plus <code>Cost Management Contributor</code> on the workspace's managed resource group (to read its budget).</li>
             <li>One metastore (account-level, per region) shared by both environments. Data-layer isolation comes from <b>workspace-bound catalogs</b>, not separate metastores.</li>
             <li>The metastore has its own resource group and storage, outside both environments, so it outlives any single workspace. Databricks' auto-created access connector in a workspace's managed resource group is unused.</li>
           </ul>
@@ -428,6 +448,8 @@ flowchart TB
         <ul>
           <li>One <b>premium</b> workspace per environment (Unity Catalog requires premium), with default public networking.</li>
           <li>An access connector (managed identity) holds <code>Storage Blob Data Contributor</code> on the storage account and backs a single storage credential per environment, <code>cred-analytics-&lt;env&gt;</code>. No secrets to rotate.</li>
+          <li><b>Compute.</b> A serverless SQL warehouse (2X-Small, stops after 10 idle minutes). A single-node cluster exists in the code but is off: the subscription has a 4 vCPU regional quota in <code>northeurope</code> and restricts the common small VM sizes, so no classic cluster can start. The warehouse runs SQL only; Python runs on serverless notebook compute.</li>
+          <li><b>Workspace users.</b> Each domain's data engineers, analysts and stakeholders are workspace users; the platform and governance groups are not, since they only own Unity Catalog objects. Data engineers can restart the cluster (when enabled) and every workspace group can use the warehouse.</li>
         </ul>
       </div>
     </section>
@@ -522,7 +544,7 @@ flowchart TB
         <h2><span class="num">2.12</span>Secrets &amp; networking</h2>
         <ul>
           <li><b>Secrets.</b> Everything is identity-based (OIDC for CI, managed identity for storage, Entra ID for users), so there are no standing secrets. If one becomes unavoidable, it goes in a Key-Vault-backed secret scope to keep one permission system.</li>
-          <li><b>Networking.</b> Deferred: no private endpoints, VNet injection, or NSGs. The workspace and storage account use Azure's public defaults.</li>
+          <li><b>Networking.</b> Deferred: no private endpoints, VNet injection, or NSGs. The workspace and storage account use Azure's public defaults. The workspace's managed network uses secure cluster connectivity, which adds a NAT gateway billed about 1 EUR a day (about 31 EUR a month) whether or not compute runs; this fixed cost is accepted.</li>
         </ul>
       </div>
     </section>
