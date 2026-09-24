@@ -25,12 +25,12 @@ variable "workspace_id" {
 
 variable "storage_credential_name" {
   type        = string
-  description = "The environment-scoped storage credential's own name/id -- output of modules/databricks/storage, called once per environment (not per domain, since the credential isn't domain-specific). Backs this domain's own \"managed\" external location."
+  description = "The environment-scoped storage credential's own name/id -- output of modules/databricks/uc_storage, called once per environment (not per domain, since the credential isn't domain-specific). Backs this domain's own \"managed\" external location."
 }
 
 variable "catalog_storage_root" {
   type        = string
-  description = "abfss:// URL for this domain's own managed-storage root -- from modules/analytics's managed container. Backs silver/gold (and any other managed schema/table) instead of falling back to the metastore's shared storage_root."
+  description = "abfss:// URL for this domain's own managed-storage root -- from modules/azure/datalake's managed container. Backs silver/gold (and any other managed schema/table) instead of falling back to the metastore's shared storage_root."
 }
 
 variable "ci_service_principal_name" {
@@ -40,7 +40,7 @@ variable "ci_service_principal_name" {
 
 variable "ci_group_name" {
   type        = string
-  description = "grp-databricks-ci-dev / grp-databricks-ci-prod -- granted CREATE_EXTERNAL_TABLE on this domain's \"managed\" external location, since Terraform has to keep reading it on every future plan and that object's owner is this domain's own governance group, not CI. See modules/databricks/storage's identical grant for the fuller reasoning."
+  description = "grp-databricks-ci-dev / grp-databricks-ci-prod -- granted CREATE_EXTERNAL_TABLE on this domain's \"managed\" external location, since Terraform has to keep reading it on every future plan and that object's owner is this domain's own governance group, not CI. See modules/databricks/uc_storage's identical grant for the fuller reasoning."
 }
 
 variable "enable_grants" {

@@ -70,13 +70,14 @@ workspace even for users who hold grants.
 
 ## Terraform structure
 
-Five reusable modules with no state of their own: `analytics` (resource group,
-storage, containers), `budget_alert`, and three under `databricks/`
-(`workspaces`, `storage`, `unity_catalog`). Each environment root (`dev`, `prod`)
-composes them and keeps its own state; `shared` holds the account-level
-metastore. `unity_catalog` is called once per business domain, so adding a domain
-is one more module call. `storage` is called once per environment because the
-storage credential and the raw ingestion layer are shared by every domain.
+Six reusable modules with no state of their own, grouped by plane: `azure/`
+(`datalake`: resource group, storage, containers; `cost_budget`) and `databricks/`
+(`workspace`, `uc_storage`, `uc_ingestion`, `uc_domain_catalog`). Each environment
+root (`dev`, `prod`) composes them and keeps its own state; `shared` holds the
+account-level metastore. `uc_domain_catalog` is called once per business domain,
+so adding a domain is one more module call. `uc_storage` and `uc_ingestion` are
+called once per environment because the storage credential and the raw ingestion
+layer are shared by every domain.
 The module diagram and every object are in [ARCHITECTURE](docs/ARCHITECTURE.html)
 and [IMPLEMENTATION](docs/IMPLEMENTATION.html).
 
@@ -144,7 +145,7 @@ terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars
   run a normal apply. Later applies are a single step.
 
 Every taggable resource carries `managed_by`, `repository`, `cost_center`,
-`data_owner`, `terraform_layer`, `workload` and `environment`. Names follow
+`data_owner`, `workload` and `environment`. Names follow
 `<type>-<workload>-<env>-<region>-<instance>`, for example `rg-analytics-dev-neu-01`.
 
 ## Documentation
@@ -162,12 +163,14 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 ```text
 .
 ├── modules/
-│   ├── analytics/            # resource group, storage account, containers
-│   ├── budget_alert/         # resource-group budget
+│   ├── azure/
+│   │   ├── datalake/          # resource group, storage account, containers
+│   │   └── cost_budget/       # resource-group budget
 │   └── databricks/
-│       ├── workspaces/       # workspace, access connector, metastore assignment
-│       ├── storage/          # credential, external locations, ingestion catalog
-│       └── unity_catalog/    # per-domain catalog, schemas, grants
+│       ├── workspace/         # workspace, access connector, metastore assignment
+│       ├── uc_storage/        # storage credential, external locations
+│       ├── uc_ingestion/      # ingestion catalog, bronze schema, volumes
+│       └── uc_domain_catalog/ # per-domain catalog, schemas, grants
 ├── environments/
 │   ├── common.tfvars         # values shared by every environment
 │   ├── dev/  prod/           # root modules, own state and tfvars

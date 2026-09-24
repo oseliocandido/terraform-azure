@@ -154,22 +154,24 @@ arguments.</p>
 <p><strong>Status.</strong> <code>dev</code> is applied and converged (<code>terraform plan</code> shows no changes).
 <code>prod</code> is coded identically but never applied; see <a href="#prod-bootstrap">Prod bootstrap</a>.</p></div>
 <section id="layout"><h2><span class="num">01</span>Layout</h2><pre class="code"><code class="language-text">modules/
-├── analytics/          RG, storage account, containers, landing retention
-├── budget_alert/       RG-scoped budget with spend alerts
+├── azure/
+│   ├── datalake/          RG, storage account, containers, landing retention
+│   └── cost_budget/       RG-scoped budget with spend alerts
 └── databricks/
-    ├── workspaces/     workspace, access connector, metastore assignment
-    ├── storage/        once per environment: credential, external locations, ingestion catalog
-    └── unity_catalog/  once per domain: catalog, silver/gold, grants
+    ├── workspace/         workspace, access connector, metastore assignment
+    ├── uc_storage/        once per environment: credential, external locations
+    ├── uc_ingestion/      once per environment: ingestion catalog, bronze, volumes
+    └── uc_domain_catalog/ once per domain: catalog, silver/gold, grants
 environments/
 ├── common.tfvars       values shared by every root (passed with -var-file, not auto-loaded)
 ├── dev/  prod/         root modules, own state and tfvars
 └── shared/             account-level metastore, applied by hand
 .github/workflows/      terraform.yml (plan/apply), drift-detection.yml (manual)
 </code></pre>
-<p><code>storage</code> is separate from <code>unity_catalog</code> because the credential and the raw
-ingestion layer are environment-wide, not per domain. Module state addresses come
+<p><code>uc_storage</code> and <code>uc_ingestion</code> are separate from <code>uc_domain_catalog</code> because the
+credential, the locations and the raw ingestion layer are environment-wide, not per domain. Module state addresses come
 from the call label, not the <code>source</code> path.</p></section>
-<section id="objects-by-module"><h2><span class="num">02</span>Objects by module</h2><h3><code>modules/analytics</code></h3>
+<section id="objects-by-module"><h2><span class="num">02</span>Objects by module</h2><h3><code>modules/azure/datalake</code></h3>
 <div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -226,7 +228,7 @@ whichever exists, so outputs are identical. To destroy a prod resource on purpos
 remove its <code>prevent_destroy</code> in a reviewed change first.</p>
 <p>A new source system is one entry in <code>landing_source_systems</code>; its container,
 retention prefix, external location, and volumes follow from it.</p>
-<h3><code>modules/budget_alert</code></h3>
+<h3><code>modules/azure/cost_budget</code></h3>
 <div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -243,7 +245,7 @@ retention prefix, external location, and volumes follow from it.</p>
 </table></div>
 <p>Used twice per environment: on the analytics resource group and on the Databricks
 workspace's own managed resource group.</p>
-<h3><code>modules/databricks/workspaces</code></h3>
+<h3><code>modules/databricks/workspace</code></h3>
 <div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -279,7 +281,7 @@ workspace's own managed resource group.</p>
 The credential and external locations are not here: they need metastore grants, and
 this module holds the workspace the <code>databricks</code> provider's <code>host</code> depends on, so
 depending on those grants would create a cycle.</p>
-<h3><code>modules/databricks/storage</code> (once per environment)</h3>
+<h3><code>modules/databricks/uc_storage</code> (once per environment)</h3>
 <p>Everything is owned by <code>grp-databricks-platform-&lt;env&gt;</code>, referenced as a bare string
 so the group needs no workspace membership.</p>
 <div style="overflow-x:auto"><table>
@@ -312,6 +314,27 @@ so the group needs no workspace membership.</p>
 <td></td>
 </tr>
 <tr>
+<td><code>databricks_grants.credential_ci</code>, <code>bronze_ci</code>, <code>landing_ci</code>, <code>ingestion_managed_ci</code></td>
+<td>CI: <code>CREATE_EXTERNAL_LOCATION</code> on the credential, <code>CREATE_EXTERNAL_TABLE</code> on each location</td>
+<td>Ownership does not cascade to CI</td>
+</tr>
+</tbody>
+</table></div>
+<p>Inputs: <code>environment</code>, <code>access_connector_id</code>, <code>resource_group_name</code>, <code>subscription_id</code>,
+<code>ci_group_name</code>, <code>bronze_storage_root</code>, <code>landing_storage_roots</code>, <code>ingestion_catalog_storage_root</code>.
+Outputs: <code>storage_credential_name</code>, <code>ingestion_managed_location_url</code>, <code>landing_location_urls</code>.</p>
+<h3><code>modules/databricks/uc_ingestion</code> (once per environment)</h3>
+<p>Owned by the same platform group. Needs the locations from <code>uc_storage</code> to exist first.</p>
+<div style="overflow-x:auto"><table>
+<thead>
+<tr>
+<th>Object</th>
+<th>What it is</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
 <td><code>databricks_catalog.ingestion</code></td>
 <td><code>ingestion_&lt;env&gt;</code>, the non-domain catalog for raw data</td>
 <td><code>ISOLATED</code></td>
@@ -337,11 +360,6 @@ so the group needs no workspace membership.</p>
 <td>Stored in the <code>bronze</code> container (the schema's root overrides the catalog's)</td>
 </tr>
 <tr>
-<td><code>databricks_grants.credential_ci</code>, <code>bronze_ci</code>, <code>landing_ci</code>, <code>ingestion_managed_ci</code></td>
-<td>CI: <code>CREATE_EXTERNAL_LOCATION</code> on the credential, <code>CREATE_EXTERNAL_TABLE</code> on each location</td>
-<td>Ownership does not cascade to CI</td>
-</tr>
-<tr>
 <td><code>databricks_grants.ingestion_catalog</code></td>
 <td>CI: <code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>CREATE_SCHEMA</code>, <code>CREATE_VOLUME</code>, <code>READ METADATA</code>, <code>READ VOLUME</code>. Consumer group: <code>USE_CATALOG</code></td>
 <td>One grants resource per securable</td>
@@ -363,12 +381,11 @@ so the group needs no workspace membership.</p>
 </tr>
 </tbody>
 </table></div>
-<p>Inputs: <code>environment</code>, <code>metastore_id</code>, <code>workspace_id</code>, <code>access_connector_id</code>,
-<code>resource_group_name</code>, <code>subscription_id</code>, <code>ci_group_name</code>, <code>ci_service_principal_name</code>,
-<code>enable_grants</code>, <code>bronze_consumer_can_write</code>, <code>bronze_consumer_group_name</code>,
-<code>bronze_storage_root</code>, <code>landing_storage_roots</code>, <code>ingestion_catalog_storage_root</code>.
-Output: <code>storage_credential_name</code>.</p>
-<h3><code>modules/databricks/unity_catalog</code> (once per domain)</h3>
+<p>Inputs: <code>environment</code>, <code>metastore_id</code>, <code>workspace_id</code>, <code>ci_service_principal_name</code>,
+<code>catalog_storage_root</code>, <code>bronze_storage_root</code>, <code>landing_location_urls</code>,
+<code>bronze_consumer_group_name</code>, <code>bronze_consumer_can_write</code>, <code>enable_grants</code>.
+Output: <code>catalog_name</code>.</p>
+<h3><code>modules/databricks/uc_domain_catalog</code> (once per domain)</h3>
 <p>Inputs: <code>environment</code>, <code>domain</code> (required), <code>metastore_id</code>, <code>workspace_id</code>,
 <code>storage_credential_name</code>, <code>catalog_storage_root</code>, <code>ci_service_principal_name</code>,
 <code>ci_group_name</code>, <code>enable_grants</code>. Group names derive from <code>var.domain</code>; the owner is
@@ -438,7 +455,7 @@ authoritative) is used over <code>databricks_grant</code> so Terraform is the si
 </thead>
 <tbody>
 <tr>
-<td><code>module.analytics_group</code>, <code>budget_alert</code></td>
+<td><code>module.datalake</code>, <code>budget_alert</code></td>
 <td>Resource group, storage, and the budget (<code>additional_domains = ["marketing", "ingestion"]</code>)</td>
 </tr>
 <tr>
@@ -458,12 +475,12 @@ authoritative) is used over <code>databricks_grant</code> so Terraform is the si
 <td><code>CREATE_CATALOG</code>, <code>CREATE_EXTERNAL_LOCATION</code>, <code>CREATE_STORAGE_CREDENTIAL</code> for both CI groups. <code>ignore_changes = [grant]</code></td>
 </tr>
 <tr>
-<td><code>module.platform_storage</code></td>
-<td>The <code>storage</code> module; depends on the metastore grant</td>
+<td><code>module.uc_storage</code>, <code>module.uc_ingestion</code></td>
+<td>The credential and locations, then the ingestion catalog; both depend on the metastore grant</td>
 </tr>
 <tr>
 <td><code>module.unity_catalog_sales</code>, <code>module.unity_catalog_marketing</code></td>
-<td>The <code>unity_catalog</code> module once per domain</td>
+<td>The <code>uc_domain_catalog</code> module once per domain</td>
 </tr>
 </tbody>
 </table></div>

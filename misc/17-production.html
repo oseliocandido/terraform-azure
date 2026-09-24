@@ -297,7 +297,6 @@ flowchart TB
     environment      = var.environment
     managed_by       = "terraform"
     repository       = var.repository_url        # where the code lives
-    terraform_layer  = "20-data"                 # which state owns this
     cost_center      = var.cost_center
     data_owner       = var.data_owner            # a team, not a person
     criticality      = var.criticality           # drives on-call and DR policy
@@ -311,7 +310,6 @@ flowchart TB
   <tbody>
     <tr><td><code>managed_by = "terraform"</code></td><td>Tells an engineer in the portal not to click. Also lets you find unmanaged resources with a policy query.</td></tr>
     <tr><td><code>repository</code></td><td>Answers “where is the code for this?” — the single most common question during an incident.</td></tr>
-    <tr><td><code>terraform_layer</code></td><td>Answers “which state file owns this?” in a layered setup. Saves genuine time.</td></tr>
     <tr><td><code>cost_center</code></td><td>Makes Azure Cost Management usable. Retrofitting this is painful.</td></tr>
     <tr><td><code>data_owner</code></td><td>A team name. Person names go stale within a year.</td></tr>
   </tbody>

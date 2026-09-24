@@ -159,7 +159,7 @@ resource "azurerm_storage_account" "analytics_protected" {
   }
 }
 
-# bronze -- backs modules/databricks/storage's own bronze schema
+# bronze -- backs modules/databricks/uc_ingestion's own bronze schema
 # (databricks_schema.bronze), which is a plain Unity-Catalog-MANAGED schema
 # (schemas have no EXTERNAL/MANAGED type at all -- only tables/volumes do),
 # just pointed at its own container instead of falling through to
@@ -202,7 +202,7 @@ resource "azurerm_storage_container" "bronze_protected" {
 # which also covers the bronze schema's internal __unitystorage/...
 # managed-table writes, making file events there track that internal
 # churn too, not just genuine external drops (see bronze's external
-# location comment in modules/databricks/unity_catalog/main.tf). A
+# location comment in modules/databricks/uc_domain_catalog/main.tf). A
 # dedicated container has none of that internal traffic, so file events
 # are safe to enable on it.
 #
@@ -211,11 +211,8 @@ resource "azurerm_storage_container" "bronze_protected" {
 # lifecycle rule in a way bronze's own Delta storage isn't (see that
 # resource's own comment).
 #
-# for_each keyed by source-system name, not a fixed pair of resources --
-# renamed off azurerm_storage_container.landing_pos/landing_ecommerce (moved
-# blocks below protect dev's already-applied landing-pos/landing-ecommerce
-# containers from a destroy/recreate) specifically so a third source system
-# is one addition to var.landing_source_systems, not a second Terraform
+# for_each keyed by source-system name, not a fixed pair of resources, so a
+# third source system is one addition to var.landing_source_systems, not a second Terraform
 # resource block to hand-write and a second prefix_match entry to remember.
 resource "azurerm_storage_container" "landing" {
   for_each = local.is_prod ? toset([]) : toset(var.landing_source_systems)
@@ -239,19 +236,9 @@ resource "azurerm_storage_container" "landing_protected" {
   }
 }
 
-moved {
-  from = azurerm_storage_container.landing_pos
-  to   = azurerm_storage_container.landing["pos"]
-}
-
-moved {
-  from = azurerm_storage_container.landing_ecommerce
-  to   = azurerm_storage_container.landing["ecommerce"]
-}
-
 # managed-sales -- the Unity Catalog managed-storage root for the ORIGINAL
 # domain's (sales) catalog, set as databricks_catalog.this's own
-# storage_root (see modules/databricks/unity_catalog/main.tf) via
+# storage_root (see modules/databricks/uc_domain_catalog/main.tf) via
 # module.unity_catalog_sales's own call site. Every domain after this one
 # gets its own container instead -- see azurerm_storage_container.managed_domain
 # below and var.additional_domains. silver/gold schemas have no
@@ -384,19 +371,3 @@ resource "azurerm_storage_management_policy" "default_retention_policy" {
   }
 }
 
-# Dev's already-applied resources gained a count/for_each index when the
-# prod-only protected variants were added.
-moved {
-  from = azurerm_storage_account.analytics
-  to   = azurerm_storage_account.analytics[0]
-}
-
-moved {
-  from = azurerm_storage_container.bronze
-  to   = azurerm_storage_container.bronze[0]
-}
-
-moved {
-  from = azurerm_storage_container.managed
-  to   = azurerm_storage_container.managed[0]
-}

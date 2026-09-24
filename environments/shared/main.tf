@@ -26,9 +26,6 @@ resource "databricks_metastore" "primary" {
   region = "northeurope"
   api    = "account" # explicit -- auto-inference from provider host wasn't reliable here
 
-  # Real container, confirmed directly in the Azure Portal (not guessed):
-  # stucmetastoreneu01 has a "metastore" container already created for
-  # exactly this purpose.
   storage_root = "abfss://metastore@stucmetastoreneu01.dfs.core.windows.net/"
 
   # storage_root is ForceNew -- setting it destroys and recreates the whole
