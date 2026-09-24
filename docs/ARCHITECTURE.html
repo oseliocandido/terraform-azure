@@ -424,7 +424,7 @@ flowchart TB
         </table>
         <p><span class="pill silver">silver</span> and <span class="pill gold">gold</span> have no container; they are managed schemas inside their catalog's root. One container per catalog keeps external-location registrations non-overlapping and limits blast radius.</p>
         <div class="cdc dec"><span class="tag">Retention</span><p>A blob lifecycle policy (cool at 90 days, archive at 1 year, delete at 5 years) applies to <code>landing-*</code> only. Bronze holds Delta tables, and a blob-age policy cannot see the Delta log, so it would risk corrupting them. Delta-native retention for bronze and silver is pipeline work.</p></div>
-        <div class="cdc dec"><span class="tag">Durability</span><p>In prod the storage account and its containers have <code>prevent_destroy</code>, soft delete for blobs and containers is 14 days (7 elsewhere), and replication is GZRS.</p></div>
+        <div class="cdc dec"><span class="tag">Durability</span><p>In every environment the storage account and its containers have <code>prevent_destroy</code>. In prod, soft delete for blobs and containers is 14 days (7 elsewhere) and replication is GZRS.</p></div>
       </div>
     </section>
 

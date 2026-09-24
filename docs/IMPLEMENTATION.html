@@ -194,14 +194,14 @@ from the call label, not the <code>source</code> path.</p></section>
 <td>Tagged</td>
 </tr>
 <tr>
-<td><code>azurerm_storage_account.analytics</code> / <code>.analytics_protected</code></td>
+<td><code>azurerm_storage_account.analytics</code></td>
 <td>ADLS Gen2 account (hierarchical namespace, TLS 1.2, private, AAD-only, no shared keys)</td>
-<td>GZRS in prod, LRS elsewhere. Soft delete 14 days in prod, 7 elsewhere. Versioning off. The <code>_protected</code> twin exists only in prod and has <code>prevent_destroy</code></td>
+<td>GZRS in prod, LRS elsewhere. Soft delete 14 days in prod, 7 elsewhere. Versioning off. <code>prevent_destroy</code> in every environment</td>
 </tr>
 <tr>
 <td><code>azurerm_storage_container.bronze</code></td>
 <td>Storage for the raw <code>ingestion_&lt;env&gt;.bronze</code> schema</td>
-<td>Same <code>_protected</code> twin pattern in prod. No lifecycle policy (Delta)</td>
+<td><code>prevent_destroy</code> in every environment. No lifecycle policy (Delta)</td>
 </tr>
 <tr>
 <td><code>azurerm_storage_container.landing["&lt;system&gt;"]</code></td>
@@ -228,11 +228,11 @@ from the call label, not the <code>source</code> path.</p></section>
 <p>Outputs: <code>resource_group_id</code>, <code>resource_group_name</code>, <code>storage_account_id</code>,
 <code>storage_account_name</code>, <code>bronze_container_name</code>, <code>landing_container_names</code>,
 <code>managed_container_name</code>, <code>additional_managed_container_names</code>.</p>
-<p><strong>Why twins.</strong> <code>prevent_destroy</code> must be a literal, so it cannot be limited to prod
-with a variable. The account and every container are declared twice (normal and
-<code>*_protected</code>), chosen by <code>count</code>/<code>for_each</code> on <code>local.is_prod</code>. Locals pick
-whichever exists, so outputs are identical. To destroy a prod resource on purpose,
-remove its <code>prevent_destroy</code> in a reviewed change first.</p>
+<p><strong>Destroy protection.</strong> The storage account and every container have <code>prevent_destroy</code> in dev
+and prod alike, so a plan that would destroy or replace one fails. That includes a full <code>terraform destroy</code> of the
+environment. To destroy one on purpose, remove its <code>prevent_destroy</code> in a reviewed change first. (An earlier
+version declared each resource twice so only prod was protected; <code>moved</code> blocks carried dev's existing state over to
+the single resources.)</p>
 <p>A new source system is one entry in <code>landing_source_systems</code>; its container,
 retention prefix, external location, and volumes follow from it.</p>
 <h3><code>modules/azure/cost_budget</code></h3>

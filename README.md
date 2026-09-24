@@ -119,7 +119,7 @@ flowchart LR
   group that owns the catalog (kept separate from the group that writes data).
 - **CI is not a metastore admin.** It holds explicit grants on what it manages.
   A few metastore-level grants are applied once by an admin and ignored by CI plans.
-- **Production storage is protected**: 14-day soft delete and `prevent_destroy`.
+- **Storage is protected**: `prevent_destroy` on the storage account and containers in every environment, plus 14-day soft delete in prod (7 elsewhere).
 
 ## Environments
 

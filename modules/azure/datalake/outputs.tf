@@ -1,6 +1,6 @@
 output "lake_dfs_endpoint" {
   description = "ADLS Gen2 endpoint, for abfss:// access once you reach the Databricks/Auto Loader lessons."
-  value       = local.storage_account_dfs_endpoint
+  value       = azurerm_storage_account.analytics.primary_dfs_endpoint
 }
 
 output "resource_group_id" {
@@ -15,40 +15,40 @@ output "resource_group_name" {
 
 output "storage_account_name" {
   description = "Storage account name -- globally unique, generated from local.sa_name."
-  value       = local.storage_account_name
+  value       = azurerm_storage_account.analytics.name
 }
 
 output "storage_account_id" {
   description = "Storage account resource ID -- for RBAC role assignments scoped to it (e.g. a future Databricks access connector)."
-  value       = local.storage_account_id
+  value       = azurerm_storage_account.analytics.id
 }
 
 output "bronze_container_name" {
   description = "Name of the bronze (raw) medallion-layer container -- registered as a Unity Catalog external location. silver/gold have no equivalent container -- see managed_container_name."
-  value       = local.bronze_container_name
+  value       = azurerm_storage_container.bronze.name
 }
 
 output "landing_container_names" {
   description = "Map of source system (var.landing_source_systems) -> its own \"landing-<system>\" container name. Each is registered as its own Unity Catalog external location, file events enabled -- see modules/databricks/uc_storage/main.tf. landing_pos_container_name/landing_ecommerce_container_name below are convenience lookups into this same map for the two source systems the ingestion modules currently wire up by name; add entries here first if a new source system needs the same treatment."
-  value       = { for s, c in local.landing_containers : s => c.name }
+  value       = { for s, c in azurerm_storage_container.landing : s => c.name }
 }
 
 output "landing_pos_container_name" {
   description = "Name of the point-of-sale source system's dedicated landing container. Convenience lookup into landing_container_names -- see that output's own description."
-  value       = local.landing_containers["pos"].name
+  value       = azurerm_storage_container.landing["pos"].name
 }
 
 output "landing_ecommerce_container_name" {
   description = "Name of the e-commerce source system's dedicated landing container. Convenience lookup into landing_container_names -- see that output's own description."
-  value       = local.landing_containers["ecommerce"].name
+  value       = azurerm_storage_container.landing["ecommerce"].name
 }
 
 output "managed_container_name" {
   description = "Name of the Unity Catalog managed-storage container -- set as the catalog's own storage_root, so silver/gold schemas (and any other managed tables) live under this boundary instead of falling back to the shared metastore-wide storage_root. Backs the ORIGINAL domain (\"sales\") only -- see additional_managed_container_names for every other domain."
-  value       = local.managed_container_name
+  value       = azurerm_storage_container.managed.name
 }
 
 output "additional_managed_container_names" {
   description = "Map of domain -> its own \"managed-<domain>\" container name, one entry per var.additional_domains. Empty map if additional_domains is empty. The original domain (\"sales\") is never in this map -- see managed_container_name."
-  value       = { for domain, c in local.managed_domain_containers : domain => c.name }
+  value       = { for domain, c in azurerm_storage_container.managed_domain : domain => c.name }
 }
