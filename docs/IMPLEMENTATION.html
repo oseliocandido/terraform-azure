@@ -462,8 +462,8 @@ Output: <code>catalog_name</code>.</p>
 <p>Engineers use blanket <code>MODIFY</code> because the metastore's privilege version (1.0)
 rejects <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code> at catalog level. <code>databricks_grants</code> (plural,
 authoritative) is used over <code>databricks_grant</code> so Terraform is the single source of truth.</p>
-<p><code>enable_grants</code> gates business-group grants only. Sales uses <code>var.enable_grants</code>
-(true in dev); marketing uses a literal <code>false</code> until its groups are registered.</p>
+<p><code>enable_grants</code> gates business-group grants only. Sales and marketing both use
+<code>var.enable_grants</code> (true in dev, off in prod until its first apply).</p>
 <h3><code>modules/databricks/compute</code> (once per environment, dev only so far)</h3>
 <div style="overflow-x:auto"><table>
 <thead>
