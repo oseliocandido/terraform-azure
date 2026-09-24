@@ -10,7 +10,7 @@ variable "workload" {
 
 variable "environment" {
   type        = string
-  description = "Deployment environment, dev or prod. Also drives resource names, so it must match the state this run is initialised against. No default -- always set explicitly in environments/<env>.tfvars."
+  description = "Deployment environment, dev or prod. Also drives resource names, so it must match the state this run is initialised against. No default -- always set explicitly in config/<env>/values.tfvars."
 }
 
 variable "location" {
@@ -20,7 +20,7 @@ variable "location" {
 
 variable "instance" {
   type        = number
-  description = "Instance number, for when more than one copy of this workload exists side by side. No default -- always set explicitly in environments/<env>.tfvars."
+  description = "Instance number, for when more than one copy of this workload exists side by side. No default -- always set explicitly in config/<env>/values.tfvars."
 }
 
 variable "notify_email" {
@@ -40,7 +40,7 @@ variable "azure_tenant_id" {
 
 variable "metastore_id" {
   type        = string
-  description = "Account-level Unity Catalog metastore ID -- output of environments/shared (`terraform output metastore_id` from that directory), not created by this module."
+  description = "Account-level Unity Catalog metastore ID -- output of shared (`terraform output metastore_id` from that directory), not created by this module."
 }
 
 variable "ci_service_principal_name" {

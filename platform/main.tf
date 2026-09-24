@@ -1,9 +1,9 @@
 # Azure plane: naming, the data lake, the workspace and their budgets.
 # One copy of this composition serves every environment; what differs is in
-# environments/<env>.tfvars.
+# config/<env>/values.tfvars.
 
 module "naming" {
-  source = "../../modules/naming"
+  source = "../modules/naming"
 
   workload    = var.workload
   environment = var.environment
@@ -27,7 +27,7 @@ moved {
 }
 
 module "datalake" {
-  source = "../../modules/azure/datalake"
+  source = "../modules/azure/datalake"
 
   suffix                 = module.naming.suffix
   environment            = var.environment
@@ -41,7 +41,7 @@ module "datalake" {
 }
 
 module "budget_alert" {
-  source = "../../modules/azure/cost_budget"
+  source = "../modules/azure/cost_budget"
 
   resource_group_id = module.datalake.resource_group_id
   environment       = var.environment
@@ -50,7 +50,7 @@ module "budget_alert" {
 }
 
 module "databricks_workspace" {
-  source = "../../modules/databricks/workspace"
+  source = "../modules/databricks/workspace"
 
   resource_group_name = module.datalake.resource_group_name
   location            = var.location
@@ -64,7 +64,7 @@ module "databricks_workspace" {
 # separately from the first budget's resource group, so it gets its own. Same
 # budget name is fine: a resource-group budget's ID includes the group.
 module "budget_alert_databricks_managed" {
-  source = "../../modules/azure/cost_budget"
+  source = "../modules/azure/cost_budget"
 
   resource_group_id = module.databricks_workspace.managed_resource_group_id
   environment       = var.environment

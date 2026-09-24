@@ -15,7 +15,7 @@ variable "domain" {
 
 variable "metastore_id" {
   type        = string
-  description = "Account-level Unity Catalog metastore ID -- output of environments/shared, not created by this module."
+  description = "Account-level Unity Catalog metastore ID -- output of shared, not created by this module."
 }
 
 variable "workspace_id" {

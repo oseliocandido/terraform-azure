@@ -32,7 +32,7 @@ provider "azurerm" {
 # DATABRICKS_AUTH_TYPE=azure-cli; in CI, terraform.yml sets
 # DATABRICKS_AUTH_TYPE=github-oidc, DATABRICKS_HOST and DATABRICKS_CLIENT_ID on
 # the dev jobs (Databricks' own OAuth token federation, separate from
-# azurerm's ARM_USE_OIDC). prod.tfvars pins "azure-cli" because no prod
+# azurerm's ARM_USE_OIDC). config/prod/values.tfvars pins "azure-cli" because no prod
 # workflow supplies these variables yet.
 #
 # azure_tenant_id is only used by the azure-cli path and is ignored under

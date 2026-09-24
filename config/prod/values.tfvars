@@ -1,5 +1,5 @@
 # Prod values, applied on top of common.tfvars:
-#   terraform plan -var-file=../common.tfvars -var-file=../prod.tfvars
+#   terraform plan -var-file=../config/common.tfvars -var-file=../config/prod/values.tfvars
 
 environment   = "prod"
 budget_amount = 100

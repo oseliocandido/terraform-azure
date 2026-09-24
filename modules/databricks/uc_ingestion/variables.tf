@@ -10,7 +10,7 @@ variable "environment" {
 
 variable "metastore_id" {
   type        = string
-  description = "Account-level Unity Catalog metastore ID (output of environments/shared)."
+  description = "Account-level Unity Catalog metastore ID (output of shared)."
 }
 
 variable "workspace_id" {

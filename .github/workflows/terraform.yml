@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths:
       - "modules/**"
-      - "environments/**"
+      - "platform/**"
+      - "shared/**"
+      - "config/**"
       - ".github/workflows/terraform.yml"
   pull_request:
     branches: [main]
@@ -49,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: environments/platform
+        working-directory: platform
     # Terraform's own azurerm provider fetches its own OIDC token directly
     # (via GitHub's auto-injected ACTIONS_ID_TOKEN_REQUEST_* env vars) using
     # these ARM_* variables -- no azure/login step needed, since nothing
@@ -80,10 +82,10 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init -input=false -backend-config=../dev.backend.hcl
+      - run: terraform init -input=false -backend-config=../config/dev/backend.hcl
       - run: terraform validate
       - id: plan
-        run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=../dev.tfvars -out=tfplan -lock-timeout=5m
+        run: terraform plan -no-color -input=false -var-file=../config/common.tfvars -var-file=../config/dev/values.tfvars -out=tfplan -lock-timeout=5m
 
       - name: Check for destructive changes (any delete, same-resource replace or not)
         id: force_replace
@@ -156,7 +158,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: tfplan-dev
-          path: environments/platform/tfplan
+          path: platform/tfplan
 
   apply-dev:
     needs: plan-dev
@@ -164,7 +166,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: environments/platform
+        working-directory: platform
     # See plan-dev's identical env block for why DATABRICKS_* exists
     # alongside ARM_* -- two separate OIDC exchanges, azurerm's and
     # Databricks' own.
@@ -184,11 +186,11 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init -input=false -backend-config=../dev.backend.hcl
+      - run: terraform init -input=false -backend-config=../config/dev/backend.hcl
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-dev
-          path: environments/platform
+          path: platform
       - run: terraform apply -input=false -lock-timeout=5m tfplan
 
   # --- Prod: plan runs right after dev applies successfully; apply is
@@ -201,7 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: environments/platform
+        working-directory: platform
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -215,9 +217,9 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init -input=false -backend-config=../prod.backend.hcl
+      - run: terraform init -input=false -backend-config=../config/prod/backend.hcl
       - run: terraform validate
-      - run: terraform plan -no-color -input=false -var-file=../common.tfvars -var-file=../prod.tfvars -out=tfplan -lock-timeout=5m
+      - run: terraform plan -no-color -input=false -var-file=../config/common.tfvars -var-file=../config/prod/values.tfvars -out=tfplan -lock-timeout=5m
 
       # Human-readable plan in the job log, for the reviewer approving apply-prod below.
       # (Not a PR comment here, unlike plan-dev -- plan-prod only ever runs
@@ -255,7 +257,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: tfplan-prod
-          path: environments/platform/tfplan
+          path: platform/tfplan
 
   apply-prod:
     needs: plan-prod
@@ -263,7 +265,7 @@ jobs:
     environment: production   # <-- the approval gate: configure a required reviewer on this Environment
     defaults:
       run:
-        working-directory: environments/platform
+        working-directory: platform
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -277,9 +279,9 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init -input=false -backend-config=../prod.backend.hcl
+      - run: terraform init -input=false -backend-config=../config/prod/backend.hcl
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-prod
-          path: environments/platform
+          path: platform
       - run: terraform apply -input=false -lock-timeout=5m tfplan

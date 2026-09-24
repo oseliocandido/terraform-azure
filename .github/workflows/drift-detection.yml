@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: environments/platform
+        working-directory: platform
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -57,11 +57,11 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init -input=false -backend-config=../dev.backend.hcl
+      - run: terraform init -input=false -backend-config=../config/dev/backend.hcl
 
       - name: Check for drift
         run: |
-          args="-no-color -input=false -detailed-exitcode -lock-timeout=5m -var-file=../common.tfvars -var-file=../dev.tfvars"
+          args="-no-color -input=false -detailed-exitcode -lock-timeout=5m -var-file=../config/common.tfvars -var-file=../config/dev/values.tfvars"
 
           echo "::group::1. State vs real infrastructure (refresh-only)"
           refresh=0
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: environments/platform
+        working-directory: platform
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -123,11 +123,11 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - run: terraform init -input=false -backend-config=../prod.backend.hcl
+      - run: terraform init -input=false -backend-config=../config/prod/backend.hcl
 
       - name: Check for drift
         run: |
-          args="-no-color -input=false -detailed-exitcode -lock-timeout=5m -var-file=../common.tfvars -var-file=../prod.tfvars"
+          args="-no-color -input=false -detailed-exitcode -lock-timeout=5m -var-file=../config/common.tfvars -var-file=../config/prod/values.tfvars"
 
           echo "::group::1. State vs real infrastructure (refresh-only)"
           refresh=0

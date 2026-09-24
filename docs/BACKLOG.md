@@ -6,7 +6,7 @@ Items are ordered roughly by how soon they matter.
 
 ## 1. Apply `prod` for the first time
 
-Prod (`environments/platform` with `prod.tfvars`) is coded but has never had a
+Prod (`platform` with `config/prod/values.tfvars`) is coded but has never had a
 full apply; `apply-prod` waits on the `production` approval gate. Its state
 already holds an early resource group, storage account and budget; a `moved`
 block in `main.tf` keeps them (see IMPLEMENTATION.html, Prod bootstrap).
@@ -98,7 +98,7 @@ ones exceed the 4 vCPU regional quota. To turn it on:
   subscription to pay-as-you-go or with an Azure support request.
 - Confirm the node type with `az vm list-skus` and `az vm list-usage` (the
   default `Standard_DS3_v2` is a placeholder), then set `enable_cluster = true`
-  in the `module "compute"` call in `environments/platform/compute.tf`.
+  in the `module "compute"` call in `platform/compute.tf`.
 - Confirm standard access mode is accepted on a single node; if not, switch to
   dedicated access mode for one group.
 
@@ -150,7 +150,7 @@ lifecycle handling once real volumes exist.
   catalog level. Revisit if the privilege version is upgraded; it would allow
   a dev/prod `DELETE` distinction.
 
-## 7. CI for `environments/shared`
+## 7. CI for `shared`
 
 The account-level metastore root has no CI job; every apply is manual with
 `azure-cli` auth. `sp-databricks-account-admin` exists to make this
