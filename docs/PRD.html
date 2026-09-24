@@ -276,6 +276,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       required to support this analytical platform</b>, using Infrastructure
       as Code — intentionally focused on the underlying platform rather
       than implementing production data pipelines.</p>
+      <p>The platform serves more than one business domain. <b>Sales</b> is the first, and <b>Marketing</b> is a second
+      domain on the same platform with the same access model and its own datasets, kept separate from Sales.</p>
       <ul class="checklist">
         <li>Centralized analytical data storage for sales data</li>
         <li>Historical analytical data retention</li>
@@ -305,7 +307,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       <h2><span class="num">03</span> Goals</h2>
       <p>Establish a cloud-based analytical platform foundation capable of
       supporting centralized sales storage, historical sales analysis,
-      revenue/performance analysis, store- and channel-level analysis, and
+      revenue/performance analysis, store- and channel-level analysis, separate
+      datasets and access for each business domain (Sales and Marketing), and
       future ingestion/transformation workloads.</p>
       <div class="bignum">
         <div class="figure">5yr</div>
@@ -333,6 +336,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
         <span class="pill">Cloud analytical storage</span>
         <span class="pill">Databricks infrastructure</span>
         <span class="pill">Dev / Prod environments</span>
+        <span class="pill">Sales and Marketing domains</span>
         <span class="pill">Identity &amp; access management</span>
         <span class="pill">Secret management</span>
         <span class="pill">IaC deployment</span>
@@ -380,10 +384,16 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
           <div class="role">Data Engineering</div>
           <ul class="checklist"><li>Analytical workloads for sales data</li><li>Historical data retention</li><li>Support for future data pipelines</li><li>Isolated environments</li><li>Reproduced via Infrastructure as Code</li><li>Secure access for users and workloads</li></ul>
         </div>
+        <div class="stakeholder">
+          <div class="role">Marketing</div>
+          <p style="font-size:13px;color:var(--text-dim);margin:0 0 10px;">The same two access needs as Sales, on Marketing's own datasets:</p>
+          <p style="font-size:13.5px;margin:0 0 4px;"><b>Report consumers</b> &mdash; curated, business-ready figures only. Read-only.</p>
+          <p style="font-size:13.5px;margin:0 0 10px;"><b>Analysts</b> &mdash; also the refined data behind those figures. Read-only.</p>
+          <p style="font-size:13px;color:var(--text-dim);margin:0;">Marketing's specific analytical questions are not defined in this document.</p>
+        </div>
       </div>
-      <p><b>Marketing</b> is a second consumer with the same two access needs (report consumers and analysts), on its own
-      datasets. People in either domain can sign in to the analytical workspace and run SQL; who sees which data is decided
-      per domain.</p>
+      <p>People in either domain can sign in to the analytical workspace and run SQL. Who sees which data is decided per
+      domain: Sales and Marketing do not see each other's datasets.</p>
     </section>
 
     <section id="data">
@@ -444,6 +454,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
         <li>Credentials are not embedded in source code</li>
         <li>Secrets that can't be eliminated via identity-based auth are securely managed</li>
         <li>Development workloads must not accidentally gain unrestricted access to Production</li>
+        <li>A domain's data is visible only to that domain's people unless access is granted explicitly</li>
       </ul>
     </section>
 
@@ -497,7 +508,7 @@ flowchart TD
       <div class="cardgrid">
         <div class="card"><h4>Networking</h4><p>Private endpoints, private connectivity, Databricks network architecture, controlled outbound connectivity — a future architecture phase.</p></div>
         <div class="card"><h4>Data pipelines</h4><p>Actual ingestion, transformation, orchestration — including how historical change is modeled — is future implementation work.</p></div>
-        <div class="card"><h4>Additional business domains</h4><p>Beyond Sales and Marketing, inventory, product, customer and supplier data are out of scope; a future extension gets its own review.</p></div>
+        <div class="card"><h4>Additional business domains</h4><p>Beyond Sales and Marketing, inventory, product, customer and supplier data are out of scope; a future extension gets its own review. Marketing does not yet have access to the shared raw source data; whether it should is a future decision.</p></div>
         <div class="card"><h4>Data quality, monitoring, streaming, ML</h4><p>All future capabilities, not required by this infrastructure phase.</p></div>
       </div>
     </section>
@@ -509,7 +520,7 @@ flowchart TD
           <ul class="checklist"><li>Dev &amp; Prod provisioned via Terraform</li><li>Reproducible from version-controlled definitions</li><li>Independently managed environments</li><li>Configuration durably stored centrally, not on any one engineer's machine</li><li>Changes reviewable before deployment</li></ul>
         </div>
         <div class="stakeholder"><div class="role">Security</div>
-          <ul class="checklist"><li>Organizational identities used where supported</li><li>No unnecessary long-lived credentials</li><li>Production access appropriately restricted</li><li>No hardcoded secrets</li><li>Environment boundaries enforced</li></ul>
+          <ul class="checklist"><li>Organizational identities used where supported</li><li>No unnecessary long-lived credentials</li><li>Production access appropriately restricted</li><li>No hardcoded secrets</li><li>Environment boundaries enforced</li><li>Sales and Marketing data separated from each other</li></ul>
         </div>
         <div class="stakeholder"><div class="role">Analytical platform foundation</div>
           <ul class="checklist"><li>Durable analytical storage for sales data</li><li>Databricks provisioned as compute platform</li><li>Five-year retention enforced at infra level on raw landing files (table-level retention comes with the pipeline)</li><li>Production storage protected against accidental deletion</li><li>Capacity for expected volumes validated once compute is sized</li></ul>
@@ -548,6 +559,7 @@ flowchart TD
       <pre class="mermaid">
 flowchart TD
   S[Sales] --> P[Analytical Platform]
+  M[Marketing] --> P
   P --> H[Historical Data]
   P --> R[Reportable Sales Datasets]
       </pre>
