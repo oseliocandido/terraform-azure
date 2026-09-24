@@ -248,8 +248,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
     <div class="eyebrow">Product Requirements Document</div>
     <h1 class="doctitle">Retail Sales Analytics Platform</h1>
     <div class="metarow">
-      <span>Version <b>1.1</b></span>
-      <span>Status <b>In progress &mdash; Dev delivered, Prod pending</b></span>
+      <span>Version <b>1.2</b></span>
+      <span>Status <b>In progress &mdash; Dev delivered, Prod planned but not yet applied</b></span>
       <span>Owner <b>Data Engineering</b></span>
       <span>Primary consumer <b>Sales</b></span>
     </div>
@@ -381,6 +381,9 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
           <ul class="checklist"><li>Analytical workloads for sales data</li><li>Historical data retention</li><li>Support for future data pipelines</li><li>Isolated environments</li><li>Reproduced via Infrastructure as Code</li><li>Secure access for users and workloads</li></ul>
         </div>
       </div>
+      <p><b>Marketing</b> is a second consumer with the same two access needs (report consumers and analysts), on its own
+      datasets. People in either domain can sign in to the analytical workspace and run SQL; who sees which data is decided
+      per domain.</p>
     </section>
 
     <section id="data">
@@ -415,6 +418,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
         <div class="desc">Sales analytical data is retained for <b>five years from ingestion</b>. Data older than five years may be deleted. Data does not need to remain queryable at full cost/performance for the entire period — a lower-cost tier is acceptable, provided it isn't deleted before the five-year mark.</div>
       </div>
       <p class="dim">Historical data remains available independently from the lifecycle of the POS and e-commerce source systems. See <a href="ARCHITECTURE.html#storage" id="link-arch-3">Architecture — data retention &amp; lifecycle policy</a> for how this is technically enforced.</p>
+      <p class="dim">Today the five-year rule is enforced automatically on the raw files the source systems deliver. Retention
+      for the analytical tables built from them depends on the ingestion pipeline and is not built yet.</p>
     </section>
 
     <section id="environments">
@@ -448,7 +453,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       <div class="tierpills">
         <span class="pill mono">environment</span><span class="pill mono">workload</span><span class="pill mono">owner</span><span class="pill mono">cost center</span><span class="pill mono">managed by</span>
       </div>
-      <p class="dim">Each environment has a budget with spend alerts. The platform must make it possible to distinguish Development and Production infrastructure costs, and provide durable, source-controlled infrastructure without unnecessary coupling between environments.</p>
+      <p class="dim">Each environment has a budget with spend alerts. The platform must make it possible to distinguish Development and Production infrastructure costs, and provide durable, source-controlled infrastructure without unnecessary coupling between environments. Some cost is fixed
+      whether or not anything runs: each workspace's managed network costs about 31 EUR a month, and this is accepted.</p>
       <div class="callout teal"><b>Production data is protected against accidental loss.</b> Deleted data stays recoverable for at least 14 days in Production (a shorter period is fine in Development), and an ordinary change cannot destroy Production storage &mdash; destroying it takes a deliberate, reviewed change.</div>
       <div class="callout teal">
         <b>Exception, not a loophole.</b> "No manually configured resources
@@ -471,7 +477,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
         <span class="pill">Azure Databricks</span>
         <span class="pill">Terraform</span>
       </div>
-      <p class="dim">Exact provider configuration and resource implementation are determined during architecture and implementation design.</p>
+      <p class="dim">Exact provider configuration and resource implementation are determined during architecture and implementation design.
+      The Azure subscription is a single, quota-limited one: only serverless compute can run until the quota and VM-size restrictions are lifted.</p>
     </section>
 
     <section id="boundary">
@@ -480,8 +487,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       intentionally doesn't prescribe the complete technical architecture.</p>
       <pre class="mermaid">
 flowchart TD
-  A["PRD — this document\nBusiness requirements"] --> B["ARCHITECTURE.md\nAzure / Databricks / Terraform decisions\nin response to this PRD's needs"]
-  B --> C["IMPLEMENTATION.md\nExact module layout, providers,\nCI/CD stages, naming, state"]
+  A["PRD — this document\nBusiness requirements"] --> B["ARCHITECTURE.html\nAzure / Databricks / Terraform decisions\nin response to this PRD's needs"]
+  B --> C["IMPLEMENTATION.html\nExact module layout, providers,\nCI/CD stages, naming, state"]
       </pre>
     </section>
 
@@ -505,7 +512,7 @@ flowchart TD
           <ul class="checklist"><li>Organizational identities used where supported</li><li>No unnecessary long-lived credentials</li><li>Production access appropriately restricted</li><li>No hardcoded secrets</li><li>Environment boundaries enforced</li></ul>
         </div>
         <div class="stakeholder"><div class="role">Analytical platform foundation</div>
-          <ul class="checklist"><li>Durable analytical storage for sales data</li><li>Databricks provisioned as compute platform</li><li>Five-year retention enforced at infra level</li><li>Production storage protected against accidental deletion</li><li>Capacity for expected volumes validated once compute is sized</li></ul>
+          <ul class="checklist"><li>Durable analytical storage for sales data</li><li>Databricks provisioned as compute platform</li><li>Five-year retention enforced at infra level on raw landing files (table-level retention comes with the pipeline)</li><li>Production storage protected against accidental deletion</li><li>Capacity for expected volumes validated once compute is sized</li></ul>
         </div>
         <div class="stakeholder"><div class="role">Engineering</div>
           <ul class="checklist"><li>Version-controlled Terraform</li><li>Reusable components separated from env config</li><li>Changes validated through automation</li><li>Drift between definitions and deployed infrastructure detectable on demand</li><li>Production requires appropriate approval</li><li>Resources identifiable by env/workload/owner/cost</li></ul>
