@@ -1,5 +1,11 @@
-locals {
-  common_tags = {
+module "naming" {
+  source = "../../modules/naming"
+
+  workload    = var.workload
+  environment = var.environment
+  location    = var.location
+  instance    = var.instance
+  tags = {
     managed_by  = var.managed_by
     repository  = var.repository
     cost_center = var.cost_center
@@ -10,16 +16,15 @@ locals {
 module "datalake" {
   source = "../../modules/azure/datalake"
 
-  workload               = var.workload
+  suffix                 = module.naming.suffix
   environment            = var.environment
   location               = var.location
-  instance               = var.instance
   storage_account_suffix = var.storage_account_suffix
   # See environments/dev/main.tf's identical block for the full reasoning
   # ("ingestion" isn't a business domain -- backs the ingestion catalog's
   # own managed root).
   additional_domains = ["marketing", "ingestion"]
-  tags               = local.common_tags
+  tags               = module.naming.tags
 }
 
 module "budget_alert" {
@@ -36,12 +41,10 @@ module "databricks_workspace" {
 
   resource_group_name = module.datalake.resource_group_name
   location            = var.location
-  workload            = var.workload
-  environment         = var.environment
-  instance            = var.instance
+  suffix              = module.naming.suffix
   storage_account_id  = module.datalake.storage_account_id
   metastore_id        = var.metastore_id
-  tags                = local.common_tags
+  tags                = module.naming.tags
 }
 
 # Second instance, same module, different resource group -- see

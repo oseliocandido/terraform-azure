@@ -178,13 +178,14 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
     <section id="p1-module-environment-composition">
       <div class="decision-block">
         <h2><span class="num">1.1</span>Module / environment composition</h2>
-        <p>Six reusable modules, composed per root. Nothing in <code>modules/</code> holds
+        <p>Seven reusable modules, composed per root. Nothing in <code>modules/</code> holds
 its own state or backend — each root under <code>environments/</code> is what
 actually gets applied. <code>environments/shared</code> is a third root holding the
 account-level Databricks metastore (applied by hand, no CI yet).</p>
 <pre class="mermaid">
 flowchart TB
     subgraph modules[&quot;modules/ — shared, reusable, stateless&quot;]
+        NM[&quot;naming&lt;br/&gt;name suffix + tags, no resources&quot;]
         subgraph az[&quot;azure/&quot;]
             AG[&quot;datalake&lt;br/&gt;RG + ADLS Gen2 + containers&quot;]
             BA[&quot;cost_budget&lt;br/&gt;Resource-group-scoped consumption budget&quot;]
@@ -214,6 +215,8 @@ flowchart TB
         PM --&gt;|sales, marketing| UC
     end
 
+    NM -.suffix, tags.-&gt; AG
+    NM -.suffix, tags.-&gt; WS
     AG -.output: resource_group_id.-&gt; BA
     AG -.containers.-&gt; ST
     ST -.locations.-&gt; IG

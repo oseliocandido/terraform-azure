@@ -154,6 +154,7 @@ arguments.</p>
 <p><strong>Status.</strong> <code>dev</code> is applied and converged (<code>terraform plan</code> shows no changes).
 <code>prod</code> is coded identically but never applied; see <a href="#prod-bootstrap">Prod bootstrap</a>.</p></div>
 <section id="layout"><h2><span class="num">01</span>Layout</h2><pre class="code"><code class="language-text">modules/
+├── naming/                name suffix and tags, no resources
 ├── azure/
 │   ├── datalake/          RG, storage account, containers, landing retention
 │   └── cost_budget/       RG-scoped budget with spend alerts
@@ -168,6 +169,11 @@ environments/
 └── shared/             account-level metastore, applied by hand
 .github/workflows/      terraform.yml (plan/apply), drift-detection.yml (manual)
 </code></pre>
+<p><code>naming</code> holds the region-code map and builds two values once per root: <code>suffix</code>
+(<code>&lt;workload&gt;-&lt;environment&gt;-&lt;region code&gt;-&lt;instance&gt;</code>, e.g. <code>analytics-dev-neu-01</code>)
+and <code>tags</code> (the base tags plus <code>workload</code> and <code>environment</code>). The root passes both to
+<code>datalake</code> and <code>workspace</code>, so no module carries its own copy of the naming rules. A new region is
+one line in <code>modules/naming/main.tf</code>.</p>
 <p><code>uc_storage</code> and <code>uc_ingestion</code> are separate from <code>uc_domain_catalog</code> because the
 credential, the locations and the raw ingestion layer are environment-wide, not per domain. Module state addresses come
 from the call label, not the <code>source</code> path.</p></section>
