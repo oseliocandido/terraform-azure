@@ -9,26 +9,26 @@ locals {
     0, 24 - length(var.storage_account_suffix)
   )}${var.storage_account_suffix}"
 
-  is_prod = var.environment == "prod"
-
-  # prod resources are declared twice (see the *_protected resources) so only
-  # prod gets prevent_destroy; these pick whichever instance exists.
-  # Attribute by attribute, not the whole object: the account object carries
-  # sensitive attributes (access keys) that would mark everything derived from it.
-  storage_account_id           = one(concat(azurerm_storage_account.analytics[*].id, azurerm_storage_account.analytics_protected[*].id))
-  storage_account_name         = one(concat(azurerm_storage_account.analytics[*].name, azurerm_storage_account.analytics_protected[*].name))
-  storage_account_dfs_endpoint = one(concat(azurerm_storage_account.analytics[*].primary_dfs_endpoint, azurerm_storage_account.analytics_protected[*].primary_dfs_endpoint))
-  bronze_container_name        = one(concat(azurerm_storage_container.bronze[*].name, azurerm_storage_container.bronze_protected[*].name))
-  managed_container_name       = one(concat(azurerm_storage_container.managed[*].name, azurerm_storage_container.managed_protected[*].name))
-  landing_containers           = merge(azurerm_storage_container.landing, azurerm_storage_container.landing_protected)
-  managed_domain_containers = merge(
-    azurerm_storage_container.managed_domain,
-    azurerm_storage_container.managed_domain_protected,
-  )
-
   # Soft delete: a deleted blob/container stays recoverable for this many
   # days. Longer in prod, where an accidental delete costs the most.
   soft_delete_days = var.environment == "prod" ? 14 : 7
+}
+
+# Dev's state held these as count instances (analytics[0] ...) before the
+# protected twins were removed; keep the real resources instead of recreating.
+moved {
+  from = azurerm_storage_account.analytics[0]
+  to   = azurerm_storage_account.analytics
+}
+
+moved {
+  from = azurerm_storage_container.bronze[0]
+  to   = azurerm_storage_container.bronze
+}
+
+moved {
+  from = azurerm_storage_container.managed[0]
+  to   = azurerm_storage_container.managed
 }
 
 ## -----------------------------------------------------------------------
@@ -43,8 +43,6 @@ resource "azurerm_resource_group" "analytics" {
 }
 
 resource "azurerm_storage_account" "analytics" {
-  count = local.is_prod ? 0 : 1
-
   name = local.sa_name
 
   # References, not repeated literals -- these ARE the dependency edges
@@ -83,55 +81,9 @@ resource "azurerm_storage_account" "analytics" {
       days = local.soft_delete_days
     }
   }
-}
-
-# Identical to azurerm_storage_account.analytics above except for count and the
-# prod-only prevent_destroy. To deliberately destroy or replace it, remove the
-# lifecycle block in a reviewed change first.
-resource "azurerm_storage_account" "analytics_protected" {
-  count = local.is_prod ? 1 : 0
-
-  name = local.sa_name
-
-  # References, not repeated literals -- these ARE the dependency edges
-  # Terraform uses to order creation.
-  resource_group_name = azurerm_resource_group.analytics.name
-  location            = azurerm_resource_group.analytics.location
-
-  account_tier             = "Standard"
-  account_kind             = "StorageV2" # required alongside is_hns_enabled below
-  account_replication_type = var.environment == "prod" ? "GZRS" : "LRS"
-
-  # This is what makes it ADLS Gen2 rather than flat blob storage.
-  # It is ForceNew -- changing it later destroys and recreates the
-  # account, which matters a lot once real data lives in it.
-  is_hns_enabled = true
-  access_tier    = "Hot"
-
-  # Security posture, stated explicitly rather than left to provider
-  # defaults -- explicit beats inherited, and documents intent for the
-  # next person reading this file.
-  https_traffic_only_enabled      = true
-  min_tls_version                 = "TLS1_2"
-  allow_nested_items_to_be_public = false
-  shared_access_key_enabled       = false # AAD auth only -- no account key to leak
-
-  tags = var.tags
-
-  blob_properties {
-    # Blob versioning stays off: soft delete above covers accidental deletes.
-    versioning_enabled = false
-
-    delete_retention_policy {
-      days = local.soft_delete_days
-    }
-    container_delete_retention_policy {
-      days = local.soft_delete_days
-    }
-  }
-
-  # Prod only. prevent_destroy must be a literal, so protected and
-  # unprotected instances are separate resources chosen by local.is_prod.
+  # Every environment: destroying this needs a deliberate, reviewed change
+  # that removes prevent_destroy first (it must be a literal, so it cannot be
+  # limited to prod).
   lifecycle {
     prevent_destroy = true
   }
@@ -152,22 +104,12 @@ resource "azurerm_storage_account" "analytics_protected" {
 # delta.deletedFileRetentionDuration, or a partition-based archival job) is
 # still-unbuilt pipeline work -- see BACKLOG.md.
 resource "azurerm_storage_container" "bronze" {
-  count = local.is_prod ? 0 : 1
-
   name                  = "bronze"
-  storage_account_id    = local.storage_account_id
+  storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
-}
-
-resource "azurerm_storage_container" "bronze_protected" {
-  count = local.is_prod ? 1 : 0
-
-  name                  = "bronze"
-  storage_account_id    = local.storage_account_id
-  container_access_type = "private"
-
-  # Prod only. prevent_destroy must be a literal, so protected and
-  # unprotected instances are separate resources chosen by local.is_prod.
+  # Every environment: destroying this needs a deliberate, reviewed change
+  # that removes prevent_destroy first (it must be a literal, so it cannot be
+  # limited to prod).
   lifecycle {
     prevent_destroy = true
   }
@@ -193,22 +135,14 @@ resource "azurerm_storage_container" "bronze_protected" {
 # third source system is one addition to var.landing_source_systems, not a second Terraform
 # resource block to hand-write and a second prefix_match entry to remember.
 resource "azurerm_storage_container" "landing" {
-  for_each = local.is_prod ? toset([]) : toset(var.landing_source_systems)
+  for_each = toset(var.landing_source_systems)
 
   name                  = "landing-${each.key}"
-  storage_account_id    = local.storage_account_id
+  storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
-}
-
-resource "azurerm_storage_container" "landing_protected" {
-  for_each = local.is_prod ? toset(var.landing_source_systems) : toset([])
-
-  name                  = "landing-${each.key}"
-  storage_account_id    = local.storage_account_id
-  container_access_type = "private"
-
-  # Prod only. prevent_destroy must be a literal, so protected and
-  # unprotected instances are separate resources chosen by local.is_prod.
+  # Every environment: destroying this needs a deliberate, reviewed change
+  # that removes prevent_destroy first (it must be a literal, so it cannot be
+  # limited to prod).
   lifecycle {
     prevent_destroy = true
   }
@@ -249,22 +183,12 @@ resource "azurerm_storage_container" "landing_protected" {
 # written to silver/gold), so nothing but the catalog's own UUID and
 # grants are actually lost, not business data.
 resource "azurerm_storage_container" "managed" {
-  count = local.is_prod ? 0 : 1
-
   name                  = "managed-sales"
-  storage_account_id    = local.storage_account_id
+  storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
-}
-
-resource "azurerm_storage_container" "managed_protected" {
-  count = local.is_prod ? 1 : 0
-
-  name                  = "managed-sales"
-  storage_account_id    = local.storage_account_id
-  container_access_type = "private"
-
-  # Prod only. prevent_destroy must be a literal, so protected and
-  # unprotected instances are separate resources chosen by local.is_prod.
+  # Every environment: destroying this needs a deliberate, reviewed change
+  # that removes prevent_destroy first (it must be a literal, so it cannot be
+  # limited to prod).
   lifecycle {
     prevent_destroy = true
   }
@@ -284,22 +208,14 @@ resource "azurerm_storage_container" "managed_protected" {
 # role at all, only account- or container-level, so that option only stays
 # open if each domain has its own container.
 resource "azurerm_storage_container" "managed_domain" {
-  for_each = local.is_prod ? toset([]) : toset(var.additional_domains)
+  for_each = toset(var.additional_domains)
 
   name                  = "managed-${each.key}"
-  storage_account_id    = local.storage_account_id
+  storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
-}
-
-resource "azurerm_storage_container" "managed_domain_protected" {
-  for_each = local.is_prod ? toset(var.additional_domains) : toset([])
-
-  name                  = "managed-${each.key}"
-  storage_account_id    = local.storage_account_id
-  container_access_type = "private"
-
-  # Prod only. prevent_destroy must be a literal, so protected and
-  # unprotected instances are separate resources chosen by local.is_prod.
+  # Every environment: destroying this needs a deliberate, reviewed change
+  # that removes prevent_destroy first (it must be a literal, so it cannot be
+  # limited to prod).
   lifecycle {
     prevent_destroy = true
   }
@@ -320,7 +236,7 @@ resource "azurerm_storage_container" "managed_domain_protected" {
 # storage policy can do for managed Delta storage. silver/gold don't need
 # either kind of retention -- they're derived and rebuildable from bronze.
 resource "azurerm_storage_management_policy" "default_retention_policy" {
-  storage_account_id = local.storage_account_id
+  storage_account_id = azurerm_storage_account.analytics.id
 
   rule {
     name    = "landing-retention"
