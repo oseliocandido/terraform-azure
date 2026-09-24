@@ -1,4 +1,6 @@
 # Azure plane: naming, the data lake, the workspace and their budgets.
+# One copy of this composition serves every environment; what differs is in
+# environments/<env>.tfvars.
 
 module "naming" {
   source = "../../modules/naming"
@@ -13,6 +15,15 @@ module "naming" {
     cost_center = var.cost_center
     data_owner  = var.data_owner
   }
+}
+
+# Prod's state predates the analytics_group -> datalake module rename and still
+# holds the real prod resource group and storage account under the old
+# address. Without this, a prod apply would destroy and recreate them. Ignored
+# where the old address is absent (dev).
+moved {
+  from = module.analytics_group
+  to   = module.datalake
 }
 
 module "datalake" {

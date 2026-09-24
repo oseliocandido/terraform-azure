@@ -178,10 +178,11 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
     <section id="p1-module-environment-composition">
       <div class="decision-block">
         <h2><span class="num">1.1</span>Module / environment composition</h2>
-        <p>Eight reusable modules, composed per root. Nothing in <code>modules/</code> holds
-its own state or backend — each root under <code>environments/</code> is what
-actually gets applied. <code>environments/shared</code> is a third root holding the
-account-level Databricks metastore (applied by hand, no CI yet).</p>
+        <p>Eight reusable modules, composed by one root. Nothing in <code>modules/</code> holds
+its own state or backend — <code>environments/platform</code> is what actually gets
+applied, once per environment with that environment's tfvars and state.
+<code>environments/shared</code> is a second root holding the account-level Databricks
+metastore (applied by hand, no CI yet).</p>
 <pre class="mermaid">
 flowchart TB
     subgraph modules[&quot;modules/ — shared, reusable, stateless&quot;]
@@ -199,22 +200,14 @@ flowchart TB
         end
     end
 
-    subgraph dev[&quot;environments/dev (root module)&quot;]
-        DM[&quot;main.tf&quot;] --&gt;|module block| AG
+    subgraph platform[&quot;environments/platform (one root; dev and prod differ only by tfvars and state)&quot;]
+        DM[&quot;main.tf, access.tf,&lt;br/&gt;catalogs.tf, compute.tf&quot;] --&gt;|module block| AG
         DM --&gt;|module block, resource_group_id| BA
         DM --&gt; WS
-        DM --&gt;|dev only| CP
+        DM --&gt;|enable_compute| CP
         DM --&gt; ST
         DM --&gt; IG
         DM --&gt;|sales, marketing| UC
-    end
-    subgraph prod[&quot;environments/prod (root module, not yet applied)&quot;]
-        PM[&quot;main.tf&quot;] --&gt;|module block| AG
-        PM --&gt;|module block, resource_group_id| BA
-        PM --&gt; WS
-        PM --&gt; ST
-        PM --&gt; IG
-        PM --&gt;|sales, marketing| UC
     end
 
     NM -.suffix, tags.-&gt; AG
@@ -231,9 +224,10 @@ bronze, workspace-bound catalogs, group-based access) is in
 <a href="#part2">Part 2</a> below, with
 every object described in
 <a href="IMPLEMENTATION.html">Implementation</a>.</p>
-<p>Each root has its own <code>terraform.tfvars</code> (environment-specific values:
-<code>instance</code>, <code>budget_amount</code>, an optional <code>storage_account_suffix</code>) and
-shares environment-independent values via <code>environments/common.tfvars</code>
+<p>Each environment has its own <code>environments/&lt;env&gt;.tfvars</code> (environment-specific values:
+<code>instance</code>, <code>budget_amount</code>, the dev-only switches, an optional
+<code>storage_account_suffix</code>) and its own <code>environments/&lt;env&gt;.backend.hcl</code> (the state key).
+Environment-independent values are shared through <code>environments/common.tfvars</code>
 (<code>subscription_id</code>, <code>notify_email</code>, <code>workload</code>), which is <strong>not</strong>
 auto-loaded and must always be passed explicitly with <code>-var-file</code>.</p>
       </div>
@@ -519,7 +513,7 @@ flowchart TB
     <section id="cicd">
       <div class="decision-block">
         <h2><span class="num">2.11</span>CI/CD</h2>
-        <p>All resources are in the <code>environments/dev</code> and <code>environments/prod</code> roots and deploy through one pipeline: <code>fmt-check</code> &rarr; <code>plan-dev</code> &rarr; (merge) <code>apply-dev</code> &rarr; <code>plan-prod</code> &rarr; <code>apply-prod</code> behind the <code>production</code> approval gate. <code>apply-*</code> applies the saved plan, so a stale-plan failure is fixed by re-running the whole workflow. <code>environments/shared</code> (the account-level metastore) is applied by hand and has no CI. A separate manual workflow, <code>drift-detection</code>, plans <code>main</code> and reports any difference between the code and what is deployed; it never applies.</p>
+        <p>All resources are in the <code>environments/platform</code> root, applied once per environment, and deploy through one pipeline: <code>fmt-check</code> &rarr; <code>plan-dev</code> &rarr; (merge) <code>apply-dev</code> &rarr; <code>plan-prod</code> &rarr; <code>apply-prod</code> behind the <code>production</code> approval gate. <code>apply-*</code> applies the saved plan, so a stale-plan failure is fixed by re-running the whole workflow. <code>environments/shared</code> (the account-level metastore) is applied by hand and has no CI. A separate manual workflow, <code>drift-detection</code>, plans <code>main</code> and reports any difference between the code and what is deployed; it never applies.</p>
       </div>
     </section>
 

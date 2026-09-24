@@ -10,7 +10,7 @@ module "uc_storage" {
   access_connector_id = module.databricks_workspace.access_connector_id
   resource_group_name = module.datalake.resource_group_name
   subscription_id     = var.subscription_id
-  ci_group_name       = "grp-databricks-ci-prod"
+  ci_group_name       = local.ci_group_name
   bronze_storage_root = "abfss://${module.datalake.bronze_container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
 
   # Built from the datalake's landing_container_names, so a new source system
@@ -37,6 +37,7 @@ module "uc_ingestion" {
   ci_service_principal_name  = var.ci_service_principal_name
   enable_grants              = var.enable_grants
   bronze_consumer_group_name = "grp-sales-data-engineers-${var.environment}"
+  bronze_consumer_can_write  = var.bronze_consumer_can_write
   catalog_storage_root       = module.uc_storage.ingestion_managed_location_url
   bronze_storage_root        = "abfss://${module.datalake.bronze_container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
   landing_location_urls      = module.uc_storage.landing_location_urls
@@ -54,7 +55,7 @@ module "unity_catalog_sales" {
   metastore_id              = var.metastore_id
   workspace_id              = module.databricks_workspace.workspace_id
   ci_service_principal_name = var.ci_service_principal_name
-  ci_group_name             = "grp-databricks-ci-prod"
+  ci_group_name             = local.ci_group_name
   enable_grants             = var.enable_grants
   storage_credential_name   = module.uc_storage.storage_credential_name
   catalog_storage_root      = "abfss://${module.datalake.managed_container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
@@ -75,7 +76,7 @@ module "unity_catalog_marketing" {
   metastore_id              = var.metastore_id
   workspace_id              = module.databricks_workspace.workspace_id
   ci_service_principal_name = var.ci_service_principal_name
-  ci_group_name             = "grp-databricks-ci-prod"
+  ci_group_name             = local.ci_group_name
   enable_grants             = false
   storage_credential_name   = module.uc_storage.storage_credential_name
   catalog_storage_root      = "abfss://${module.datalake.additional_managed_container_names["marketing"]}@${module.datalake.storage_account_name}.dfs.core.windows.net/"

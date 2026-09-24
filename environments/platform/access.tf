@@ -1,6 +1,10 @@
 # How the CI identity gets into the workspace and onto the metastore. Rationale
 # for each choice is in docs/IMPLEMENTATION.html (CI permission model).
 
+locals {
+  ci_group_name = "grp-databricks-ci-${var.environment}"
+}
+
 # The group, not the service principal: membership in it decides who has
 # access. ADMIN because Terraform must read this resource on every plan, and
 # reading permission assignments needs a workspace admin. Applied once by a
@@ -8,7 +12,7 @@
 # group_name is a bare string, not a lookup, because a workspace-scoped lookup
 # would need the membership this resource creates.
 resource "databricks_permission_assignment" "ci_group" {
-  group_name  = "grp-databricks-ci-dev"
+  group_name  = local.ci_group_name
   permissions = ["ADMIN"]
 }
 
@@ -18,7 +22,7 @@ resource "databricks_permission_assignment" "ci_group" {
 # is the narrowest of the accepted entitlements. The lookup is not circular
 # here: the group is already a member by this point.
 data "databricks_group" "ci" {
-  display_name = "grp-databricks-ci-dev"
+  display_name = local.ci_group_name
   depends_on   = [databricks_permission_assignment.ci_group]
 }
 
@@ -33,13 +37,12 @@ resource "databricks_entitlements" "ci_group" {
 # The people who do work here are each domain's engineers, analysts and
 # stakeholders. They get plain USER membership plus the entitlements needed to
 # open the workspace and use SQL; what they may do with compute is set in
-# compute.tf. Adding a domain to this list is the only change needed here.
+# compute.tf. The domains come from var.workspace_user_domains; empty means no
+# one is added (prod, until its groups exist).
 locals {
-  domains = ["sales", "marketing"]
-
-  data_engineer_groups = [for d in local.domains : "grp-${d}-data-engineers-${var.environment}"]
+  data_engineer_groups = [for d in var.workspace_user_domains : "grp-${d}-data-engineers-${var.environment}"]
   consumer_groups = flatten([
-    for d in local.domains : [
+    for d in var.workspace_user_domains : [
       "grp-${d}-analysts-${var.environment}",
       "grp-${d}-stakeholders-${var.environment}",
     ]

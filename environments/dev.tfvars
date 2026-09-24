@@ -1,6 +1,14 @@
+# Dev values, applied on top of common.tfvars:
+#   terraform plan -var-file=../common.tfvars -var-file=../dev.tfvars
+
 environment   = "dev"
 budget_amount = 20
 instance      = 1
+
+# Dev-only pieces of the shared root (see platform/variables.tf).
+enable_compute            = true
+bronze_consumer_can_write = true
+workspace_user_domains    = ["sales", "marketing"]
 
 # sp-terraform-dev's Application (client) ID, not its display name --
 # Databricks grants identify an Azure-managed SP by this ID.

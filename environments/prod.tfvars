@@ -1,6 +1,14 @@
+# Prod values, applied on top of common.tfvars:
+#   terraform plan -var-file=../common.tfvars -var-file=../prod.tfvars
+
 environment   = "prod"
 budget_amount = 100
 instance      = 1
+
+# No prod workflow supplies DATABRICKS_AUTH_TYPE yet, so authenticate through
+# the Azure CLI (see platform/providers.tf). compute, workspace users and
+# bronze writes stay off (their defaults) until prod has real users.
+databricks_auth_type = "azure-cli"
 
 # sp-terraform-prod's Application (client) ID, not its display name --
 # Databricks grants identify an Azure-managed SP by this ID.

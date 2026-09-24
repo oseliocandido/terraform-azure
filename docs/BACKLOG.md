@@ -6,8 +6,10 @@ Items are ordered roughly by how soon they matter.
 
 ## 1. Apply `prod` for the first time
 
-`environments/prod` is coded but has never been applied; `apply-prod` waits on
-the `production` approval gate.
+Prod (`environments/platform` with `prod.tfvars`) is coded but has never had a
+full apply; `apply-prod` waits on the `production` approval gate. Its state
+already holds an early resource group, storage account and budget; a `moved`
+block in `main.tf` keeps them (see IMPLEMENTATION.html, Prod bootstrap).
 
 - Run the first apply locally as a metastore admin: the metastore grant is
   admin-only and CI plans ignore it.
@@ -96,7 +98,7 @@ ones exceed the 4 vCPU regional quota. To turn it on:
   subscription to pay-as-you-go or with an Azure support request.
 - Confirm the node type with `az vm list-skus` and `az vm list-usage` (the
   default `Standard_DS3_v2` is a placeholder), then set `enable_cluster = true`
-  in `environments/dev/compute.tf`.
+  in the `module "compute"` call in `environments/platform/compute.tf`.
 - Confirm standard access mode is accepted on a single node; if not, switch to
   dedicated access mode for one group.
 
