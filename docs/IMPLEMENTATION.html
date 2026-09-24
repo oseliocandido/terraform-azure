@@ -514,7 +514,7 @@ is enough to create it and the access connector.</p></section>
 </tr>
 <tr>
 <td>Transferring ownership drops the creator's <code>MANAGE</code></td>
-<td>A catalog CI creates and hands to a group cannot be finished by CI, so a new domain's first apply may need a metastore admin</td>
+<td>A catalog CI creates and hands to a group cannot be finished by CI unless the CI group is nested in that owner group. Nest <code>grp-databricks-ci-&lt;env&gt;</code> in <code>grp-databricks-platform-&lt;env&gt;</code> and every <code>grp-&lt;domain&gt;-data-governance-&lt;env&gt;</code> in Entra ID before the first apply of a new domain or environment</td>
 </tr>
 <tr>
 <td>Metastore grants are admin-only</td>
