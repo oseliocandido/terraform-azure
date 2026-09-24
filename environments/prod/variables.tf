@@ -3,16 +3,6 @@ variable "subscription_id" {
   description = "Azure subscription ID. Get it with: az account show --query id -o tsv"
 }
 
-# See environments/dev/variables.tf's identical declaration for the full
-# reasoning -- unused here too, declared only to silence the
-# "Value for undeclared variable" warning environments/common.tfvars's
-# shared databricks_account_id otherwise triggers.
-variable "databricks_account_id" {
-  type        = string
-  default     = null
-  description = "Account-wide Databricks account ID -- see this variable's own comment above."
-}
-
 variable "workload" {
   type        = string
   description = "Short workload name used to derive every resource name. No default -- always set explicitly in common.tfvars."

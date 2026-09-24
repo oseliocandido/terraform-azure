@@ -26,7 +26,7 @@ terraform {
 # sp-databricks-account-admin is wired into a workflow.
 provider "databricks" {
   host            = "https://accounts.azuredatabricks.net"
-  account_id      = var.databricks_account_id
+  account_id      = "6ff6cf67-7a67-49fe-8fa5-9c86897f4493"
   auth_type       = "azure-cli"
   azure_tenant_id = var.azure_tenant_id
 }

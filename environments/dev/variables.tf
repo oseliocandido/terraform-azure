@@ -3,23 +3,6 @@ variable "subscription_id" {
   description = "Azure subscription ID. Get it with: az account show --query id -o tsv"
 }
 
-# Unused by this root today -- dev/prod configure the databricks provider at
-# the WORKSPACE level (host/token per environment), not the account level,
-# so no resource here actually needs the account ID. Declared anyway purely
-# to silence Terraform's "Value for undeclared variable" warning that
-# environments/common.tfvars's shared databricks_account_id value otherwise
-# triggers on every plan/apply here (see that file's own comment for why
-# one shared tfvars file covering the union of every root's variables was
-# chosen over splitting it further). default = null, not a real value --
-# environments/shared/variables.tf's identical declaration is what actually
-# consumes this value; safe to reference directly here too if a future
-# resource in this root ever needs account-level Databricks API access.
-variable "databricks_account_id" {
-  type        = string
-  default     = null
-  description = "Account-wide Databricks account ID -- see this variable's own comment above."
-}
-
 variable "workload" {
   type        = string
   description = "Short workload name used to derive every resource name. No default -- always set explicitly in common.tfvars."
