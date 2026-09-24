@@ -60,7 +60,7 @@ resource "azurerm_role_assignment" "access_connector_storage" {
 # in this module, even though IMPLEMENTATION.html originally spec'd them
 # here -- they need CREATE_STORAGE_CREDENTIAL/CREATE_EXTERNAL_LOCATION
 # grants on the metastore, and that grant is a root-level resource
-# (environments/dev/main.tf's databricks_grants.metastore_admins). Module
+# (environments/dev/databricks_access.tf's databricks_grants.metastore_admins). Module
 # `depends_on` applies to every resource inside the module -- including
 # azurerm_databricks_workspace above, which the databricks provider's own
 # `host` argument depends on -- so depending this whole module on that

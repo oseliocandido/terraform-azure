@@ -493,7 +493,23 @@ authoritative) is used over <code>databricks_grant</code> so Terraform is the si
 <p>The metastore grant is in each root because <code>databricks_grants</code> needs the
 workspace-level provider, which the account-level <code>shared</code> root lacks. Dev's and
 prod's copies are identical so they converge. Grants go to the CI <strong>group</strong>, not the
-service principal, so a new CI identity is a membership change.</p></section>
+service principal, so a new CI identity is a membership change.</p>
+<p><strong>Why the workspace access is shaped this way.</strong></p>
+<ul>
+<li>The assignment is <code>ADMIN</code>, not <code>USER</code>: Terraform reads it on every plan, and reading permission
+assignments needs a workspace admin. <code>group_name</code> is a bare string because a workspace-scoped lookup would
+need the membership the resource creates. It is applied once by a human who is already a workspace member; CI cannot
+grant itself this.</li>
+<li>Membership alone carries no entitlement to call the workspace API, so the entitlement resource grants
+<code>workspace_access</code>, the narrowest one accepted. The group lookup that feeds it is safe there because the group is
+already a member.</li>
+<li>The platform and governance groups have no workspace presence. They only own Unity Catalog objects.</li>
+<li>The metastore grant goes to the CI groups, not <code>grp-databricks-account-admins</code>, which would hand CI full account
+admin. Each environment's CI group therefore gets <code>CREATE_*</code> across the whole metastore, not only its own catalogs.</li>
+</ul>
+<p>Each root splits its configuration by concern: <code>azure.tf</code> (naming, data lake, workspace, budgets),
+<code>databricks_access.tf</code> (workspace assignment, entitlements, metastore grant) and <code>unity_catalog.tf</code>
+(<code>uc_storage</code>, <code>uc_ingestion</code> and the domain catalogs).</p></section>
 <section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> comes from <code>module.databricks_workspace.workspace_url</code>.
 Locally it uses <code>auth_type = "azure-cli"</code>; in CI it uses the same OIDC variables as
 <code>azurerm</code>. The account-level provider in <code>environments/shared</code> sets its
