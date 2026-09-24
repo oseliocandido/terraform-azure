@@ -138,6 +138,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
     <a href="#root-shared"><code>shared</code></a>
     <a href="#bootstrap">Bootstrap</a>
     <a href="#prod-bootstrap">Prod bootstrap</a>
+    <a href="#permissions">Permissions reference</a>
   </nav>
 
   <main>
@@ -725,6 +726,63 @@ updates them in place instead of destroying the real prod storage. Before approv
 <li>Expect the two-stage workspace apply on the first run, then grant <code>sp-terraform-prod</code> <code>Cost Management Contributor</code> on the
    workspace's managed resource group.</li>
 </ol></section>
+
+<section id="permissions"><h2><span class="num">10</span>Permissions reference</h2>
+<p>Who can do what, per object. <code>&lt;env&gt;</code> is <code>dev</code> or <code>prod</code> and <code>&lt;d&gt;</code> is <code>sales</code> or <code>marketing</code>.
+Checked against the live dev workspace and metastore on 2026-09-24 and matching the code; prod is what the first apply would create.
+Grants to the domain groups exist only where <code>enable_grants</code> is on (dev now).</p>
+
+<h3>Groups</h3>
+<div style="overflow-x:auto"><table>
+<thead><tr><th>Group</th><th>Role</th><th>In the workspace</th></tr></thead>
+<tbody>
+<tr><td><code>grp-databricks-account-admins</code></td><td>Owns the metastore</td><td>no</td></tr>
+<tr><td><code>grp-databricks-ci-&lt;env&gt;</code></td><td>CI identity; contains <code>sp-terraform-&lt;env&gt;</code></td><td>ADMIN, <code>workspace_access</code></td></tr>
+<tr><td><code>grp-databricks-platform-&lt;env&gt;</code></td><td>Owns the credential, bronze/landing/ingestion locations, <code>ingestion_&lt;env&gt;</code> and its volumes</td><td>no</td></tr>
+<tr><td><code>grp-&lt;d&gt;-data-governance-&lt;env&gt;</code></td><td>Owns the domain catalog, its managed location, silver and gold</td><td>no</td></tr>
+<tr><td><code>grp-&lt;d&gt;-data-engineers-&lt;env&gt;</code></td><td>Builds and runs the domain's pipelines</td><td>USER, <code>workspace_access</code>, <code>databricks_sql_access</code></td></tr>
+<tr><td><code>grp-&lt;d&gt;-analysts-&lt;env&gt;</code></td><td>Ad hoc analysis</td><td>USER, <code>workspace_access</code>, <code>databricks_sql_access</code></td></tr>
+<tr><td><code>grp-&lt;d&gt;-stakeholders-&lt;env&gt;</code></td><td>Report consumers</td><td>USER, <code>workspace_access</code>, <code>databricks_sql_access</code></td></tr>
+</tbody></table></div>
+
+<h3>Unity Catalog</h3>
+<div style="overflow-x:auto"><table>
+<thead><tr><th>Object</th><th>Principal</th><th>Privileges</th></tr></thead>
+<tbody>
+<tr><td>Metastore</td><td>both CI groups</td><td><code>CREATE_CATALOG</code>, <code>CREATE_EXTERNAL_LOCATION</code>, <code>CREATE_STORAGE_CREDENTIAL</code></td></tr>
+<tr><td>Storage credential <code>cred-analytics-&lt;env&gt;</code></td><td>CI group</td><td><code>CREATE_EXTERNAL_LOCATION</code></td></tr>
+<tr><td>Bronze, landing and ingestion-managed locations</td><td>CI group</td><td><code>CREATE_EXTERNAL_TABLE</code></td></tr>
+<tr><td>Domain managed location</td><td>CI group</td><td><code>CREATE_EXTERNAL_TABLE</code>, <code>CREATE MANAGED STORAGE</code></td></tr>
+<tr><td rowspan="3"><code>&lt;d&gt;_&lt;env&gt;</code> catalog</td><td>data engineers</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code>, <code>MODIFY</code></td></tr>
+<tr><td>analysts, stakeholders</td><td><code>USE_CATALOG</code></td></tr>
+<tr><td>CI service principal</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>CREATE_SCHEMA</code>, <code>READ METADATA</code></td></tr>
+<tr><td><code>gold</code> schema</td><td>analysts, stakeholders</td><td><code>USE_SCHEMA</code>, <code>SELECT</code></td></tr>
+<tr><td><code>silver</code> schema</td><td>analysts</td><td><code>USE_SCHEMA</code>, <code>SELECT</code></td></tr>
+<tr><td rowspan="2"><code>ingestion_&lt;env&gt;</code> catalog</td><td>CI service principal</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>CREATE_SCHEMA</code>, <code>CREATE_VOLUME</code>, <code>READ METADATA</code>, <code>READ VOLUME</code></td></tr>
+<tr><td><code>grp-sales-data-engineers-&lt;env&gt;</code></td><td><code>USE_CATALOG</code></td></tr>
+<tr><td><code>ingestion.bronze</code> schema</td><td><code>grp-sales-data-engineers-&lt;env&gt;</code></td><td><code>USE_SCHEMA</code>, <code>SELECT</code>; plus <code>CREATE_TABLE</code> in dev</td></tr>
+<tr><td><code>&lt;system&gt;_landing</code> volumes</td><td><code>grp-sales-data-engineers-&lt;env&gt;</code></td><td><code>READ VOLUME</code></td></tr>
+<tr><td><code>checkpoints</code> volume</td><td><code>grp-sales-data-engineers-&lt;env&gt;</code></td><td><code>READ VOLUME</code>, <code>WRITE VOLUME</code> (dev only)</td></tr>
+</tbody></table></div>
+<p>The CI service principal appears in Unity Catalog by its client ID. Marketing engineers have no access to <code>ingestion_&lt;env&gt;</code>; only
+sales does today. Every object is owned by a group: the platform group for environment-wide objects, the domain's governance group for domain ones.</p>
+
+<h3>Compute and Azure</h3>
+<ul>
+<li><strong>Serverless warehouse</strong> (dev only): <code>CAN_USE</code> for the engineers, analysts and stakeholders of both domains; the CI service principal owns it.</li>
+<li><strong>Cluster:</strong> none exists (switched off). If enabled, engineers get <code>CAN_RESTART</code> and the other groups <code>CAN_ATTACH_TO</code>.</li>
+<li><strong>Access connector:</strong> <code>Storage Blob Data Contributor</code> on the storage account.</li>
+<li><strong><code>sp-terraform-&lt;env&gt;</code>:</strong> <code>Contributor</code> on the environment's resource group and <code>Cost Management Contributor</code> on the managed resource group, both granted by hand.</li>
+</ul>
+
+<h3>Present in the workspace but not managed by Terraform</h3>
+<ul>
+<li><code>main</code> catalog: Databricks' default, owned by a person, <code>OPEN</code>, with <code>USE_CATALOG</code> for <code>account users</code> and <code>USE_SCHEMA</code> on <code>main.default</code>. Being open, it is visible from every workspace on the metastore.</li>
+<li>The workspace's default catalog, storage credential and external location (all named after the workspace and owned by the workspace admins); the catalog is <code>ISOLATED</code>.</li>
+<li><code>Serverless Starter Warehouse</code>: <code>CAN_USE</code> for all workspace users, and it can be deleted.</li>
+<li>The workspace <code>admins</code> group, which can create clusters.</li>
+</ul>
+</section>
 
     <div class="footer">
       <span>&larr; <a href="ARCHITECTURE.html">Architecture</a></span>
