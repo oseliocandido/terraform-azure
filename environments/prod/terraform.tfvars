@@ -1,6 +1,5 @@
-environment   = "prod"
-budget_amount = 100
-instance      = 1
+environment = "prod"
+instance    = 1
 
 # sp-terraform-prod's Application (client) ID, not its display name --
 # Databricks grants identify an Azure-managed SP by this ID.

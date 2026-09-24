@@ -1,4 +1,4 @@
-# Azure plane: naming, the data lake, the workspace and their budgets.
+# Azure plane: naming, the data lake and the workspace.
 
 module "naming" {
   source = "../../modules/naming"
@@ -29,15 +29,6 @@ module "datalake" {
   tags               = module.naming.tags
 }
 
-module "budget_alert" {
-  source = "../../modules/azure/cost_budget"
-
-  resource_group_id = module.datalake.resource_group_id
-  environment       = var.environment
-  notify_email      = var.notify_email
-  budget_amount     = var.budget_amount
-}
-
 module "databricks_workspace" {
   source = "../../modules/databricks/workspace"
 
@@ -47,16 +38,4 @@ module "databricks_workspace" {
   storage_account_id  = module.datalake.storage_account_id
   metastore_id        = var.metastore_id
   tags                = module.naming.tags
-}
-
-# The workspace's managed resource group (NAT gateway, DBFS storage) bills
-# separately from the first budget's resource group, so it gets its own. Same
-# budget name is fine: a resource-group budget's ID includes the group.
-module "budget_alert_databricks_managed" {
-  source = "../../modules/azure/cost_budget"
-
-  resource_group_id = module.databricks_workspace.managed_resource_group_id
-  environment       = var.environment
-  notify_email      = var.notify_email
-  budget_amount     = var.budget_amount
 }

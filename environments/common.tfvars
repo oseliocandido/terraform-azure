@@ -3,7 +3,7 @@
 # no separate per-environment PR needed.
 #
 # Anything that should genuinely differ per environment (environment,
-# location, budget_amount, instance) stays out of this file and lives in
+# location, instance) stays out of this file and lives in
 # environments/<env>/terraform.tfvars instead.
 #
 # subscription_id here MUST match whatever identity CI authenticates as
@@ -16,12 +16,11 @@
 # one metastore per region, shared by every environment -- see
 # environments/shared/) -- one file covering the union of every root's
 # variables is simpler than splitting further, even though not every root
-# actually uses every value (environments/shared doesn't need notify_email).
+# actually uses every value.
 # The Databricks account ID is not a variable: only environments/shared uses
 # it, so it is set inline on that root's provider block.
 
 subscription_id = "d12d5f8a-c771-485e-b633-c0c4f19c78e2"
-notify_email    = "oseliocandido@outlook.com"
 workload        = "analytics"
 location        = "northeurope"
 

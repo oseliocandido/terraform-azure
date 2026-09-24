@@ -12,8 +12,3 @@ output "access_connector_id" {
   description = "ARM resource ID of the access connector -- referenced by databricks_storage_credential's azure_managed_identity block in stage 2."
   value       = azurerm_databricks_access_connector.this.id
 }
-
-output "managed_resource_group_id" {
-  description = "ARM resource ID of the workspace's auto-created managed resource group -- Databricks-owned, not Terraform-managed (see this module's main.tf comments), but still a valid budget-alert scope. Exists specifically so a budget can see spend Terraform itself can never touch or tag."
-  value       = azurerm_databricks_workspace.this.managed_resource_group_id
-}

@@ -156,8 +156,7 @@ arguments.</p>
 <section id="layout"><h2><span class="num">01</span>Layout</h2><pre class="code"><code class="language-text">modules/
 ├── naming/                name suffix and tags, no resources
 ├── azure/
-│   ├── datalake/          RG, storage account, containers, landing retention
-│   └── cost_budget/       RG-scoped budget with spend alerts
+│   └── datalake/          RG, storage account, containers, landing retention
 └── databricks/
     ├── workspace/         workspace, access connector, metastore assignment
     ├── compute/           once per environment: SQL warehouse, optional cluster
@@ -235,23 +234,6 @@ whichever exists, so outputs are identical. To destroy a prod resource on purpos
 remove its <code>prevent_destroy</code> in a reviewed change first.</p>
 <p>A new source system is one entry in <code>landing_source_systems</code>; its container,
 retention prefix, external location, and volumes follow from it.</p>
-<h3><code>modules/azure/cost_budget</code></h3>
-<div style="overflow-x:auto"><table>
-<thead>
-<tr>
-<th>Object</th>
-<th>What it is</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>azurerm_consumption_budget_resource_group.learning_guard</code></td>
-<td>Monthly budget on one resource group, notifying by email at 20% and 40% of the amount</td>
-</tr>
-</tbody>
-</table></div>
-<p>Used twice per environment: on the analytics resource group and on the Databricks
-workspace's own managed resource group.</p>
 <h3><code>modules/databricks/workspace</code></h3>
 <div style="overflow-x:auto"><table>
 <thead>
@@ -513,8 +495,7 @@ is billed per DBU while it runs.</p>
 </tbody>
 </table></div>
 <p>The cluster's 0.75 DBU per hour is an assumption for a 4-vCPU node. Creating the warehouse starts it once, and each idle tail
-before the auto-stop costs about 0.52. Against the dev budget of 20 that is roughly 6 warehouse hours a month. The workspace's
-managed resource group, where cluster VMs would bill, has its own budget.</p></section>
+before the auto-stop costs about 0.52. There are no budgets or spend alerts, so watch the cost in Azure Cost Management.</p></section>
 <section id="root-modules-environments-dev-environments-prod"><h2><span class="num">03</span>Root modules (<code>environments/dev</code>, <code>environments/prod</code>)</h2><div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -524,12 +505,12 @@ managed resource group, where cluster VMs would bill, has its own budget.</p></s
 </thead>
 <tbody>
 <tr>
-<td><code>module.datalake</code>, <code>budget_alert</code></td>
-<td>Resource group, storage, and the budget (<code>additional_domains = ["marketing", "ingestion"]</code>)</td>
+<td><code>module.datalake</code></td>
+<td>Resource group and storage (<code>additional_domains = ["marketing", "ingestion"]</code>)</td>
 </tr>
 <tr>
-<td><code>module.databricks_workspace</code>, <code>budget_alert_databricks_managed</code></td>
-<td>Workspace and access connector, plus a budget on the workspace's managed resource group</td>
+<td><code>module.databricks_workspace</code></td>
+<td>Workspace and access connector</td>
 </tr>
 <tr>
 <td><code>databricks_permission_assignment.ci_group</code></td>
@@ -578,7 +559,7 @@ already a member.</li>
 <li>The metastore grant goes to the CI groups, not <code>grp-databricks-account-admins</code>, which would hand CI full account
 admin. Each environment's CI group therefore gets <code>CREATE_*</code> across the whole metastore, not only its own catalogs.</li>
 </ul>
-<p>Each root splits its configuration by concern: <code>azure.tf</code> (naming, data lake, workspace, budgets),
+<p>Each root splits its configuration by concern: <code>azure.tf</code> (naming, data lake, workspace),
 <code>databricks_access.tf</code> (workspace assignment, entitlements, metastore grant) and <code>unity_catalog.tf</code>
 (<code>uc_storage</code>, <code>uc_ingestion</code> and the domain catalogs). Dev also has <code>compute.tf</code>.</p></section>
 <section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> comes from <code>module.databricks_workspace.workspace_url</code>.

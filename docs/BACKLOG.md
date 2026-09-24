@@ -138,9 +138,9 @@ lifecycle handling once real volumes exist.
   diff), but it is manual-only. Uncomment its `schedule` to run it weekly. It cannot
   see drift in resources with `ignore_changes` (the metastore grant), and its prod
   job is only meaningful after prod's first apply.
-- **Cost visibility (PRD §12).** Tags and per-resource-group budgets exist, but
-  budgets only notify. Check whether the metastore's own resource group has a
-  budget, and tag compute for DBU cost once compute exists.
+- **Cost visibility (PRD §12).** Resources carry cost tags, but there are no budgets
+  or spend alerts (they were removed). Add alerts back if spend needs watching, and
+  tag compute for DBU cost.
 - **Lint and security scanning.** CI runs `fmt`, `validate`, and `plan` only.
   Add `tflint` and a scanner such as `checkov` or `trivy config`.
 - **Fine-grained DML privileges.** Engineers get blanket `MODIFY` because the

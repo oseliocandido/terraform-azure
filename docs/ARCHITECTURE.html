@@ -178,7 +178,7 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
     <section id="p1-module-environment-composition">
       <div class="decision-block">
         <h2><span class="num">1.1</span>Module / environment composition</h2>
-        <p>Eight reusable modules, composed per root. Nothing in <code>modules/</code> holds
+        <p>Seven reusable modules, composed per root. Nothing in <code>modules/</code> holds
 its own state or backend — each root under <code>environments/</code> is what
 actually gets applied. <code>environments/shared</code> is a third root holding the
 account-level Databricks metastore (applied by hand, no CI yet).</p>
@@ -188,7 +188,6 @@ flowchart TB
         NM[&quot;naming&lt;br/&gt;name suffix + tags, no resources&quot;]
         subgraph az[&quot;azure/&quot;]
             AG[&quot;datalake&lt;br/&gt;RG + ADLS Gen2 + containers&quot;]
-            BA[&quot;cost_budget&lt;br/&gt;Resource-group-scoped consumption budget&quot;]
         end
         subgraph dbx[&quot;databricks/&quot;]
             WS[&quot;workspace&lt;br/&gt;workspace, access connector, metastore assignment&quot;]
@@ -201,7 +200,6 @@ flowchart TB
 
     subgraph dev[&quot;environments/dev (root module)&quot;]
         DM[&quot;main.tf&quot;] --&gt;|module block| AG
-        DM --&gt;|module block, resource_group_id| BA
         DM --&gt; WS
         DM --&gt;|dev only| CP
         DM --&gt; ST
@@ -210,7 +208,6 @@ flowchart TB
     end
     subgraph prod[&quot;environments/prod (root module, not yet applied)&quot;]
         PM[&quot;main.tf&quot;] --&gt;|module block| AG
-        PM --&gt;|module block, resource_group_id| BA
         PM --&gt; WS
         PM --&gt; ST
         PM --&gt; IG
@@ -219,7 +216,6 @@ flowchart TB
 
     NM -.suffix, tags.-&gt; AG
     NM -.suffix, tags.-&gt; WS
-    AG -.output: resource_group_id.-&gt; BA
     AG -.containers.-&gt; ST
     ST -.locations.-&gt; IG
     WS -.access connector, workspace_id.-&gt; ST
@@ -232,9 +228,9 @@ bronze, workspace-bound catalogs, group-based access) is in
 every object described in
 <a href="IMPLEMENTATION.html">Implementation</a>.</p>
 <p>Each root has its own <code>terraform.tfvars</code> (environment-specific values:
-<code>instance</code>, <code>budget_amount</code>, an optional <code>storage_account_suffix</code>) and
+<code>instance</code>, an optional <code>storage_account_suffix</code>) and
 shares environment-independent values via <code>environments/common.tfvars</code>
-(<code>subscription_id</code>, <code>notify_email</code>, <code>workload</code>), which is <strong>not</strong>
+(<code>subscription_id</code>, <code>workload</code>), which is <strong>not</strong>
 auto-loaded and must always be passed explicitly with <code>-var-file</code>.</p>
       </div>
     </section>
@@ -259,9 +255,7 @@ flowchart TB
 
 </pre>
 <p>Each environment's resource group also holds the Databricks workspace and access
-connector; the workspace's own managed resource group is budgeted separately.
-Each resource group holds one budget, scoped to that resource group and
-notifying at 20% and 40% of the configured monthly amount.</p>
+connector. There are no budgets or spend alerts.</p>
 <p><code>stanalyticsprodneu01b</code> carries a trailing <code>b</code> because storage account names are
 globally unique across all of Azure. <code>storage_account_suffix</code> sets it and changes
 only the storage account name, never the resource group's.</p>
@@ -362,10 +356,6 @@ pipeline run cannot mint a token that authenticates as <code>prod</code>.</p>
 <tr>
 <td>The <code>production</code> GitHub Environment is only an approval gate and holds no secrets</td>
 <td>A client ID is not secret. The real boundary is the federated-credential subject match plus RBAC scope, and hiding the ID behind an Environment would only stop <code>plan-prod</code> from running</td>
-</tr>
-<tr>
-<td>Budgets are scoped to the resource group, not the subscription</td>
-<td>One subscription-scoped budget would be a single resource shared by both environments and would need subscription-wide RBAC. A budget per resource group has no shared resource and works with the RG-scoped Contributor role</td>
 </tr>
 <tr>
 <td>Destructive-change detection flags any <code>delete</code> in a plan</td>

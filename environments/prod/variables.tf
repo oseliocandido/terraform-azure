@@ -23,16 +23,6 @@ variable "instance" {
   description = "Instance number, for when more than one copy of this workload exists side by side. No default -- always set explicitly in terraform.tfvars."
 }
 
-variable "notify_email" {
-  type        = string
-  description = "Email address to receive budget threshold alerts."
-}
-
-variable "budget_amount" {
-  type        = number
-  description = "Monthly budget cap in the subscription's billing currency."
-}
-
 variable "storage_account_suffix" {
   type        = string
   default     = ""
