@@ -150,14 +150,7 @@ lifecycle handling once real volumes exist.
   catalog level. Revisit if the privilege version is upgraded; it would allow
   a dev/prod `DELETE` distinction.
 
-## 7. CI for `shared`
-
-The account-level metastore root has no CI job; every apply is manual with
-`azure-cli` auth. `sp-databricks-account-admin` exists to make this
-automatable. If added, gate it like `prod` (a mistake affects every
-environment's metastore access), not auto-apply-on-merge.
-
-## 8. Accepted risk: `terraform destroy` ordering
+## 7. Accepted risk: `terraform destroy` ordering
 
 `provider "databricks"` is configured from a computed attribute of a resource
 created in the same root (`module.databricks_workspace.workspace_url`).
@@ -171,7 +164,7 @@ Accepted for now: a full destroy of `dev` is not planned. The fix is two roots
 before duplicating the structure further, or if destroying `dev` becomes
 routine.
 
-## 9. Networking
+## 8. Networking
 
 No private endpoints, VNet injection, or NSGs (PRD §16, ARCHITECTURE.html
 "Networking"). The workspace uses Azure's defaults: public workspace URL

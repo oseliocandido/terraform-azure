@@ -182,7 +182,7 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
 its own state or backend — <code>platform</code> is what actually gets
 applied, once per environment with that environment's tfvars and state.
 <code>shared</code> is a second root holding the account-level Databricks
-metastore (applied by hand, no CI yet).</p>
+metastore (applied once by hand; it has no CI job).</p>
 <pre class="mermaid">
 flowchart TB
     subgraph modules[&quot;modules/ — shared, reusable, stateless&quot;]
