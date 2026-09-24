@@ -1,4 +1,4 @@
-# Backlog — Retail Sales Analytics Platform
+# Backlog — Retail Analytics Platform
 
 Open work and known gaps only. What is already built is described in
 [ARCHITECTURE.html](ARCHITECTURE.html) and [IMPLEMENTATION.html](IMPLEMENTATION.html).

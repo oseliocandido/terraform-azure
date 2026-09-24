@@ -1,4 +1,4 @@
-# Retail Sales Analytics Platform — Terraform on Azure
+# Retail Analytics Platform — Terraform on Azure
 
 Infrastructure as code for a cloud analytics platform: an Azure data lake, an
 Azure Databricks workspace, and a Unity Catalog layout for Sales and Marketing
