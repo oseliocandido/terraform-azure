@@ -213,28 +213,18 @@ resource "azurerm_storage_container" "managed_domain" {
   name                  = "managed-${each.key}"
   storage_account_id    = azurerm_storage_account.analytics.id
   container_access_type = "private"
-  # Every environment: destroying this needs a deliberate, reviewed change
-  # that removes prevent_destroy first (it must be a literal, so it cannot be
-  # limited to prod).
+
   lifecycle {
     prevent_destroy = true
   }
 }
 
-# Enforces the 5-year retention requirement (docs/PRD.html
-# §9) at the infrastructure level, scoped to the raw landing containers, not
-# bronze -- see azurerm_storage_container.bronze's own comment for why a
-# blob-age-based Azure policy targeting bronze specifically would be unsafe
-# once it holds real Delta tables (no transaction-log awareness -- can
-# tier/delete files the Delta log still references). Landing holds plain,
-# immutable, source-system-written files Databricks never writes to, so
-# blob-age-based tiering/deletion is safe there. This does NOT by itself
-# satisfy the "queryable at lower cost" half of PRD §9 for bronze/silver's
-# own Delta data -- that needs a Delta-native mechanism (VACUUM /
-# delta.deletedFileRetentionDuration, or a partition-based archival job),
-# still-unbuilt pipeline work tracked in BACKLOG.md, not something an Azure
-# storage policy can do for managed Delta storage. silver/gold don't need
-# either kind of retention -- they're derived and rebuildable from bronze.
+# 5-year retention for the raw landing containers only. Landing holds
+# plain, immutable source files, so age-based tiering and deletion is safe.
+# Not applied to bronze or the managed containers: Delta tables need their
+# files kept while the transaction log references them, and this policy only
+# sees blob age. Delta-side retention (VACUUM, partition archival) is not
+# built yet; see BACKLOG.md. silver and gold are rebuildable from bronze.
 resource "azurerm_storage_management_policy" "default_retention_policy" {
   storage_account_id = azurerm_storage_account.analytics.id
 
@@ -264,4 +254,3 @@ resource "azurerm_storage_management_policy" "default_retention_policy" {
     }
   }
 }
-
