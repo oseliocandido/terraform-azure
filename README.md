@@ -209,9 +209,7 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
   boundary. Splitting prod later is a configuration change, not a redesign.
 - App registrations, the metastore, and Entra ID groups were created by one-time
   steps outside Terraform, because a pipeline cannot create the identity it runs as.
-- Business-group grants for `marketing` are still switched off in code (a literal
-  `false`), although its groups are now registered in Databricks. The ingestion
-  job that fills bronze is not built.
+- The ingestion job that fills bronze is not built.
 - **Compute is limited by the subscription.** It has a 4 vCPU regional quota in
   `northeurope`, and the usual small VM sizes are restricted, so no classic
   cluster can start. Only a serverless SQL warehouse runs; Python runs on

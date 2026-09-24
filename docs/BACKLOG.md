@@ -24,7 +24,7 @@ block in `main.tf` keeps them (see IMPLEMENTATION.html, Prod bootstrap).
   Contributor` on the workspace's managed resource group, by hand (it also
   needs `Contributor` on the resource group).
 
-## 2. Groups and marketing grants
+## 2. Groups
 
 Groups are created in Entra ID and registered at the Databricks account level by
 hand (Account Console → User management → Groups). Terraform only references them
@@ -39,13 +39,11 @@ by name.
 | `grp-sales-{stakeholders,analysts,data-engineers}-prod` | Registered | Sales grants in prod |
 | `grp-sales-data-governance-prod` | Registered | Owner of `sales_prod` |
 | `grp-marketing-data-governance-dev` | Registered | Owner of `marketing_dev` |
-| `grp-marketing-{stakeholders,analysts,data-engineers}-dev` | Registered | Marketing business-group grants (still off, see below) and dev workspace users |
+| `grp-marketing-{stakeholders,analysts,data-engineers}-dev` | Registered | Marketing business-group grants (`enable_grants = true` in dev) and dev workspace users |
 | `grp-marketing-*-prod` (all four) | Registered | Marketing in prod, and prod's workspace users |
 
-**Enable marketing grants.** All marketing groups are registered, so this is
-unblocked. `unity_catalog_marketing` still has `enable_grants` as a literal
-`false` in `platform/catalogs.tf`; switch it to `var.enable_grants` (a code
-change, applied in dev first).
+Marketing grants follow `var.enable_grants` like sales: on in dev, off in prod
+until prod's first apply.
 
 ## 3. Ingestion pipeline
 
