@@ -1,24 +1,9 @@
-# Shared across every environment. Promotes to prod the same way code does --
-# a PR that changes a value here reaches dev and prod on their next apply,
-# no separate per-environment PR needed.
+# Values shared by every environment; a change here reaches dev and prod. Values
+# that differ per environment live in config/<env>/values.tfvars.
 #
-# Anything that should genuinely differ per environment (environment,
-# location, budget_amount, instance) stays out of this file and lives in
-# config/<env>/values.tfvars instead.
-#
-# subscription_id here MUST match whatever identity CI authenticates as
-# (see .github/workflows/terraform.yml's ARM_SUBSCRIPTION_ID) -- dev and
-# prod currently share one subscription, isolated by resource-group-scoped
-# RBAC rather than a subscription boundary (see docs/ARCHITECTURE.html's
-# "Environments and isolation" section).
-#
-# azure_tenant_id is an account-wide constant too (one Databricks account,
-# one metastore per region, shared by every environment -- see
-# shared/) -- one file covering the union of every root's
-# variables is simpler than splitting further, even though not every root
-# actually uses every value (shared doesn't need notify_email).
-# The Databricks account ID is not a variable: only shared uses
-# it, so it is set inline on that root's provider block.
+# subscription_id must match the one CI uses (ARM_SUBSCRIPTION_ID). Dev and prod
+# share it, isolated by resource-group RBAC (docs/ARCHITECTURE.html).
+# The Databricks account ID is inline in shared/terraform.tf, not a variable.
 
 subscription_id = "d12d5f8a-c771-485e-b633-c0c4f19c78e2"
 notify_email    = "oseliocandido@outlook.com"

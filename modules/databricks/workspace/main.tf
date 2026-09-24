@@ -1,38 +1,19 @@
 ## -----------------------------------------------------------------------
-## Resources -- stage 1 of the bootstrap sequence documented in
-## docs/IMPLEMENTATION.html ("Providers and
-## authentication"). Only azurerm-provider resources
-## live here: a provider block can't reference this workspace's own
-## computed workspace_url in the same apply that creates it, so nothing
-## needing the databricks provider (storage credential, external
-## locations, metastore assignment) can be added to this module until a
-## second, normal apply after this one has run.
+## Stage 1 of the bootstrap (docs/IMPLEMENTATION.html): only azurerm resources
+## live here. The databricks provider needs this workspace's URL, so anything
+## using it (credential, locations, grants) is a root-level resource applied after.
 ## -----------------------------------------------------------------------
 
-# Renamed off the literal "sales" label -- this module is called once per
-# ENVIRONMENT (dev/prod), not once per business domain (that's
-# modules/databricks/uc_domain_catalog's job) -- a workspace, its access
-# connector, and the metastore assignment below are all environment-wide
-# infrastructure with no domain-specific meaning at all, so "sales" here
-# was always a naming leftover from before real multi-domain use (marketing)
-# exposed the same class of bug this module's own sibling files already
-# fixed (see modules/databricks/uc_domain_catalog and modules/databricks/uc_storage's
-# identical renames earlier this session). Already applied to dev's real
-# state (the moved blocks that protected that migration have since been
-# removed -- their job was done once that apply succeeded; state already
-# has the "this" addresses, so keeping them around served no further
-# purpose).
+# One workspace per environment, not per domain.
 resource "azurerm_databricks_workspace" "this" {
   name                = "dbw-${var.suffix}"
   resource_group_name = var.resource_group_name
   location            = var.location
 
-  # premium, not standard: Unity Catalog requires it, and Azure is
-  # retiring the Standard SKU for new workspaces regardless.
+  # Premium: required by Unity Catalog.
   sku = "premium"
 
-  # null (the default) preserves Azure's default naming for existing
-  # workspaces -- see variable description for why this must stay opt-in.
+  # null keeps Azure's default name for existing workspaces (see the variable).
   managed_resource_group_name = var.managed_resource_group_name
 
   tags = var.tags
@@ -56,24 +37,12 @@ resource "azurerm_role_assignment" "access_connector_storage" {
   principal_id         = azurerm_databricks_access_connector.this.identity[0].principal_id
 }
 
-# storage_credential and the 3 external_locations deliberately do NOT live
-# in this module, even though IMPLEMENTATION.html originally spec'd them
-# here -- they need CREATE_STORAGE_CREDENTIAL/CREATE_EXTERNAL_LOCATION
-# grants on the metastore, and that grant is a root-level resource
-# (platform/access.tf's databricks_grants.metastore_admins). Module
-# `depends_on` applies to every resource inside the module -- including
-# azurerm_databricks_workspace above, which the databricks provider's own
-# `host` argument depends on -- so depending this whole module on that
-# grant creates a real cycle (found by hand: `terraform plan` refused with
-# "Error: Cycle"). Kept as separate root-level resources instead, so only
-# the resources that actually need the grant depend on it.
+# The storage credential and external locations are root-level resources, not
+# here: they depend on the metastore grants, and making this module depend on
+# them would create a cycle through the databricks provider's host.
 
-# Authoritative, overrides whatever metastore is currently assigned --
-# found necessary because Account Console's own "Workspaces" list edit on
-# the metastore's own page didn't reliably take effect for the workspace-
-# level API (a create against a stale/previous metastore_id was rejected
-# with "metastore_id must be empty or equal to the metastore id assigned
-# to the workspace"). This resource is the authoritative fix, not the UI.
+# Authoritative assignment: overrides any metastore already assigned, which the
+# Account Console did not reliably do.
 resource "databricks_metastore_assignment" "this" {
   metastore_id = var.metastore_id
   workspace_id = azurerm_databricks_workspace.this.workspace_id

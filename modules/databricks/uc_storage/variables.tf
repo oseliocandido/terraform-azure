@@ -20,7 +20,7 @@ variable "bronze_storage_root" {
 
 variable "landing_storage_roots" {
   type        = map(string)
-  description = "Source system -> abfss:// URL of its dedicated landing container, built from modules/azure/datalake's landing_container_names output. Adding a key creates that system's external location (and, in uc_ingestion, its volume)."
+  description = "Source system to abfss:// URL of its landing container (datalake output). Each key gets an external location and, in uc_ingestion, a volume."
 }
 
 variable "ingestion_catalog_storage_root" {

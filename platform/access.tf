@@ -5,22 +5,17 @@ locals {
   ci_group_name = "grp-databricks-ci-${var.environment}"
 }
 
-# The group, not the service principal: membership in it decides who has
-# access. ADMIN because Terraform must read this resource on every plan, and
-# reading permission assignments needs a workspace admin. Applied once by a
-# human who is already a workspace member; CI cannot grant itself this.
-# group_name is a bare string, not a lookup, because a workspace-scoped lookup
-# would need the membership this resource creates.
+# The CI group is workspace ADMIN, because reading permission assignments on every
+# plan needs it. A human applies this once; CI cannot grant it to itself.
+# group_name is a plain string: a lookup would need the membership created here.
 resource "databricks_permission_assignment" "ci_group" {
   group_name  = local.ci_group_name
   permissions = ["ADMIN"]
 }
 
-# Membership alone carries no entitlement to call the workspace API; without
-# this every databricks_* resource fails with "This API is disabled for users
-# without the databricks-sql-access or workspace-access ...". workspace_access
-# is the narrowest of the accepted entitlements. The lookup is not circular
-# here: the group is already a member by this point.
+# Membership alone does not allow API calls; without an entitlement every
+# databricks_* resource fails ("This API is disabled for users without ...").
+# workspace_access is the narrowest accepted one.
 data "databricks_group" "ci" {
   display_name = local.ci_group_name
   depends_on   = [databricks_permission_assignment.ci_group]
@@ -31,14 +26,11 @@ resource "databricks_entitlements" "ci_group" {
   workspace_access = true
 }
 
-# The platform and governance groups deliberately have no workspace presence:
-# they only own Unity Catalog objects and never operate in this workspace.
-#
-# The people who do work here are each domain's engineers, analysts and
-# stakeholders. They get plain USER membership plus the entitlements needed to
-# open the workspace and use SQL; what they may do with compute is set in
-# compute.tf. The domains come from var.workspace_user_domains; empty means no
-# one is added. Each listed domain's groups must already exist in the account.
+# Platform and governance groups only own Unity Catalog objects, so they are not
+# workspace members. Each domain's engineers, analysts and stakeholders are:
+# USER plus workspace and SQL access (compute rights are in compute.tf). Domains
+# come from var.workspace_user_domains (empty adds no one); their groups must
+# already exist in the account.
 locals {
   data_engineer_groups = [for d in var.workspace_user_domains : "grp-${d}-data-engineers-${var.environment}"]
   consumer_groups = flatten([
@@ -73,14 +65,9 @@ resource "databricks_entitlements" "users" {
   databricks_sql_access = true
 }
 
-# Metastore-wide, so not per catalog. It lives here rather than in
-# shared because databricks_grants needs a workspace-level
-# provider. The prod root declares the identical grant set, so whichever
-# environment applies last converges to the same state.
-#
-# Granted to the CI groups, not account-admins (that would hand CI full
-# account admin) and not individual principals. Each environment's CI group
-# gets CREATE_* across the whole metastore, not only its own catalogs.
+# Metastore-wide grants for both CI groups (not account admins, which would be
+# too broad). Here rather than in shared because databricks_grants needs the
+# workspace provider. Both environments declare the same set, so they converge.
 resource "databricks_grants" "metastore_admins" {
   metastore = var.metastore_id
 
@@ -93,15 +80,12 @@ resource "databricks_grants" "metastore_admins" {
     privileges = ["CREATE_CATALOG", "CREATE_EXTERNAL_LOCATION", "CREATE_STORAGE_CREDENTIAL"]
   }
 
-  # Not a hard API dependency, but the CI failures this fixed happened on the
-  # provider's first read, so the ordering is explicit.
+  # Explicit ordering: the provider's first read failed without it.
   depends_on = [databricks_permission_assignment.ci_group, databricks_entitlements.ci_group]
 
-  # CI is not a metastore admin: it cannot update these grants, and as a
-  # non-admin it reads back only its own group's, which showed as a phantom
-  # diff and then "User is not a metastore admin" on apply. So this grant is a
-  # one-time admin bootstrap, changed locally; ignore_changes keeps CI plans
-  # clean and creation still sets the grants.
+  # CI is not a metastore admin and reads back only its own group's grant, which
+  # showed as a phantom diff. This is a one-time admin bootstrap; ignore_changes
+  # keeps CI plans clean.
   lifecycle {
     ignore_changes = [grant]
   }

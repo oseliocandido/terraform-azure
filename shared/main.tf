@@ -1,10 +1,6 @@
-# Account-level Unity Catalog metastore
-# "Unity Catalog: metastore, catalog, and schema strategy" and "Metastore's
-# own Azure resources" decisions). Lives in its own root module, not
-# platform, because it isn't owned by any one environment.
-# Imported, not newly created: Databricks auto-provisioned this metastore
-# the moment the first workspace landed in northeurope, before this module
-# existed
+# Account-level Unity Catalog metastore, in its own root because no single
+# environment owns it. Imported: Databricks created it with the first workspace
+# in northeurope. Applied once by hand (docs/IMPLEMENTATION.html).
 
 data "databricks_group" "account_admins" {
   display_name = "grp-databricks-account-admins"
@@ -13,7 +9,7 @@ data "databricks_group" "account_admins" {
 resource "databricks_metastore" "primary" {
   name         = "metastore_azure_northeurope"
   region       = "northeurope"
-  api          = "account" # explicit -- auto-inference from provider host wasn't reliable here
+  api          = "account" # explicit: inferring it from the provider host was unreliable
   storage_root = "abfss://metastore@stucmetastoreneu01.dfs.core.windows.net/"
   owner        = data.databricks_group.account_admins.display_name
 

@@ -17,10 +17,8 @@ module "naming" {
   }
 }
 
-# Prod's state predates the analytics_group -> datalake module rename and still
-# holds the real prod resource group and storage account under the old
-# address. Without this, a prod apply would destroy and recreate them. Ignored
-# where the old address is absent (dev).
+# Prod state still holds its real resource group and storage account under the old
+# module name; without this a prod apply would recreate them. No effect in dev.
 moved {
   from = module.analytics_group
   to   = module.datalake
@@ -33,9 +31,8 @@ module "datalake" {
   environment            = var.environment
   location               = var.location
   storage_account_suffix = var.storage_account_suffix
-  # "ingestion" is not a business domain: additional_domains is really
-  # "additional managed-storage owners". It backs the ingestion catalog's
-  # managed root, the same way marketing's own container backs its catalog.
+  # "ingestion" is not a domain: additional_domains means extra managed-storage
+  # owners, and this backs the ingestion catalog's managed root.
   additional_domains = ["marketing", "ingestion"]
   tags               = module.naming.tags
 }
@@ -61,8 +58,7 @@ module "databricks_workspace" {
 }
 
 # The workspace's managed resource group (NAT gateway, DBFS storage) bills
-# separately from the first budget's resource group, so it gets its own. Same
-# budget name is fine: a resource-group budget's ID includes the group.
+# separately, so it gets its own budget.
 module "budget_alert_databricks_managed" {
   source = "../modules/azure/cost_budget"
 

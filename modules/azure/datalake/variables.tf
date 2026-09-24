@@ -5,7 +5,7 @@ variable "suffix" {
 
 variable "environment" {
   type        = string
-  description = "Deployment environment. Drives sizing and protection decisions (replication, soft delete, prevent_destroy). No default -- every caller must decide this explicitly."
+  description = "Deployment environment; drives replication, soft delete and protection. No default."
 
   validation {
     condition     = contains(["dev", "prod"], var.environment)
@@ -21,7 +21,7 @@ variable "location" {
 variable "storage_account_suffix" {
   type        = string
   default     = ""
-  description = "Extra characters appended ONLY to the storage account name, never the resource group -- storage account names are globally unique across all of Azure, not just this subscription, so a generic name can collide with an unrelated customer's account. Use this narrow escape hatch instead of bumping `instance` (which would also rename the resource group and break its RBAC scoping)."
+  description = "Characters appended only to the storage account name (globally unique in Azure) to resolve a collision, without renaming the resource group as `instance` would."
 
   validation {
     condition     = can(regex("^[a-z0-9]{0,6}$", var.storage_account_suffix))
@@ -32,7 +32,7 @@ variable "storage_account_suffix" {
 variable "additional_domains" {
   type        = list(string)
   default     = []
-  description = "Extra business domains beyond the first, already-applied one this environment's Unity Catalog setup started with (\"sales\") -- each gets its own \"managed-<domain>\" container (see azurerm_storage_container.managed_domain), so a second domain's catalog storage_root doesn't have to overlap or share the original \"managed\" container's Unity Catalog external-location registration. The original domain's container deliberately stays named plain \"managed\" (see managed_container_name output) rather than being retrofitted into this list -- azurerm_storage_container's name is ForceNew, so renaming it would destroy and recreate the container sales already has applied."
+  description = "Domains beyond the first (sales), each with its own managed-<domain> container so catalog storage roots do not overlap. The first stays separate because renaming its container is ForceNew."
 
   validation {
     condition     = length(var.additional_domains) == length(distinct(var.additional_domains))
@@ -43,7 +43,7 @@ variable "additional_domains" {
 variable "landing_source_systems" {
   type        = list(string)
   default     = ["pos", "ecommerce"]
-  description = "One dedicated \"landing-<system>\" container per source system (see azurerm_storage_container.landing) -- not folders inside one shared container, so each can get its own Unity Catalog external location and independent file-event scoping (see that resource's own comment). Also what the retention lifecycle policy's prefix_match derives from, so a new source system's container automatically gets covered by the same policy without hand-editing prefix_match separately. \"pos\"/\"ecommerce\" are the two already-applied in dev -- adding a third name here creates its container without disturbing the first two (for_each keys by name, not by list position), but the corresponding Unity Catalog side (external location, volume, grants in modules/databricks/uc_storage) is still wired per-source-system by hand there and needs its own change to actually register and use the new container."
+  description = "One landing-<system> container per source system, each usable as its own external location with file events. The retention policy's prefixes derive from this list, and uc_storage and uc_ingestion follow it."
 
   validation {
     condition     = length(var.landing_source_systems) == length(distinct(var.landing_source_systems))
@@ -62,5 +62,5 @@ variable "landing_source_systems" {
 
 variable "tags" {
   type        = map(string)
-  description = "Tags applied to every taggable resource this module creates: modules/naming's tags output (see README.md's \"Working with the repo\" section for the required keys and why each exists)."
+  description = "Tags for every resource in this module (modules/naming output)."
 }
