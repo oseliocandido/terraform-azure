@@ -160,6 +160,7 @@ arguments.</p>
 │   └── cost_budget/       RG-scoped budget with spend alerts
 └── databricks/
     ├── workspace/         workspace, access connector, metastore assignment
+    ├── compute/           once per environment: shared cluster and SQL warehouse
     ├── uc_storage/        once per environment: credential, external locations
     ├── uc_ingestion/      once per environment: ingestion catalog, bronze, volumes
     └── uc_domain_catalog/ once per domain: catalog, silver/gold, grants
@@ -451,7 +452,64 @@ Output: <code>catalog_name</code>.</p>
 rejects <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code> at catalog level. <code>databricks_grants</code> (plural,
 authoritative) is used over <code>databricks_grant</code> so Terraform is the single source of truth.</p>
 <p><code>enable_grants</code> gates business-group grants only. Sales uses <code>var.enable_grants</code>
-(true in dev); marketing uses a literal <code>false</code> until its groups are registered.</p></section>
+(true in dev); marketing uses a literal <code>false</code> until its groups are registered.</p>
+<h3><code>modules/databricks/compute</code> (once per environment, dev only so far)</h3>
+<div style="overflow-x:auto"><table>
+<thead>
+<tr>
+<th>Object</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>databricks_cluster.shared</code></td>
+<td>Single-node all-purpose cluster on <code>Standard_DC4ads_v6</code> (4 vCPU, 16 GB), standard access mode, no Photon, on-demand, terminates after 10 idle minutes</td>
+</tr>
+<tr>
+<td><code>databricks_sql_endpoint.shared</code></td>
+<td>Serverless SQL warehouse, 2X-Small, one cluster, stops after 10 idle minutes</td>
+</tr>
+<tr>
+<td><code>databricks_permissions.cluster</code></td>
+<td>Data engineers <code>CAN_RESTART</code>; every other workspace group <code>CAN_ATTACH_TO</code></td>
+</tr>
+<tr>
+<td><code>databricks_permissions.warehouse</code></td>
+<td><code>CAN_USE</code> for all of those groups</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Why this size.</strong> The subscription has a 4 vCPU regional quota in northeurope, and the common 4-vCPU
+families (<code>DS3_v2</code>, <code>F4s_v2</code>, <code>D4ads_v5</code> and others) are <code>NotAvailableForSubscription</code>.
+<code>DC4ads_v6</code> is the smallest type that is allowed and fits, so only one cluster can run at a time. A classic or pro
+warehouse needs more cores than the quota allows; a serverless warehouse is not billed against it.</p>
+<p><strong>Hourly cost</strong> (EUR, northeurope, Premium, pay-as-you-go list prices from Azure's retail price API):</p>
+<div style="overflow-x:auto"><table>
+<thead>
+<tr>
+<th>Compute</th>
+<th>Calculation</th>
+<th>Per hour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cluster</td>
+<td>0.75 DBU &times; 0.4723 (all-purpose) + 0.2404 (VM)</td>
+<td>about 0.59</td>
+</tr>
+<tr>
+<td>Warehouse</td>
+<td>4 DBU &times; 0.7814 (serverless SQL), VM included</td>
+<td>3.13</td>
+</tr>
+</tbody>
+</table></div>
+<p>The cluster's 0.75 DBU per hour is an assumption for a 4-vCPU node; at 1.0 DBU it is about 0.71. Disks and networking add a
+little. Each idle tail before auto-termination costs about 0.10 (cluster) or 0.52 (warehouse), and creating either resource starts
+it once. Against the dev budget of 20 that is roughly 28 to 34 cluster hours or 6 warehouse hours a month. Cluster VMs bill in the
+workspace's managed resource group, which has its own budget.</p></section>
 <section id="root-modules-environments-dev-environments-prod"><h2><span class="num">03</span>Root modules (<code>environments/dev</code>, <code>environments/prod</code>)</h2><div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -477,6 +535,10 @@ authoritative) is used over <code>databricks_grant</code> so Terraform is the si
 <td>Gives that group <code>workspace_access</code>, without which the workspace API is unusable</td>
 </tr>
 <tr>
+<td><code>databricks_permission_assignment.users</code>, <code>databricks_entitlements.users</code></td>
+<td>Each domain's data engineers, analysts and stakeholders become workspace <code>USER</code>s with <code>workspace_access</code> and <code>databricks_sql_access</code>. Platform and governance groups are not added</td>
+</tr>
+<tr>
 <td><code>databricks_grants.metastore_admins</code></td>
 <td><code>CREATE_CATALOG</code>, <code>CREATE_EXTERNAL_LOCATION</code>, <code>CREATE_STORAGE_CREDENTIAL</code> for both CI groups. <code>ignore_changes = [grant]</code></td>
 </tr>
@@ -487,6 +549,10 @@ authoritative) is used over <code>databricks_grant</code> so Terraform is the si
 <tr>
 <td><code>module.unity_catalog_sales</code>, <code>module.unity_catalog_marketing</code></td>
 <td>The <code>uc_domain_catalog</code> module once per domain</td>
+</tr>
+<tr>
+<td><code>module.compute</code> (dev only)</td>
+<td>The shared cluster and SQL warehouse</td>
 </tr>
 </tbody>
 </table></div>
@@ -509,7 +575,7 @@ admin. Each environment's CI group therefore gets <code>CREATE_*</code> across t
 </ul>
 <p>Each root splits its configuration by concern: <code>azure.tf</code> (naming, data lake, workspace, budgets),
 <code>databricks_access.tf</code> (workspace assignment, entitlements, metastore grant) and <code>unity_catalog.tf</code>
-(<code>uc_storage</code>, <code>uc_ingestion</code> and the domain catalogs).</p></section>
+(<code>uc_storage</code>, <code>uc_ingestion</code> and the domain catalogs). Dev also has <code>compute.tf</code>.</p></section>
 <section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> comes from <code>module.databricks_workspace.workspace_url</code>.
 Locally it uses <code>auth_type = "azure-cli"</code>; in CI it uses the same OIDC variables as
 <code>azurerm</code>. The account-level provider in <code>environments/shared</code> sets its

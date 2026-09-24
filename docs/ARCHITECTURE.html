@@ -178,7 +178,7 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
     <section id="p1-module-environment-composition">
       <div class="decision-block">
         <h2><span class="num">1.1</span>Module / environment composition</h2>
-        <p>Seven reusable modules, composed per root. Nothing in <code>modules/</code> holds
+        <p>Eight reusable modules, composed per root. Nothing in <code>modules/</code> holds
 its own state or backend — each root under <code>environments/</code> is what
 actually gets applied. <code>environments/shared</code> is a third root holding the
 account-level Databricks metastore (applied by hand, no CI yet).</p>
@@ -192,6 +192,7 @@ flowchart TB
         end
         subgraph dbx[&quot;databricks/&quot;]
             WS[&quot;workspace&lt;br/&gt;workspace, access connector, metastore assignment&quot;]
+            CP[&quot;compute (once per env)&lt;br/&gt;single-node cluster, SQL warehouse&quot;]
             ST[&quot;uc_storage (once per env)&lt;br/&gt;credential, external locations&quot;]
             IG[&quot;uc_ingestion (once per env)&lt;br/&gt;ingestion catalog, bronze, volumes&quot;]
             UC[&quot;uc_domain_catalog (once per domain)&lt;br/&gt;catalog, silver/gold, grants&quot;]
@@ -202,6 +203,7 @@ flowchart TB
         DM[&quot;main.tf&quot;] --&gt;|module block| AG
         DM --&gt;|module block, resource_group_id| BA
         DM --&gt; WS
+        DM --&gt;|dev only| CP
         DM --&gt; ST
         DM --&gt; IG
         DM --&gt;|sales, marketing| UC

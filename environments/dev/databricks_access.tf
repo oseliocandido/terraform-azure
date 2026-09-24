@@ -29,6 +29,46 @@ resource "databricks_entitlements" "ci_group" {
 
 # The platform and governance groups deliberately have no workspace presence:
 # they only own Unity Catalog objects and never operate in this workspace.
+#
+# The people who do work here are each domain's engineers, analysts and
+# stakeholders. They get plain USER membership plus the entitlements needed to
+# open the workspace and use SQL; what they may do with compute is set in
+# compute.tf. Adding a domain to this list is the only change needed here.
+locals {
+  domains = ["sales", "marketing"]
+
+  data_engineer_groups = [for d in local.domains : "grp-${d}-data-engineers-${var.environment}"]
+  consumer_groups = flatten([
+    for d in local.domains : [
+      "grp-${d}-analysts-${var.environment}",
+      "grp-${d}-stakeholders-${var.environment}",
+    ]
+  ])
+  workspace_user_groups = toset(concat(local.data_engineer_groups, local.consumer_groups))
+}
+
+resource "databricks_permission_assignment" "users" {
+  for_each = local.workspace_user_groups
+
+  group_name  = each.value
+  permissions = ["USER"]
+}
+
+# Looked up after the assignment, as for the CI group above.
+data "databricks_group" "users" {
+  for_each = local.workspace_user_groups
+
+  display_name = each.value
+  depends_on   = [databricks_permission_assignment.users]
+}
+
+resource "databricks_entitlements" "users" {
+  for_each = local.workspace_user_groups
+
+  group_id              = data.databricks_group.users[each.value].id
+  workspace_access      = true
+  databricks_sql_access = true
+}
 
 # Metastore-wide, so not per catalog. It lives here rather than in
 # environments/shared because databricks_grants needs a workspace-level
