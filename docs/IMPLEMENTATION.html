@@ -490,8 +490,8 @@ prod's copies are identical so they converge. Grants go to the CI <strong>group<
 service principal, so a new CI identity is a membership change.</p></section>
 <section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> comes from <code>module.databricks_workspace.workspace_url</code>.
 Locally it uses <code>auth_type = "azure-cli"</code>; in CI it uses the same OIDC variables as
-<code>azurerm</code>. A dummy <code>databricks_account_id</code> variable keeps the shared <code>common.tfvars</code>
-from warning.</p>
+<code>azurerm</code>. The account-level provider in <code>environments/shared</code> sets its
+Databricks account ID inline; no other root needs it.</p>
 <p><strong>Two-stage first apply.</strong> A provider block cannot reference a computed attribute, so
 on a new environment the workspace must exist before the <code>databricks</code> provider can
 be configured: first <code>terraform apply -target=module.databricks_workspace.azurerm_databricks_workspace.this</code>,
