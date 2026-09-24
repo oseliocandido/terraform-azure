@@ -31,5 +31,5 @@ variable "managed_resource_group_name" {
 
 variable "tags" {
   type        = map(string)
-  description = "Tags applied to every taggable resource this module creates: modules/naming's tags output -- see README.md's \"Working with the repo\" section. Note: the workspace's own managed resource group (databricks-rg-...) is Azure/Databricks-owned, not Terraform's, and never receives these tags -- see that module's own comments for why nothing in it is manageable from here."
+  description = "Tags applied to every taggable resource this module creates: modules/naming's tags output -- see README.md's \"Working with the repo\" section. Note: the workspace's own managed resource group (databricks-rg-...) is Azure/Databricks-owned, so Terraform does not manage or tag it directly, but Azure Databricks copies the workspace's tags onto it (seen on dev), so its NAT gateway and other resources carry them too."
 }
