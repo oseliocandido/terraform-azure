@@ -7,8 +7,7 @@ resource "azurerm_consumption_budget_resource_group" "learning_guard" {
 
   time_period {
     start_date = "${formatdate("YYYY-MM-01", timestamp())}T00:00:00Z"
-    # Consumption budgets require an end date; five years out is effectively
-    # "no end" without hitting API limits some regions enforce on far-future dates.
+    # An end date is required; five years out is effectively none.
     end_date = "${formatdate("YYYY-MM-01", timeadd(timestamp(), "43800h"))}T00:00:00Z"
   }
 
@@ -29,8 +28,7 @@ resource "azurerm_consumption_budget_resource_group" "learning_guard" {
   }
 
   lifecycle {
-    # timestamp()/timeadd() change on every plan by nature - ignore drift on
-    # the dates so this doesn't show a spurious diff on every subsequent plan.
+    # The dates come from timestamp(), which differs on every plan.
     ignore_changes = [time_period]
   }
 }

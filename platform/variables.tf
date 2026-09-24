@@ -10,7 +10,7 @@ variable "workload" {
 
 variable "environment" {
   type        = string
-  description = "Deployment environment, dev or prod. Also drives resource names, so it must match the state this run is initialised against. No default -- always set explicitly in config/<env>/values.tfvars."
+  description = "Deployment environment, dev or prod. Drives names and must match the state this run is initialised against. No default."
 }
 
 variable "location" {
@@ -20,7 +20,7 @@ variable "location" {
 
 variable "instance" {
   type        = number
-  description = "Instance number, for when more than one copy of this workload exists side by side. No default -- always set explicitly in config/<env>/values.tfvars."
+  description = "Instance number, for side-by-side copies of the workload. No default."
 }
 
 variable "notify_email" {
@@ -40,7 +40,7 @@ variable "azure_tenant_id" {
 
 variable "metastore_id" {
   type        = string
-  description = "Account-level Unity Catalog metastore ID -- output of shared (`terraform output metastore_id` from that directory), not created by this module."
+  description = "Account-level metastore ID (`terraform output metastore_id` in shared)."
 }
 
 variable "ci_service_principal_name" {
@@ -51,7 +51,7 @@ variable "ci_service_principal_name" {
 variable "enable_grants" {
   type        = bool
   default     = false
-  description = "Gates every databricks_grants resource that references a grp-sales-*-<env> principal -- inside module.unity_catalog_sales (catalog/schema grants) and module.uc_ingestion (the ingestion catalog's bronze schema + landing-volume grants, see that module's own \"Ingestion catalog\" section) -- false by default because those groups aren't all provisioned yet. Threaded through to both modules rather than left to their own defaults, so they can't drift out of sync with each other. Deliberately NOT also threaded into module.unity_catalog_marketing's own enable_grants -- that one has its own, independent literal false until grp-marketing-*-<env> exists (see catalogs.tf)."
+  description = "Gates the grants to business groups in the domain catalogs and the ingestion catalog. On in dev; off by default."
 }
 
 variable "storage_account_suffix" {
@@ -83,13 +83,13 @@ variable "data_owner" {
 variable "databricks_auth_type" {
   type        = string
   default     = null
-  description = "Databricks provider auth_type. null lets DATABRICKS_AUTH_TYPE decide (dev: github-oidc in CI, azure-cli locally); prod pins \"azure-cli\" until a prod workflow supplies the OIDC variables. See providers.tf."
+  description = "Databricks auth_type; null lets DATABRICKS_AUTH_TYPE decide. Prod pins azure-cli (see providers.tf)."
 }
 
 variable "workspace_user_domains" {
   type        = list(string)
   default     = []
-  description = "Business domains whose engineers, analysts and stakeholders (grp-<domain>-data-engineers|analysts|stakeholders-<env>) become workspace USERs with workspace and SQL access. Each group must already exist at account level. Empty adds no one."
+  description = "Domains whose engineers, analysts and stakeholders become workspace users with workspace and SQL access; their groups must exist in the account. Empty adds no one."
 }
 
 variable "enable_compute" {
@@ -101,5 +101,5 @@ variable "enable_compute" {
 variable "bronze_consumer_can_write" {
   type        = bool
   default     = false
-  description = "Give the bronze consumer group CREATE_TABLE on the bronze schema and READ/WRITE VOLUME on the checkpoints volume. On in dev, where engineers experiment with Auto Loader by hand; prod leaves it off until a pipeline service principal exists."
+  description = "Give the bronze consumer group CREATE_TABLE on bronze and READ/WRITE VOLUME on checkpoints. On in dev; prod waits for a pipeline principal."
 }

@@ -18,20 +18,14 @@ permissions:
   pull-requests: write  # required to post/update the plan comment on the PR
 
 env:
-  # Must match (or exceed) the version used locally to write state --
-  # state written by a newer Terraform can use state-schema features an
-  # older binary can't parse ("unsupported checkable object kind" is
-  # exactly this failure mode). Check `terraform version` locally before
-  # bumping this.
+  # Must be at least the version used locally: an older binary cannot read state
+  # written by a newer one.
   TF_VERSION: "1.15.8"
-  # Terraform's own recognized CI signal -- strips the "run terraform
-  # apply now" hint text that's meaningless (and confusing) outside an
-  # interactive terminal.
+  # Removes the "run terraform apply" hints, which are noise outside a terminal.
   TF_IN_AUTOMATION: "true"
 
 jobs:
-  # --- Format check: cheapest possible gate, no Azure creds, no init,
-  # checks the whole repo once instead of duplicating per environment. ---
+  # --- Format check: no credentials or init, runs once for the whole repo. ---
 
   fmt-check:
     runs-on: ubuntu-latest
@@ -52,20 +46,11 @@ jobs:
     defaults:
       run:
         working-directory: platform
-    # Terraform's own azurerm provider fetches its own OIDC token directly
-    # (via GitHub's auto-injected ACTIONS_ID_TOKEN_REQUEST_* env vars) using
-    # these ARM_* variables -- no azure/login step needed, since nothing
-    # here runs a raw `az` command.
-    #
-    # DATABRICKS_* below is a completely separate OIDC exchange -- Databricks'
-    # own native workload identity federation, unrelated to ARM_USE_OIDC/
-    # azurerm. Requires the service principal federation policy already
-    # created on sp-terraform-dev (Account Console -> User management ->
-    # Service principals -> sp-terraform-dev -> Credentials & secrets ->
-    # Federation policies), matching this exact repo/branch. DATABRICKS_HOST
-    # is a literal, not a Terraform output -- dev's workspace already exists,
-    # so its URL is a known constant here, not something this job's own
-    # apply could resolve for itself in time to authenticate with.
+    # ARM_*: azurerm fetches its own OIDC token, so no azure/login step.
+    # DATABRICKS_*: a separate OIDC exchange (Databricks workload identity
+    # federation), which needs a federation policy on sp-terraform-dev (Account
+    # Console). DATABRICKS_HOST is a literal because the provider needs it before
+    # this job's apply could output it.
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -90,13 +75,7 @@ jobs:
       - name: Check for destructive changes (any delete, same-resource replace or not)
         id: force_replace
         run: |
-          # Catches BOTH: a same-resource force-replace (one resource_changes
-          # entry with delete+create together) AND a resource-type swap (an
-          # OLD address destroyed + a DIFFERENT NEW address created -- two
-          # separate entries, each with just one action). The first version
-          # of this check only matched the delete+create-together case and
-          # missed a real destroy when modules/azure/cost_budget switched resource
-          # types -- any "delete" at all is worth a human's attention.
+          # Flags any delete, whether a replace or a resource-type swap.
           DELETIONS=$(terraform show -json tfplan | jq -r '
             .resource_changes[]
             | select(.change.actions | index("delete"))
@@ -167,9 +146,7 @@ jobs:
     defaults:
       run:
         working-directory: platform
-    # See plan-dev's identical env block for why DATABRICKS_* exists
-    # alongside ARM_* -- two separate OIDC exchanges, azurerm's and
-    # Databricks' own.
+    # Same env as plan-dev.
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -193,10 +170,8 @@ jobs:
           path: platform
       - run: terraform apply -input=false -lock-timeout=5m tfplan
 
-  # --- Prod: plan runs right after dev applies successfully; apply is
-  # gated behind the "production" GitHub Environment, which you configure
-  # with a required reviewer under Settings -> Environments. The job will
-  # sit waiting for a human approval click before `terraform apply` runs. ---
+  # --- Prod: plans after dev applies; apply waits for approval on the
+  # "production" GitHub Environment (required reviewer). ---
 
   plan-prod:
     needs: apply-dev
@@ -221,15 +196,12 @@ jobs:
       - run: terraform validate
       - run: terraform plan -no-color -input=false -var-file=../config/common.tfvars -var-file=../config/prod/values.tfvars -out=tfplan -lock-timeout=5m
 
-      # Human-readable plan in the job log, for the reviewer approving apply-prod below.
-      # (Not a PR comment here, unlike plan-dev -- plan-prod only ever runs
-      # post-merge, via needs: apply-dev, so there's no PR left to comment on.)
+      # Plan in the log for the apply-prod reviewer (no PR to comment on post-merge).
       - run: terraform show tfplan
 
       - name: Check for destructive changes (any delete, same-resource replace or not)
         run: |
-          # See plan-dev's identical step for why this matches any "delete",
-          # not just a same-resource delete+create pair.
+          # Same check as plan-dev.
           DELETIONS=$(terraform show -json tfplan | jq -r '
             .resource_changes[]
             | select(.change.actions | index("delete"))
@@ -262,7 +234,7 @@ jobs:
   apply-prod:
     needs: plan-prod
     runs-on: ubuntu-latest
-    environment: production   # <-- the approval gate: configure a required reviewer on this Environment
+    environment: production   # approval gate (required reviewer)
     defaults:
       run:
         working-directory: platform

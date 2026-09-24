@@ -1,11 +1,11 @@
 variable "resource_group_id" {
   type        = string
-  description = "ID of the resource group this budget tracks spend for -- scoping the budget at the resource group, not the subscription, means it only tracks THIS environment's actual spend (a subscription-scoped budget would track the whole subscription's combined spend, dev+prod together, regardless of which one's name it carried), and different environments can never collide on budget name/scope even when they share one subscription."
+  description = "ID of the resource group this budget tracks. Scoped to the resource group so it covers only this environment's spend."
 }
 
 variable "environment" {
   type        = string
-  description = "Deployment environment. Used only to keep the budget's display name distinguishable across environments in the Azure portal -- the resource_group_id scoping is what actually prevents collisions now."
+  description = "Deployment environment; only distinguishes the budget's display name."
 }
 
 variable "notify_email" {
@@ -15,5 +15,5 @@ variable "notify_email" {
 
 variable "budget_amount" {
   type        = number
-  description = "Monthly budget cap in the subscription's billing currency. No default -- this is a business decision per environment, not something the module should guess."
+  description = "Monthly budget in the billing currency. No default: it is a per-environment decision."
 }

@@ -20,7 +20,7 @@ variable "workspace_id" {
 
 variable "ci_service_principal_name" {
   type        = string
-  description = "sp-terraform-<env>. Granted USE_CATALOG, USE_SCHEMA, CREATE_SCHEMA, CREATE_VOLUME, READ METADATA and READ VOLUME on the ingestion catalog, ungated by enable_grants. CI does not own the catalog (the platform group does), and the metastore-level CREATE_CATALOG grant does not cascade to it. No CREATE_TABLE: table creation belongs to a future pipeline principal."
+  description = "sp-terraform-<env>. Granted catalog access to create schemas and volumes and to read metadata and volumes, ungated. CI does not own the catalog. No CREATE_TABLE: tables belong to a future pipeline principal."
 }
 
 variable "catalog_storage_root" {
@@ -40,17 +40,17 @@ variable "landing_location_urls" {
 
 variable "bronze_consumer_group_name" {
   type        = string
-  description = "grp-sales-data-engineers-<env> today: the one group granted USE_CATALOG on the catalog, SELECT on bronze and READ VOLUME on the landing volumes. A single string, not a list, because only sales has a PRD-backed consumer for the raw data; add a grant by hand when a second domain needs it."
+  description = "Group granted USE_CATALOG on the ingestion catalog, SELECT on bronze and READ VOLUME on the landing volumes (sales data engineers today). A single string; add other groups by hand."
 }
 
 variable "bronze_consumer_can_write" {
   type        = bool
   default     = false
-  description = "Also lets bronze_consumer_group_name experiment by hand: WRITE VOLUME on the checkpoints volume and CREATE_TABLE on bronze. Only meaningful when enable_grants is true. True in dev; false in prod, where a pipeline service principal should hold these."
+  description = "Also grants bronze_consumer_group_name WRITE VOLUME on checkpoints and CREATE_TABLE on bronze (needs enable_grants). On in dev; in prod a pipeline principal should hold these."
 }
 
 variable "enable_grants" {
   type        = bool
   default     = false
-  description = "Gates bronze_consumer_group_name's grants. The CI grants stay ungated: infrastructure CI needs them whether or not the group exists yet."
+  description = "Gates bronze_consumer_group_name's grants; CI's grants are never gated."
 }

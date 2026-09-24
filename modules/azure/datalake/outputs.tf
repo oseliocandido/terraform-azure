@@ -24,31 +24,31 @@ output "storage_account_id" {
 }
 
 output "bronze_container_name" {
-  description = "Name of the bronze (raw) medallion-layer container -- registered as a Unity Catalog external location. silver/gold have no equivalent container -- see managed_container_name."
+  description = "Name of the bronze container, registered as a Unity Catalog external location."
   value       = azurerm_storage_container.bronze.name
 }
 
 output "landing_container_names" {
-  description = "Map of source system (var.landing_source_systems) -> its own \"landing-<system>\" container name. Each is registered as its own Unity Catalog external location, file events enabled -- see modules/databricks/uc_storage/main.tf. landing_pos_container_name/landing_ecommerce_container_name below are convenience lookups into this same map for the two source systems the ingestion modules currently wire up by name; add entries here first if a new source system needs the same treatment."
+  description = "Map of source system to its landing-<system> container name; each is its own external location with file events."
   value       = { for s, c in azurerm_storage_container.landing : s => c.name }
 }
 
 output "landing_pos_container_name" {
-  description = "Name of the point-of-sale source system's dedicated landing container. Convenience lookup into landing_container_names -- see that output's own description."
+  description = "Name of the point-of-sale landing container (lookup into landing_container_names)."
   value       = azurerm_storage_container.landing["pos"].name
 }
 
 output "landing_ecommerce_container_name" {
-  description = "Name of the e-commerce source system's dedicated landing container. Convenience lookup into landing_container_names -- see that output's own description."
+  description = "Name of the e-commerce landing container (lookup into landing_container_names)."
   value       = azurerm_storage_container.landing["ecommerce"].name
 }
 
 output "managed_container_name" {
-  description = "Name of the Unity Catalog managed-storage container -- set as the catalog's own storage_root, so silver/gold schemas (and any other managed tables) live under this boundary instead of falling back to the shared metastore-wide storage_root. Backs the ORIGINAL domain (\"sales\") only -- see additional_managed_container_names for every other domain."
+  description = "Name of the first domain's (sales) managed-storage container, used as its catalog's storage_root. Other domains are in additional_managed_container_names."
   value       = azurerm_storage_container.managed.name
 }
 
 output "additional_managed_container_names" {
-  description = "Map of domain -> its own \"managed-<domain>\" container name, one entry per var.additional_domains. Empty map if additional_domains is empty. The original domain (\"sales\") is never in this map -- see managed_container_name."
+  description = "Map of domain to its managed-<domain> container name, one per var.additional_domains (sales is not in it)."
   value       = { for domain, c in azurerm_storage_container.managed_domain : domain => c.name }
 }

@@ -5,19 +5,13 @@ environment   = "dev"
 budget_amount = 20
 instance      = 1
 
-# Dev-only pieces of the shared root (see platform/variables.tf).
+# Dev switches (see platform/variables.tf).
 enable_compute            = true
 bronze_consumer_can_write = true
 workspace_user_domains    = ["sales", "marketing"]
 
-# sp-terraform-dev's Application (client) ID, not its display name --
-# Databricks grants identify an Azure-managed SP by this ID.
+# sp-terraform-dev's client ID (grants identify an Azure SP by it).
 ci_service_principal_name = "5e93b219-9bc5-4a7b-8956-40d6c3648c1d"
 
-# Safe to flip now -- every grp-sales-*-dev group this gates
-# (stakeholders/analysts/data-engineers/data-governance) is confirmed
-# provisioned (see docs/BACKLOG.md's group
-# provisioning status). Also what actually grants sp-terraform-dev
-# USE_CATALOG/USE_SCHEMA on the catalog itself -- without this, CI can't
-# even read back the catalog/schemas it manages, only create new ones.
+# Grants to the domain groups, which exist in the account (docs/BACKLOG.md).
 enable_grants = true

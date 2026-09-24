@@ -63,11 +63,8 @@ module "unity_catalog_sales" {
   depends_on = [databricks_grants.metastore_admins, module.uc_storage]
 }
 
-# enable_grants is a literal false here, not var.enable_grants: each domain has
-# its own gate, opened once that domain's groups exist as Databricks
-# principals. The catalog storage root is the domain's own container (a second
-# domain cannot share sales' "managed" one: Unity Catalog locations may not
-# overlap).
+# Its own storage container: Unity Catalog locations may not overlap, so it
+# cannot share sales'.
 module "unity_catalog_marketing" {
   source = "../modules/databricks/uc_domain_catalog"
 

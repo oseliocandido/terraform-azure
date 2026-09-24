@@ -3,9 +3,8 @@
 # modules/databricks/*, so no module carries its own copy of the region map.
 
 locals {
-  # Azure's short region codes. Add to this map as new regions are needed;
-  # an unmapped region fails loudly here (Invalid index) rather than
-  # silently producing a name containing the string "null".
+  # Azure short region codes. Add regions as needed; an unmapped region fails
+  # here instead of producing a name with "null" in it.
   region_short = {
     westeurope  = "weu"
     northeurope = "neu"

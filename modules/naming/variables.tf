@@ -20,7 +20,7 @@ variable "environment" {
 
 variable "location" {
   type        = string
-  description = "Azure region, lowercase with no spaces (e.g. westeurope). Must be a key of region_short in main.tf -- add new regions there first."
+  description = "Azure region, lowercase (e.g. northeurope); must be a key of region_short in main.tf."
 
   validation {
     condition     = can(regex("^[a-z]+[a-z0-9]*$", var.location))
@@ -36,5 +36,5 @@ variable "instance" {
 
 variable "tags" {
   type        = map(string)
-  description = "Base tags (managed_by, repository, cost_center, data_owner -- see README.md's \"Working with the repo\" section). Merged with workload and environment in the tags output."
+  description = "Base tags (managed_by, repository, cost_center, data_owner); the module adds workload and environment."
 }

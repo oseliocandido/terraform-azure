@@ -17,11 +17,8 @@ terraform {
   }
 }
 
-# Account-level, not workspace-level -- host is the fixed Azure Databricks
-# accounts endpoint, not any one workspace's URL. No explicit auth_type or
-# client_id here, matching the azurerm provider block's style elsewhere in
-# this repo: locally this resolves via the signed-in `az login` session
-# (currently an Account Admin);
+# Account-level provider on the fixed accounts endpoint. Authenticates with the
+# signed-in `az login` session, which must be an account admin.
 provider "databricks" {
   host            = "https://accounts.azuredatabricks.net"
   account_id      = "6ff6cf67-7a67-49fe-8fa5-9c86897f4493"
