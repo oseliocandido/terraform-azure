@@ -15,8 +15,9 @@ the `production` approval gate.
   (table below), in particular `grp-sales-data-governance-prod`.
 - Expect the two-stage workspace apply (`-target` on the workspace, then a
   normal apply) and the manual metastore-grant step.
-- A new domain catalog's first apply may also need an admin: CI loses `MANAGE`
-  once ownership moves to the governance group.
+- Nest `grp-databricks-ci-prod` in `grp-databricks-platform-prod` and in every
+  `grp-<domain>-data-governance-prod` group (Entra ID). Without it CI loses
+  `MANAGE` on a catalog as soon as ownership moves to the governance group.
 
 ## 2. Register the remaining groups
 

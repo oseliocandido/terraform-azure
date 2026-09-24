@@ -75,7 +75,8 @@ Six reusable modules with no state of their own, grouped by plane: `azure/`
 (`workspace`, `uc_storage`, `uc_ingestion`, `uc_domain_catalog`). Each environment
 root (`dev`, `prod`) composes them and keeps its own state; `shared` holds the
 account-level metastore. `uc_domain_catalog` is called once per business domain,
-so adding a domain is one more module call. `uc_storage` and `uc_ingestion` are
+so adding a domain is one more module call, plus nesting the CI group in the
+domain's governance group in Entra ID (see [IMPLEMENTATION](docs/IMPLEMENTATION.html)). `uc_storage` and `uc_ingestion` are
 called once per environment because the storage credential and the raw ingestion
 layer are shared by every domain.
 The module diagram and every object are in [ARCHITECTURE](docs/ARCHITECTURE.html)
