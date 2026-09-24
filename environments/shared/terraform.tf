@@ -21,9 +21,7 @@ terraform {
 # accounts endpoint, not any one workspace's URL. No explicit auth_type or
 # client_id here, matching the azurerm provider block's style elsewhere in
 # this repo: locally this resolves via the signed-in `az login` session
-# (currently an Account Admin); in CI it resolves via the same ARM_* OIDC
-# environment variables already used for sp-terraform-dev/prod, once
-# sp-databricks-account-admin is wired into a workflow.
+# (currently an Account Admin);
 provider "databricks" {
   host            = "https://accounts.azuredatabricks.net"
   account_id      = "6ff6cf67-7a67-49fe-8fa5-9c86897f4493"
