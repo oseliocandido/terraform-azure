@@ -14,6 +14,6 @@ output "access_connector_id" {
 }
 
 output "managed_resource_group_id" {
-  description = "ARM resource ID of the workspace's auto-created managed resource group -- Databricks-owned, not Terraform-managed (see this module's main.tf comments), but still a valid budget-alert scope. Exists specifically so a budget can see spend Terraform itself can never touch or tag."
+  description = "ARM resource ID of the workspace's auto-created managed resource group -- Databricks-owned, not Terraform-managed, but still a valid budget-alert scope. Exists so a budget can see spend on resources Terraform itself cannot touch; they carry the workspace's tags, which Azure Databricks copies onto the group."
   value       = azurerm_databricks_workspace.this.managed_resource_group_id
 }
