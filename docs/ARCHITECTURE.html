@@ -178,11 +178,8 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
     <section id="p1-module-environment-composition">
       <div class="decision-block">
         <h2><span class="num">1.1</span>Module / environment composition</h2>
-        <p>Eight reusable modules, composed by one root. Nothing in <code>modules/</code> holds
-its own state or backend — <code>platform</code> is what actually gets
-applied, once per environment with that environment's tfvars and state.
-<code>shared</code> is a second root holding the account-level Databricks
-metastore (applied once by hand; it has no CI job).</p>
+        <p>Eight stateless modules, composed by one root, <code>platform</code>, applied once per environment with that
+environment's values and state. <code>shared</code> is a second root for the account-level metastore (applied once by hand, no CI).</p>
 <pre class="mermaid">
 flowchart TB
     subgraph modules[&quot;modules/ — shared, reusable, stateless&quot;]
@@ -219,17 +216,9 @@ flowchart TB
     ST -.credential name.-&gt; UC
 
 </pre>
-<p>The Databricks/Unity Catalog design (catalog-per-domain, single ingestion
-bronze, workspace-bound catalogs, group-based access) is in
-<a href="#part2">Part 2</a> below, with
-every object described in
-<a href="IMPLEMENTATION.html">Implementation</a>.</p>
-<p>Each environment has its own <code>config/&lt;env&gt;/values.tfvars</code> (environment-specific values:
-<code>instance</code>, <code>budget_amount</code>, the dev-only switches, an optional
-<code>storage_account_suffix</code>) and its own <code>config/&lt;env&gt;/backend.hcl</code> (the state key).
-Environment-independent values are shared through <code>config/common.tfvars</code>
-(<code>subscription_id</code>, <code>notify_email</code>, <code>workload</code>), which is <strong>not</strong>
-auto-loaded and must always be passed explicitly with <code>-var-file</code>.</p>
+<p>The Databricks design is in <a href="#part2">Part 2</a>; every object is in <a href="IMPLEMENTATION.html">Implementation</a>.
+Each environment has <code>config/&lt;env&gt;/values.tfvars</code> and <code>backend.hcl</code> (the state key); shared values are in
+<code>config/common.tfvars</code>, which is not auto-loaded and must be passed with <code>-var-file</code>.</p>
       </div>
     </section>
 
@@ -254,19 +243,14 @@ flowchart TB
     style rgbackend fill:#2c3e50,stroke:#95a5a6
 
 </pre>
-<p>Each environment's resource group also holds the Databricks workspace and access
-connector; the workspace's own managed resource group is budgeted separately.
-Each resource group holds one budget, scoped to that resource group and
-notifying at 20% and 40% of the configured monthly amount.</p>
-<p>Azure creates the managed resource group itself, named <code>databricks-rg-&lt;workspace resource group&gt;</code>
-by default (prod's appears after its first full apply). The link is stored by Azure in both directions: the group's
-<code>managedBy</code> property (not a tag) holds the workspace's resource ID, and the workspace's
-<code>managedResourceGroupId</code> holds the group's. <code>az group list --query "[?managedBy!=null]"</code> lists every pair.
-The group holds the workspace's network (including a NAT gateway), DBFS root storage and cluster VMs. It is locked against
-edits, deleted with the workspace, and gets the workspace's tags copied onto it, so its costs carry the same tags.</p>
-<p><code>stanalyticsprodneu01b</code> carries a trailing <code>b</code> because storage account names are
-globally unique across all of Azure. <code>storage_account_suffix</code> sets it and changes
-only the storage account name, never the resource group's.</p>
+<p>Each resource group also holds the workspace and access connector. Every group with a budget (the analytics group and each workspace's
+managed group) has one, alerting at 20% and 40% of the monthly amount.</p>
+<p>Azure creates the managed resource group, <code>databricks-rg-&lt;workspace resource group&gt;</code> (prod's appears after its first
+apply). It is linked by the group's <code>managedBy</code> property (not a tag) and the workspace's <code>managedResourceGroupId</code>;
+<code>az group list --query "[?managedBy!=null]"</code> lists the pairs. It holds the network (with a NAT gateway), DBFS storage and cluster
+VMs, is locked, deleted with the workspace, and gets the workspace's tags.</p>
+<p><code>stanalyticsprodneu01b</code> has a trailing <code>b</code> because storage account names are globally unique;
+<code>storage_account_suffix</code> changes only that name.</p>
       </div>
     </section>
 
@@ -296,16 +280,10 @@ flowchart TB
     AD --&gt; AZURE
 
 </pre>
-<p>Key properties (the reasons are under <a href="#p1-key-decisions">Key decisions</a>):</p>
 <ul>
-<li><strong>Plan and apply are decoupled.</strong> <code>apply-dev</code>/<code>apply-prod</code> never run
-  <code>terraform plan</code> themselves — they download the exact <code>tfplan</code> artifact
-  the corresponding <code>plan-*</code> job already produced and uploaded, so what a
-  human reviewed is <em>bit-for-bit</em> what gets applied.</li>
-<li><strong><code>dev</code> deploys automatically on merge; <code>prod</code> waits for a human.</strong> The
-  only gate on <code>prod</code> is the <code>production</code> GitHub Environment's required
-  reviewer — nothing about <code>prod</code>'s secrets or identity is hidden behind
-  that gate, since a <code>client-id</code> isn't secret material.</li>
+<li><strong>Plan and apply are separate.</strong> <code>apply-*</code> applies the <code>tfplan</code> artifact from its <code>plan-*</code> job,
+  so what a human reviewed is what runs.</li>
+<li><strong>Dev deploys on merge; prod waits for a human</strong> (the <code>production</code> Environment's required reviewer).</li>
 </ul>
       </div>
     </section>
@@ -328,13 +306,9 @@ flowchart LR
     style entra fill:#1f2937,stroke:#60a5fa
 
 </pre>
-<p>The GitHub-issued JWT is <strong>never</strong> sent to Azure directly — it's exchanged
-for a separate Azure AD token, and that exchange only succeeds if the JWT's
-<code>sub</code> claim matches one of the federated credentials configured on that
-specific App Registration. Two App Registrations
-(<code>sp-terraform-dev</code>/<code>-prod</code>), each with its own federated credential
-subject and its own RBAC scope, means a compromised or misconfigured <code>dev</code>
-pipeline run cannot mint a token that authenticates as <code>prod</code>.</p>
+<p>The GitHub JWT is exchanged for an Azure AD token, and only if its <code>sub</code> claim matches that App Registration's federated
+credential. With one App Registration per environment (<code>sp-terraform-dev</code>/<code>-prod</code>), each with its own subject and RBAC
+scope, a <code>dev</code> run cannot mint a <code>prod</code> token.</p>
       </div>
     </section>
 
@@ -496,7 +470,7 @@ flowchart TB
     <section id="groups">
       <div class="decision-block">
         <h2><span class="num">2.8</span>Groups</h2>
-        <p>Groups come from Entra ID, are registered at the Databricks account level, and are referenced by name. Membership is managed outside Terraform. No group spans environments.</p>
+        <p>Groups come from Entra ID, are registered in the Databricks account, and are referenced by name. Membership is managed outside Terraform; no group spans environments.</p>
         <table>
           <tr><th>Group</th><th>Role</th><th>Access</th></tr>
           <tr><td><code>grp-&lt;domain&gt;-stakeholders-&lt;env&gt;</code></td><td>Report consumers</td><td><span class="pill gold">gold</span> read</td></tr>
@@ -507,8 +481,8 @@ flowchart TB
           <tr><td><code>grp-databricks-ci-&lt;env&gt;</code></td><td>CI identity plumbing</td><td>Workspace membership and metastore <code>CREATE_*</code>; contains <code>sp-terraform-&lt;env&gt;</code>; nested in <code>grp-databricks-platform-&lt;env&gt;</code> and every <code>grp-&lt;domain&gt;-data-governance-&lt;env&gt;</code></td></tr>
           <tr><td><code>grp-databricks-account-admins</code></td><td>Account / metastore administration</td><td>Owner of the metastore</td></tr>
         </table>
-        <p>Every Unity Catalog object is group-owned, never person-owned or owned by the CI identity. Owner is an administrative role, so operators and owners are separate groups (separation of duties). The CI group is nested in each owner group, so <code>sp-terraform-&lt;env&gt;</code> can keep managing what it creates after ownership moves to the group; without the nesting, the first apply of a new catalog fails with <code>User does not have MANAGE</code>.</p>
-        <p><b>Grant scoping.</b> Privileges inherit downward, so engineers and CI get catalog-level grants, while stakeholders and analysts get only <code>USE_CATALOG</code> on the catalog plus schema-level grants on the layers they may see. Engineers use blanket <code>MODIFY</code> because the metastore's privilege version (1.0) does not support fine-grained DML privileges at catalog level.</p>
+        <p>Every Unity Catalog object is group-owned. Owners and operators are separate groups (separation of duties). The CI group is nested in each owner group so <code>sp-terraform-&lt;env&gt;</code> can keep managing what it creates; without it the first apply of a new catalog fails with <code>User does not have MANAGE</code>.</p>
+        <p><b>Grant scoping.</b> Privileges inherit downward, so engineers and CI get catalog-level grants, while stakeholders and analysts get <code>USE_CATALOG</code> plus schema-level grants on the layers they may see. Engineers use blanket <code>MODIFY</code> because metastore privilege version 1.0 lacks fine-grained DML at catalog level.</p>
         <p><b>Gating.</b> Grants to the business groups of every domain and of the ingestion catalog follow one switch, <code>enable_grants</code>: on in dev, off in prod until its first apply. CI's own grants are never gated.</p>
       </div>
     </section>
@@ -516,7 +490,7 @@ flowchart TB
     <section id="ci">
       <div class="decision-block">
         <h2><span class="num">2.9</span>CI identity</h2>
-        <p><code>sp-terraform-&lt;env&gt;</code> is <b>not</b> a metastore admin. It holds explicit grants on what it must read or create (catalogs, external locations, the credential), because ownership by another group does not cascade. Metastore-level <code>CREATE_*</code> grants are a one-time admin bootstrap that CI plans ignore. Details are in <a href="IMPLEMENTATION.html#ci-permission-model">Implementation</a>.</p>
+        <p><code>sp-terraform-&lt;env&gt;</code> is <b>not</b> a metastore admin. It has explicit grants on what it reads or creates, because ownership does not cascade. Metastore-level <code>CREATE_*</code> grants are a one-time admin bootstrap that CI ignores. See <a href="IMPLEMENTATION.html#ci-permission-model">Implementation</a>.</p>
       </div>
     </section>
 
@@ -536,7 +510,7 @@ flowchart TB
     <section id="cicd">
       <div class="decision-block">
         <h2><span class="num">2.11</span>CI/CD</h2>
-        <p>All resources are in the <code>platform</code> root, applied once per environment, and deploy through one pipeline: <code>fmt-check</code> &rarr; <code>plan-dev</code> &rarr; (merge) <code>apply-dev</code> &rarr; <code>plan-prod</code> &rarr; <code>apply-prod</code> behind the <code>production</code> approval gate. <code>apply-*</code> applies the saved plan, so a stale-plan failure is fixed by re-running the whole workflow. <code>shared</code> (the account-level metastore) is applied by hand and has no CI. A separate manual workflow, <code>drift-detection</code>, plans <code>main</code> and reports any difference between the code and what is deployed; it never applies.</p>
+        <p>One pipeline for the <code>platform</code> root: <code>fmt-check</code> &rarr; <code>plan-dev</code> &rarr; (merge) <code>apply-dev</code> &rarr; <code>plan-prod</code> &rarr; <code>apply-prod</code> behind the <code>production</code> approval. A stale saved plan is fixed by re-running the workflow. <code>shared</code> is applied by hand. The manual <code>drift-detection</code> workflow reports differences between code and deployment and never applies.</p>
       </div>
     </section>
 
@@ -544,8 +518,8 @@ flowchart TB
       <div class="decision-block">
         <h2><span class="num">2.12</span>Secrets &amp; networking</h2>
         <ul>
-          <li><b>Secrets.</b> Everything is identity-based (OIDC for CI, managed identity for storage, Entra ID for users), so there are no standing secrets. If one becomes unavoidable, it goes in a Key-Vault-backed secret scope to keep one permission system.</li>
-          <li><b>Networking.</b> Deferred: no private endpoints, VNet injection, or NSGs. The workspace and storage account use Azure's public defaults. The workspace's managed network uses secure cluster connectivity, which adds a NAT gateway billed about 1 EUR a day (about 31 EUR a month) whether or not compute runs; this fixed cost is accepted.</li>
+          <li><b>Secrets.</b> Everything is identity-based (OIDC, managed identity, Entra ID), so there are no standing secrets. If one is needed, use a Key-Vault-backed secret scope.</li>
+          <li><b>Networking.</b> Deferred: no private endpoints or VNet injection; public defaults. The managed network's NAT gateway costs about 31 EUR a month whether or not compute runs; accepted.</li>
         </ul>
       </div>
     </section>

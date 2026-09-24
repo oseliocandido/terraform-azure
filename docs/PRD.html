@@ -255,12 +255,9 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
     </div>
 
     <div class="scopenote">
-      This document contains <b>no</b> Terraform, Azure resource, or
-      CI/CD implementation detail, and <b>no</b> data-pipeline/
-      transformation logic — only what the business needs the
-      infrastructure to be capable of. See
+      Business needs only: no Terraform, Azure or CI/CD detail and no pipeline logic. See
       <a href="ARCHITECTURE.html" id="link-arch-1">Architecture</a> and
-      <a href="IMPLEMENTATION.html" id="link-impl-1">Implementation</a> for those layers.
+      <a href="IMPLEMENTATION.html" id="link-impl-1">Implementation</a>.
     </div>
 
     <section id="exec">
@@ -315,15 +312,9 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
         <div class="desc">The one volume-related figure treated as a <b>firm business requirement</b> — historical analytical data retention. See <a href="#storage">§9</a>.</div>
       </div>
       <div class="callout">
-        <b>Store count and daily transaction volume are deliberately not
-        stated as targets.</b> No capacity/throughput sizing study has
-        been done yet, and this project doesn't include cluster or
-        compute sizing work. The infrastructure is designed to scale
-        horizontally regardless of the eventual number — publishing an
-        unvalidated figure would let storage tiering, cluster sizing, and
-        partitioning decisions silently anchor on something nobody
-        actually confirmed. A real sizing study gets folded in here as a
-        revision, not treated as a blocker to this phase.
+        <b>Store count and daily transaction volume are deliberately not stated.</b> No sizing study exists,
+        and an unvalidated figure would silently anchor storage, cluster and partitioning decisions. The
+        infrastructure scales horizontally regardless; a real study gets added as a revision.
       </div>
     </section>
 
@@ -345,11 +336,8 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
         <span class="pill">Cost/ownership metadata</span>
       </div>
       <div class="callout">
-        The project does <b>not</b> require implementing the actual
-        production data pipelines. Ingestion/transformation requirements
-        described in this document represent the business capability the
-        infrastructure must support — not a pipeline that must be built
-        as part of this project.
+        The project does <b>not</b> build the production data pipelines; ingestion and transformation here describe
+        what the infrastructure must support.
       </div>
     </section>
 
@@ -406,16 +394,10 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       Sales data should be representable independently
       from either source system's structure — datasets designed around
       <b>business questions about sales</b>, not either system's schema.</p>
-      <p>The platform must support a logical separation between raw
-      source extracts and business-ready, reportable datasets. This
-      progression — raw, refined, business-ready — is commonly known as
-      <b>medallion architecture</b> (bronze/silver/gold), and this document
-      uses that vocabulary elsewhere: the report-consumer/analyst split
-      above maps onto which of these stages each role can see. The exact
-      storage/organizational implementation — including how many stages,
-      and their concrete names — is an
-      <a href="ARCHITECTURE.html#uc" id="link-arch-2">architecture decision</a>,
-      not fixed by this requirement.</p>
+      <p>Raw source extracts must stay separate from business-ready, reportable datasets. This raw, refined,
+      business-ready progression is the <b>medallion architecture</b> (bronze/silver/gold), and the consumer/analyst
+      split maps onto which stage each role sees. The exact implementation is an
+      <a href="ARCHITECTURE.html#uc" id="link-arch-2">architecture decision</a>.</p>
       <div class="tierpills">
         <span class="pill bronze">bronze</span><span class="pill silver">silver</span><span class="pill gold">gold</span>
       </div>
@@ -468,16 +450,10 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
       whether or not anything runs: each workspace's managed network costs about 31 EUR a month, and this is accepted.</p>
       <div class="callout teal"><b>Production data is protected against accidental loss.</b> Deleted data stays recoverable for at least 14 days in Production (a shorter period is fine in Development), and an ordinary change cannot destroy Production storage &mdash; destroying it takes a deliberate, reviewed change.</div>
       <div class="callout teal">
-        <b>Exception, not a loophole.</b> "No manually configured resources
-        that cannot be reproduced" doesn't prohibit a small number of
-        one-time, account-/tenant-level objects Infrastructure as Code
-        fundamentally cannot create for itself (an identity a pipeline
-        authenticates as cannot be created by that same pipeline's own
-        run) — provided each is created through a <i>documented, repeatable
-        procedure</i>, not undocumented manual configuration. This platform
-        already follows that pattern for its App Registrations, and
-        extends the same exception to any account-level Databricks object
-        a future architecture phase introduces.
+        <b>Exception, not a loophole.</b> "No manually configured resources" allows a few one-time account- or
+        tenant-level objects that Infrastructure as Code cannot create for itself (a pipeline cannot create its own
+        identity), provided each follows a <i>documented, repeatable procedure</i>. This applies to the App Registrations
+        and to account-level Databricks objects.
       </div>
     </section>
 
@@ -494,8 +470,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
 
     <section id="boundary">
       <h2><span class="num">15</span> Architecture decision boundary</h2>
-      <p>This PRD defines what the business and platform require — it
-      intentionally doesn't prescribe the complete technical architecture.</p>
+      <p>This PRD defines what the business needs, not the technical architecture.</p>
       <pre class="mermaid">
 flowchart TD
   A["PRD — this document\nBusiness requirements"] --> B["ARCHITECTURE.html\nAzure / Databricks / Terraform decisions\nin response to this PRD's needs"]
@@ -550,12 +525,9 @@ flowchart TD
 
     <section id="outcome">
       <h2><span class="num">19</span> Final business outcome</h2>
-      <p>The project establishes a reproducible cloud foundation for a
-      future sales analytics platform. The immediate objective is
-      <b>not</b> to build the data pipelines — it's to demonstrate the
-      ability to design and provision the underlying cloud infrastructure
-      a production-oriented analytical data platform requires, using
-      Terraform in a secure, reproducible, environment-separated manner.</p>
+      <p>A reproducible cloud foundation for a future analytics platform. The objective is <b>not</b> the data
+      pipelines, but designing and provisioning the underlying infrastructure with Terraform, securely, reproducibly
+      and with separate environments.</p>
       <pre class="mermaid">
 flowchart TD
   S[Sales] --> P[Analytical Platform]
