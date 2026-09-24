@@ -7,7 +7,7 @@
 # just another field in the same API call CI (which IS a real workspace
 # member) is already making. Traded the plan-time diagnostic for not
 # granting workspace access to a group that has no real business holding
-# it -- same reasoning as modules/databricks/storage's identical
+# it -- same reasoning as modules/databricks/uc_storage's identical
 # change for grp-databricks-platform-<env>.
 #
 # var.domain, not a literal "sales" -- this whole module is meant to be
@@ -20,26 +20,6 @@
 # parameterizing every group name below on var.domain.
 locals {
   data_governance_group_name = "grp-${var.domain}-data-governance-${var.environment}"
-}
-
-# Renamed off the literal "sales" label -- same reasoning as the group
-# names above, this resource's own address was hardcoded to one domain
-# even though var.domain already made everything else in this module
-# reusable. moved block below protects dev's already-applied sales_dev
-# catalog from a destroy/recreate.
-moved {
-  from = databricks_catalog.sales
-  to   = databricks_catalog.this
-}
-
-moved {
-  from = databricks_workspace_binding.sales
-  to   = databricks_workspace_binding.this
-}
-
-moved {
-  from = databricks_grants.sales_catalog
-  to   = databricks_grants.catalog
 }
 
 resource "databricks_catalog" "this" {
@@ -64,7 +44,7 @@ resource "databricks_catalog" "this" {
   # (bronze had 2 real volumes registered under it at the time). That's
   # fixed structurally, not just worked around -- the raw landing volumes
   # now live in the separate ingestion_<env> catalog (see
-  # modules/databricks/storage), so this catalog's own schemas don't carry
+  # modules/databricks/uc_ingestion), so this catalog's own schemas don't carry
   # that risk any more. Leaving force_destroy = true standing afterward
   # would have meant any FUTURE accidental `terraform destroy`/replace of
   # this catalog cascade-deletes whatever schemas/tables exist by then,
@@ -75,7 +55,7 @@ resource "databricks_catalog" "this" {
   # Own managed-storage boundary, not the metastore's shared default --
   # silver/gold (and any other managed table under this catalog) live
   # under this root instead of commingling with every other catalog on
-  # the metastore. See modules/analytics/main.tf's "managed" container
+  # the metastore. See modules/azure/datalake/main.tf's "managed" container
   # comment for the full reasoning. References the external location's
   # own url attribute, not the raw variable -- real data dependency, so
   # Terraform creates that registration first (Unity Catalog rejects a
@@ -126,7 +106,7 @@ resource "databricks_workspace_binding" "this" {
 # catalog (schemas/tables with no storage_root of their own default to
 # Unity-Catalog-owned layout inside this root), not whether the root
 # itself needs registering. credential_name references the environment-
-# scoped credential (modules/databricks/storage's output), not a
+# scoped credential (modules/databricks/uc_storage's output), not a
 # resource in this module -- that credential moved out of here entirely
 # (see that module's main.tf for why: it isn't domain-specific, so
 # declaring it per-domain would collide on name the moment a second
@@ -136,13 +116,13 @@ resource "databricks_external_location" "managed" {
   url             = var.catalog_storage_root
   credential_name = var.storage_credential_name
 
-  # Domain-scoped, unlike platform_storage's own external locations --
+  # Domain-scoped, unlike uc_storage's own external locations --
   # this one backs THIS domain's catalog specifically, so its owner is
   # this domain's own governance group, not grp-databricks-platform-<env>.
   owner = local.data_governance_group_name
 }
 
-# Same non-cascading-ownership problem as platform_storage's own
+# Same non-cascading-ownership problem as uc_storage's own
 # databricks_grants.bronze_ci/pos_landing_ci/ecommerce_landing_ci --
 # CI has to keep reading this external location on every future plan,
 # and metastore/credential-level CREATE_EXTERNAL_LOCATION grants don't
@@ -172,7 +152,7 @@ resource "databricks_grants" "managed_ci" {
 }
 
 # No bronze schema here on purpose -- raw bronze lives once, in
-# ingestion_<env>.bronze (modules/databricks/storage), and each domain builds
+# ingestion_<env>.bronze (modules/databricks/uc_ingestion), and each domain builds
 # its silver from it (silver can read from bronze tables in another catalog
 # via grants). A per-domain bronze would hold a second copy of raw data that
 # already exists there. A previous version had one; removed.
@@ -204,11 +184,6 @@ resource "databricks_schema" "gold" {
   # apply on a new catalog races it and fails with "does not have CREATE
   # SCHEMA and USE CATALOG".
   depends_on = [databricks_grants.catalog]
-}
-
-moved {
-  from = databricks_grants.catalog[0]
-  to   = databricks_grants.catalog
 }
 
 # databricks_grants (plural, authoritative) chosen deliberately over the
@@ -249,7 +224,7 @@ resource "databricks_grants" "catalog" {
   }
 
   # READ METADATA added preemptively, matching the fix applied to
-  # modules/databricks/storage's identical ingestion-catalog CI grant after
+  # modules/databricks/uc_ingestion's identical ingestion-catalog CI grant after
   # a real CI run failed with "cannot read workspace binding: User does not
   # have READ METADATA on Catalog 'ingestion_dev'" -- this catalog has the
   # exact same databricks_workspace_binding.this resource CI must refresh

@@ -178,19 +178,22 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
     <section id="p1-module-environment-composition">
       <div class="decision-block">
         <h2><span class="num">1.1</span>Module / environment composition</h2>
-        <p>Five reusable modules, composed per root. Nothing in <code>modules/</code> holds
+        <p>Six reusable modules, composed per root. Nothing in <code>modules/</code> holds
 its own state or backend — each root under <code>environments/</code> is what
 actually gets applied. <code>environments/shared</code> is a third root holding the
 account-level Databricks metastore (applied by hand, no CI yet).</p>
 <pre class="mermaid">
 flowchart TB
     subgraph modules[&quot;modules/ — shared, reusable, stateless&quot;]
-        AG[&quot;analytics&lt;br/&gt;RG + ADLS Gen2 + containers&quot;]
-        BA[&quot;budget_alert&lt;br/&gt;Resource-group-scoped consumption budget&quot;]
+        subgraph az[&quot;azure/&quot;]
+            AG[&quot;datalake&lt;br/&gt;RG + ADLS Gen2 + containers&quot;]
+            BA[&quot;cost_budget&lt;br/&gt;Resource-group-scoped consumption budget&quot;]
+        end
         subgraph dbx[&quot;databricks/&quot;]
-            WS[&quot;workspaces&lt;br/&gt;workspace, access connector, metastore assignment&quot;]
-            ST[&quot;storage (once per env)&lt;br/&gt;credential, external locations, ingestion catalog&quot;]
-            UC[&quot;unity_catalog (once per domain)&lt;br/&gt;catalog, silver/gold, grants&quot;]
+            WS[&quot;workspace&lt;br/&gt;workspace, access connector, metastore assignment&quot;]
+            ST[&quot;uc_storage (once per env)&lt;br/&gt;credential, external locations&quot;]
+            IG[&quot;uc_ingestion (once per env)&lt;br/&gt;ingestion catalog, bronze, volumes&quot;]
+            UC[&quot;uc_domain_catalog (once per domain)&lt;br/&gt;catalog, silver/gold, grants&quot;]
         end
     end
 
@@ -199,6 +202,7 @@ flowchart TB
         DM --&gt;|module block, resource_group_id| BA
         DM --&gt; WS
         DM --&gt; ST
+        DM --&gt; IG
         DM --&gt;|sales, marketing| UC
     end
     subgraph prod[&quot;environments/prod (root module, not yet applied)&quot;]
@@ -206,11 +210,13 @@ flowchart TB
         PM --&gt;|module block, resource_group_id| BA
         PM --&gt; WS
         PM --&gt; ST
+        PM --&gt; IG
         PM --&gt;|sales, marketing| UC
     end
 
     AG -.output: resource_group_id.-&gt; BA
     AG -.containers.-&gt; ST
+    ST -.locations.-&gt; IG
     WS -.access connector, workspace_id.-&gt; ST
     ST -.credential name.-&gt; UC
 

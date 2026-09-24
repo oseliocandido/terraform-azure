@@ -10,7 +10,7 @@ variable "location" {
 
 variable "workload" {
   type        = string
-  description = "Short workload name used to derive every resource name -- same value passed to modules/analytics."
+  description = "Short workload name used to derive every resource name -- same value passed to modules/azure/datalake."
 }
 
 variable "environment" {
@@ -31,7 +31,7 @@ variable "instance" {
 
 variable "storage_account_id" {
   type        = string
-  description = "Resource ID of the storage account (from modules/analytics) the access connector's managed identity is granted Storage Blob Data Contributor on."
+  description = "Resource ID of the storage account (from modules/azure/datalake) the access connector's managed identity is granted Storage Blob Data Contributor on."
 }
 
 variable "metastore_id" {

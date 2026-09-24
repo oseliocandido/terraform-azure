@@ -3,7 +3,7 @@
 ## -----------------------------------------------------------------------
 
 locals {
-  # Kept in sync with modules/analytics's own region_short map -- add to
+  # Kept in sync with modules/azure/datalake's own region_short map -- add to
   # both if a new region is ever needed.
   region_short = {
     westeurope  = "weu"
@@ -38,12 +38,12 @@ locals {
 
 # Renamed off the literal "sales" label -- this module is called once per
 # ENVIRONMENT (dev/prod), not once per business domain (that's
-# modules/databricks/unity_catalog's job) -- a workspace, its access
+# modules/databricks/uc_domain_catalog's job) -- a workspace, its access
 # connector, and the metastore assignment below are all environment-wide
 # infrastructure with no domain-specific meaning at all, so "sales" here
 # was always a naming leftover from before real multi-domain use (marketing)
 # exposed the same class of bug this module's own sibling files already
-# fixed (see modules/databricks/unity_catalog and modules/databricks/storage's
+# fixed (see modules/databricks/uc_domain_catalog and modules/databricks/uc_storage's
 # identical renames earlier this session). Already applied to dev's real
 # state (the moved blocks that protected that migration have since been
 # removed -- their job was done once that apply succeeded; state already

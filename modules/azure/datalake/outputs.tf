@@ -29,7 +29,7 @@ output "bronze_container_name" {
 }
 
 output "landing_container_names" {
-  description = "Map of source system (var.landing_source_systems) -> its own \"landing-<system>\" container name. Each is registered as its own Unity Catalog external location, file events enabled -- see modules/databricks/storage/main.tf. landing_pos_container_name/landing_ecommerce_container_name below are convenience lookups into this same map for the two source systems platform_storage currently wires up by name; add entries here first if a new source system needs the same treatment."
+  description = "Map of source system (var.landing_source_systems) -> its own \"landing-<system>\" container name. Each is registered as its own Unity Catalog external location, file events enabled -- see modules/databricks/uc_storage/main.tf. landing_pos_container_name/landing_ecommerce_container_name below are convenience lookups into this same map for the two source systems the ingestion modules currently wire up by name; add entries here first if a new source system needs the same treatment."
   value       = { for s, c in local.landing_containers : s => c.name }
 }
 

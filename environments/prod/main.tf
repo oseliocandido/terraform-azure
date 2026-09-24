@@ -1,18 +1,14 @@
-# terraform_layer is the one tag that's genuinely per-root -- see
-# environments/common.tfvars for the other four keys, which are account-
-# wide constants shared by dev/prod/shared alike.
 locals {
   common_tags = {
-    managed_by      = var.managed_by
-    repository      = var.repository
-    cost_center     = var.cost_center
-    data_owner      = var.data_owner
-    terraform_layer = "prod"
+    managed_by  = var.managed_by
+    repository  = var.repository
+    cost_center = var.cost_center
+    data_owner  = var.data_owner
   }
 }
 
-module "analytics_group" {
-  source = "../../modules/analytics"
+module "datalake" {
+  source = "../../modules/azure/datalake"
 
   workload               = var.workload
   environment            = var.environment
@@ -27,23 +23,23 @@ module "analytics_group" {
 }
 
 module "budget_alert" {
-  source = "../../modules/budget_alert"
+  source = "../../modules/azure/cost_budget"
 
-  resource_group_id = module.analytics_group.resource_group_id
+  resource_group_id = module.datalake.resource_group_id
   environment       = var.environment
   notify_email      = var.notify_email
   budget_amount     = var.budget_amount
 }
 
 module "databricks_workspace" {
-  source = "../../modules/databricks/workspaces"
+  source = "../../modules/databricks/workspace"
 
-  resource_group_name = module.analytics_group.resource_group_name
+  resource_group_name = module.datalake.resource_group_name
   location            = var.location
   workload            = var.workload
   environment         = var.environment
   instance            = var.instance
-  storage_account_id  = module.analytics_group.storage_account_id
+  storage_account_id  = module.datalake.storage_account_id
   metastore_id        = var.metastore_id
   tags                = local.common_tags
 }
@@ -53,7 +49,7 @@ module "databricks_workspace" {
 # (workspace's own managed resource group is invisible to the first
 # budget_alert above).
 module "budget_alert_databricks_managed" {
-  source = "../../modules/budget_alert"
+  source = "../../modules/azure/cost_budget"
 
   resource_group_id = module.databricks_workspace.managed_resource_group_id
   environment       = var.environment
@@ -96,7 +92,7 @@ resource "databricks_entitlements" "ci_group" {
 # See environments/dev/main.tf's identical comment for the full reasoning
 # -- no workspace-level resources for grp-databricks-platform-prod,
 # deliberately. It's a pure Unity Catalog ownership/governance group (its
-# `owner =` references in modules/databricks/platform_storage are bare
+# `owner =` references in modules/databricks/uc_storage are bare
 # strings, not a workspace-scoped data-source lookup), so it never
 # actually needs to operate in this workspace. Only grp-databricks-ci-prod
 # above does.
@@ -129,48 +125,55 @@ resource "databricks_grants" "metastore_admins" {
   }
 }
 
-# See environments/dev/main.tf's identical block for the full reasoning
-# (environment-scoped, called once, not once per domain -- storage
-# credential and bronze/source-system-landing external locations aren't
-# domain-specific).
-module "platform_storage" {
-  source = "../../modules/databricks/storage"
+# Environment-scoped, called once (not once per domain): storage credential
+# and the bronze / source-system landing / ingestion-managed external
+# locations. None of it is domain-specific. See modules/databricks/uc_storage.
+module "uc_storage" {
+  source = "../../modules/databricks/uc_storage"
+
+  environment         = var.environment
+  access_connector_id = module.databricks_workspace.access_connector_id
+  resource_group_name = module.datalake.resource_group_name
+  subscription_id     = var.subscription_id
+  ci_group_name       = "grp-databricks-ci-prod"
+  bronze_storage_root = "abfss://${module.datalake.bronze_container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
+
+  # Built from modules/azure/datalake's landing_container_names, so a new
+  # source system there flows through here automatically.
+  landing_storage_roots = {
+    for source_system, container_name in module.datalake.landing_container_names :
+    source_system => "abfss://${container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
+  }
+
+  ingestion_catalog_storage_root = "abfss://${module.datalake.additional_managed_container_names["ingestion"]}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
+
+  # Creating the storage credential needs CREATE_STORAGE_CREDENTIAL on the
+  # metastore first.
+  depends_on = [databricks_grants.metastore_admins]
+}
+
+# Environment-scoped ingestion catalog: bronze schema plus landing and
+# checkpoint volumes. The external locations in module.uc_storage must exist
+# first (bronze is referenced by plain URL, so the ordering is explicit).
+module "uc_ingestion" {
+  source = "../../modules/databricks/uc_ingestion"
 
   environment                = var.environment
   metastore_id               = var.metastore_id
   workspace_id               = module.databricks_workspace.workspace_id
-  access_connector_id        = module.databricks_workspace.access_connector_id
-  resource_group_name        = module.analytics_group.resource_group_name
-  subscription_id            = var.subscription_id
-  ci_group_name              = "grp-databricks-ci-prod"
   ci_service_principal_name  = var.ci_service_principal_name
   enable_grants              = var.enable_grants
   bronze_consumer_group_name = "grp-sales-data-engineers-${var.environment}"
-  bronze_storage_root        = "abfss://${module.analytics_group.bronze_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  catalog_storage_root       = module.uc_storage.ingestion_managed_location_url
+  bronze_storage_root        = "abfss://${module.datalake.bronze_container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
+  landing_location_urls      = module.uc_storage.landing_location_urls
 
-  # See environments/dev/main.tf's identical block for the full reasoning.
-  landing_storage_roots = {
-    for source_system, container_name in module.analytics_group.landing_container_names :
-    source_system => "abfss://${container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
-  }
-
-  ingestion_catalog_storage_root = "abfss://${module.analytics_group.additional_managed_container_names["ingestion"]}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
-
-  depends_on = [databricks_grants.metastore_admins]
+  depends_on = [databricks_grants.metastore_admins, module.uc_storage]
 }
 
-# See environments/dev/main.tf's identical blocks for the full reasoning
-# (renamed off the unlabeled "unity_catalog" now that marketing, below, is
-# a real second domain -- moved block protects prod's own state the same
-# way, even though prod hasn't been applied yet, so the two roots stay in
-# lockstep).
-moved {
-  from = module.unity_catalog
-  to   = module.unity_catalog_sales
-}
-
+# Per-domain catalogs; see environments/dev/main.tf for the full reasoning.
 module "unity_catalog_sales" {
-  source = "../../modules/databricks/unity_catalog"
+  source = "../../modules/databricks/uc_domain_catalog"
 
   environment               = var.environment
   domain                    = "sales"
@@ -179,10 +182,10 @@ module "unity_catalog_sales" {
   ci_service_principal_name = var.ci_service_principal_name
   ci_group_name             = "grp-databricks-ci-prod"
   enable_grants             = var.enable_grants
-  storage_credential_name   = module.platform_storage.storage_credential_name
-  catalog_storage_root      = "abfss://${module.analytics_group.managed_container_name}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  storage_credential_name   = module.uc_storage.storage_credential_name
+  catalog_storage_root      = "abfss://${module.datalake.managed_container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
 
-  depends_on = [databricks_grants.metastore_admins, module.platform_storage]
+  depends_on = [databricks_grants.metastore_admins, module.uc_storage]
 }
 
 # See environments/dev/main.tf's identical block for the full reasoning
@@ -190,7 +193,7 @@ module "unity_catalog_sales" {
 # independent of var.enable_grants, until grp-marketing-*-prod groups
 # exist).
 module "unity_catalog_marketing" {
-  source = "../../modules/databricks/unity_catalog"
+  source = "../../modules/databricks/uc_domain_catalog"
 
   environment               = var.environment
   domain                    = "marketing"
@@ -199,14 +202,8 @@ module "unity_catalog_marketing" {
   ci_service_principal_name = var.ci_service_principal_name
   ci_group_name             = "grp-databricks-ci-prod"
   enable_grants             = false
-  storage_credential_name   = module.platform_storage.storage_credential_name
-  catalog_storage_root      = "abfss://${module.analytics_group.additional_managed_container_names["marketing"]}@${module.analytics_group.storage_account_name}.dfs.core.windows.net/"
+  storage_credential_name   = module.uc_storage.storage_credential_name
+  catalog_storage_root      = "abfss://${module.datalake.additional_managed_container_names["marketing"]}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
 
-  depends_on = [databricks_grants.metastore_admins, module.platform_storage]
+  depends_on = [databricks_grants.metastore_admins, module.uc_storage]
 }
-
-# pos_landing / ecommerce_landing volumes, their grants, and the
-# checkpoint volumes all moved into module.platform_storage -- see that
-# module's own "Ingestion catalog" section, and environments/dev/main.tf's
-# identical comment (no moved blocks needed here, unlike dev's copy: prod
-# has never been applied, so there's no existing state to protect).
