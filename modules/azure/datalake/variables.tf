@@ -49,6 +49,15 @@ variable "landing_source_systems" {
     condition     = length(var.landing_source_systems) == length(distinct(var.landing_source_systems))
     error_message = "landing_source_systems must not contain duplicates."
   }
+
+  # An empty list would leave the retention policy's prefix_match empty, and a
+  # lifecycle rule with no prefix applies to every blob in the account,
+  # including bronze and the managed containers (Delta data). Azure filters
+  # cannot exclude containers, so the list must never be empty.
+  validation {
+    condition     = length(var.landing_source_systems) > 0
+    error_message = "landing_source_systems must contain at least one source system: an empty list would apply the retention policy to every container, including Delta data."
+  }
 }
 
 variable "tags" {
