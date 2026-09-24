@@ -1,15 +1,28 @@
-# Smallest shared compute for an environment: one all-purpose single-node
-# cluster and one serverless SQL warehouse, both stopping after 10 idle
-# minutes. Sized for the 4 vCPU regional quota; see docs/IMPLEMENTATION.html
-# for what each costs per hour.
+# Smallest shared compute for an environment: a serverless SQL warehouse, and
+# optionally one all-purpose single-node cluster, both stopping after 10 idle
+# minutes. See docs/IMPLEMENTATION.html for what each costs per hour.
+#
+# The cluster is OFF by default (enable_cluster). On the current subscription
+# no classic cluster can start in northeurope: the 4-vCPU sizes Databricks
+# supports are restricted (NotAvailableForSubscription) or have a family
+# quota of 0, and anything larger exceeds the 4 vCPU regional quota
+# (AZURE_QUOTA_EXCEEDED_EXCEPTION when Standard_DC4ads_v6 was tried). The
+# warehouse is serverless, so it uses no VM quota. Switch enable_cluster on
+# after the SKU restriction and quota are lifted (upgrading from a trial
+# subscription, or an Azure support request). Until then, use serverless
+# notebook compute for Python.
 
 data "databricks_spark_version" "lts" {
+  count = var.enable_cluster ? 1 : 0
+
   long_term_support = true
 }
 
 resource "databricks_cluster" "shared" {
+  count = var.enable_cluster ? 1 : 0
+
   cluster_name  = "cluster-${var.suffix}"
-  spark_version = data.databricks_spark_version.lts.id
+  spark_version = data.databricks_spark_version.lts[0].id
   node_type_id  = var.node_type_id
 
   # Driver only, no workers: the quota allows one 4 vCPU node in total.
@@ -35,7 +48,9 @@ resource "databricks_cluster" "shared" {
 }
 
 resource "databricks_permissions" "cluster" {
-  cluster_id = databricks_cluster.shared.id
+  count = var.enable_cluster ? 1 : 0
+
+  cluster_id = databricks_cluster.shared[0].id
 
   dynamic "access_control" {
     for_each = var.restart_groups

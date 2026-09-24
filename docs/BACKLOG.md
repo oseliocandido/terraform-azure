@@ -84,6 +84,25 @@ Decide before adding it to ARCHITECTURE.html:
 - Per-group ACLs (`CAN_ATTACH_TO`, `CAN_RESTART`, `CAN_MANAGE`) via
   `databricks_permissions`.
 
+## 4a. Enable the shared cluster
+
+`modules/databricks/compute` creates a serverless SQL warehouse in dev. Its
+single-node cluster is off (`enable_cluster = false`) because no classic cluster
+can start on the current subscription in northeurope: the supported 4-vCPU node
+types are `NotAvailableForSubscription` or have a family quota of 0, and larger
+ones exceed the 4 vCPU regional quota. To turn it on:
+
+- Lift the restriction and raise the quota, either by upgrading from a trial
+  subscription to pay-as-you-go or with an Azure support request.
+- Confirm the node type with `az vm list-skus` and `az vm list-usage` (the
+  default `Standard_DS3_v2` is a placeholder), then set `enable_cluster = true`
+  in `environments/dev/compute.tf`.
+- Confirm standard access mode is accepted on a single node; if not, switch to
+  dedicated access mode for one group.
+
+Until then, serverless notebook compute covers Python, and the warehouse covers
+SQL only.
+
 ## 5. Delta retention for bronze, silver, and gold
 
 The blob lifecycle policy covers `landing-*` only (it is unsafe for Delta

@@ -192,7 +192,7 @@ flowchart TB
         end
         subgraph dbx[&quot;databricks/&quot;]
             WS[&quot;workspace&lt;br/&gt;workspace, access connector, metastore assignment&quot;]
-            CP[&quot;compute (once per env)&lt;br/&gt;single-node cluster, SQL warehouse&quot;]
+            CP[&quot;compute (once per env)&lt;br/&gt;serverless SQL warehouse, optional cluster&quot;]
             ST[&quot;uc_storage (once per env)&lt;br/&gt;credential, external locations&quot;]
             IG[&quot;uc_ingestion (once per env)&lt;br/&gt;ingestion catalog, bronze, volumes&quot;]
             UC[&quot;uc_domain_catalog (once per domain)&lt;br/&gt;catalog, silver/gold, grants&quot;]
