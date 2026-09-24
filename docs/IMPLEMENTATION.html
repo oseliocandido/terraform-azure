@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sales Analytics Platform Implementation Spec</title>
+<title>Retail Analytics Platform Implementation Spec</title>
 
 
 <style>
@@ -118,7 +118,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
 
 <div class="docnav">
   <div class="docnav-inner">
-    <span class="docnav-label">Sales Analytics Platform</span>
+    <span class="docnav-label">Retail Analytics Platform</span>
     <a href="PRD.html">1 · Business Requirements</a>
     <a href="ARCHITECTURE.html">2 · Architecture</a>
     <a href="#" class="current" id="nav-impl">3 · Implementation</a>
@@ -143,17 +143,15 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
 
   <main>
     <div class="eyebrow">Implementation</div>
-    <h1 class="doctitle">Sales Analytics Platform &mdash; Implementation</h1>
+    <h1 class="doctitle">Retail Analytics Platform &mdash; Implementation</h1>
     <div class="metarow">
       <span><span class="pill dev">dev</span> <b>applied, converged</b></span>
-      <span><span class="pill prod">prod</span> <b>coded, not yet applied</b></span>
+      <span><span class="pill prod">prod</span> <b>planned, not yet fully applied</b></span>
     </div>
     <div class="scopenote"><p>What is built, object by object. <a href="ARCHITECTURE.html">Architecture</a> explains
-the design; this document lists every module, the objects it creates, and the
-mechanics that matter when operating it. The repo is the source of truth for exact
-arguments.</p>
-<p><strong>Status.</strong> <code>dev</code> is applied and converged (<code>terraform plan</code> shows no changes).
-<code>prod</code> uses the same root and is planned, but has never had a full apply; see <a href="#prod-bootstrap">Prod bootstrap</a>.</p></div>
+the design; the repo is the source of truth for exact arguments.</p>
+<p><strong>Status.</strong> <code>dev</code> is applied and converged. <code>prod</code> uses the same root and has never had a
+full apply; see <a href="#prod-bootstrap">Prod bootstrap</a>.</p></div>
 <section id="layout"><h2><span class="num">01</span>Layout</h2><pre class="code"><code class="language-text">modules/
 ├── naming/                name suffix and tags, no resources
 ├── azure/
@@ -173,14 +171,11 @@ config/
 └── prod/               backend.hcl (state key) and values.tfvars
 .github/workflows/      terraform.yml (plan/apply), drift-detection.yml (manual)
 </code></pre>
-<p><code>naming</code> holds the region-code map and builds two values once per root: <code>suffix</code>
+<p><code>naming</code> builds two values once per root: <code>suffix</code>
 (<code>&lt;workload&gt;-&lt;environment&gt;-&lt;region code&gt;-&lt;instance&gt;</code>, e.g. <code>analytics-dev-neu-01</code>)
-and <code>tags</code> (the base tags plus <code>workload</code> and <code>environment</code>). The root passes both to
-<code>datalake</code> and <code>workspace</code>, so no module carries its own copy of the naming rules. A new region is
-one line in <code>modules/naming/main.tf</code>.</p>
-<p><code>uc_storage</code> and <code>uc_ingestion</code> are separate from <code>uc_domain_catalog</code> because the
-credential, the locations and the raw ingestion layer are environment-wide, not per domain. Module state addresses come
-from the call label, not the <code>source</code> path.</p></section>
+and <code>tags</code>. A new region is one line in <code>modules/naming/main.tf</code>. <code>uc_storage</code> and
+<code>uc_ingestion</code> are separate from <code>uc_domain_catalog</code> because the credential, locations and raw layer are
+environment-wide.</p></section>
 <section id="objects-by-module"><h2><span class="num">02</span>Objects by module</h2><h3><code>modules/azure/datalake</code></h3>
 <div style="overflow-x:auto"><table>
 <thead>
@@ -228,19 +223,12 @@ from the call label, not the <code>source</code> path.</p></section>
 </tr>
 </tbody>
 </table></div>
-<p>Outputs: <code>resource_group_id</code>, <code>resource_group_name</code>, <code>storage_account_id</code>,
-<code>storage_account_name</code>, <code>bronze_container_name</code>, <code>landing_container_names</code>,
-<code>managed_container_name</code>, <code>additional_managed_container_names</code>.</p>
-<p><strong>Destroy protection.</strong> The storage account and every container have <code>prevent_destroy</code> in dev
-and prod alike, so a plan that would destroy or replace one fails. That includes a full <code>terraform destroy</code> of the
-environment. To destroy one on purpose, remove its <code>prevent_destroy</code> in a reviewed change first. (An earlier
-version declared each resource twice so only prod was protected; <code>moved</code> blocks carried dev's existing state over to
-the single resources.)</p>
-<p>A new source system is one entry in <code>landing_source_systems</code>; its container,
-retention prefix, external location, and volumes follow from it. The list must not be empty: the
-retention policy's <code>prefix_match</code> is built from it, and a rule with no prefix applies to every blob in the
-account, including the bronze and managed containers that hold Delta tables (a variable validation enforces this).
-Azure allows at most 10 prefixes per rule.</p>
+<p><strong>Destroy protection.</strong> The storage account and every container have <code>prevent_destroy</code> in every
+environment, so a plan that would destroy or replace one fails, including a full <code>terraform destroy</code>. To destroy one on
+purpose, remove <code>prevent_destroy</code> in a reviewed change first.</p>
+<p>A new source system is one entry in <code>landing_source_systems</code>; its container, retention prefix, external location and
+volume follow. The list must not be empty (a validation enforces it): with no prefix, the retention rule would apply to every
+blob, including the Delta containers. Azure allows at most 10 prefixes per rule.</p>
 <h3><code>modules/azure/cost_budget</code></h3>
 <div style="overflow-x:auto"><table>
 <thead>
@@ -290,16 +278,12 @@ workspace's own managed resource group.</p>
 </tr>
 </tbody>
 </table></div>
-<p>Outputs: <code>workspace_id</code>, <code>workspace_url</code>, <code>access_connector_id</code>, <code>managed_resource_group_id</code>.
-The credential and external locations are not here: they need metastore grants, and
-this module holds the workspace the <code>databricks</code> provider's <code>host</code> depends on, so
-depending on those grants would create a cycle.</p>
-<p><strong>Managed resource group.</strong> Azure creates <code>databricks-rg-&lt;workspace resource group&gt;</code> for every workspace; Terraform
-does not manage it. The link is Azure's own: the group's <code>managedBy</code> property (not a tag) holds the workspace ID and the
-workspace's <code>managedResourceGroupId</code> holds the group's. It holds the workspace's VNet, NSG, NAT gateway and public IP, DBFS root
-storage and cluster VMs, is locked against edits, is deleted with the workspace, and receives the workspace's tags. The NAT gateway bills
-about 1 EUR a day (about 31 EUR a month) even with no compute running; setting <code>no_public_ip = false</code> would remove it but was not
-adopted.</p>
+<p>The credential and external locations are not here: they need metastore grants, and depending on those would create a cycle
+through the <code>databricks</code> provider's <code>host</code>.</p>
+<p><strong>Managed resource group.</strong> Azure creates <code>databricks-rg-&lt;workspace resource group&gt;</code> for each workspace;
+Terraform does not manage it. The link is the group's <code>managedBy</code> property (not a tag) plus the workspace's
+<code>managedResourceGroupId</code>. It holds the workspace's network, NAT gateway, DBFS storage and cluster VMs, is locked, is
+deleted with the workspace, and receives its tags. The NAT gateway bills about 31 EUR a month even with no compute; this is accepted.</p>
 <h3><code>modules/databricks/uc_storage</code> (once per environment)</h3>
 <p>Everything is owned by <code>grp-databricks-platform-&lt;env&gt;</code>, referenced as a bare string
 so the group needs no workspace membership.</p>
@@ -339,9 +323,6 @@ so the group needs no workspace membership.</p>
 </tr>
 </tbody>
 </table></div>
-<p>Inputs: <code>environment</code>, <code>access_connector_id</code>, <code>resource_group_name</code>, <code>subscription_id</code>,
-<code>ci_group_name</code>, <code>bronze_storage_root</code>, <code>landing_storage_roots</code>, <code>ingestion_catalog_storage_root</code>.
-Outputs: <code>storage_credential_name</code>, <code>ingestion_managed_location_url</code>, <code>landing_location_urls</code>.</p>
 <h3><code>modules/databricks/uc_ingestion</code> (once per environment)</h3>
 <p>Owned by the same platform group. Needs the locations from <code>uc_storage</code> to exist first.</p>
 <div style="overflow-x:auto"><table>
@@ -400,15 +381,8 @@ Outputs: <code>storage_credential_name</code>, <code>ingestion_managed_location_
 </tr>
 </tbody>
 </table></div>
-<p>Inputs: <code>environment</code>, <code>metastore_id</code>, <code>workspace_id</code>, <code>ci_service_principal_name</code>,
-<code>catalog_storage_root</code>, <code>bronze_storage_root</code>, <code>landing_location_urls</code>,
-<code>bronze_consumer_group_name</code>, <code>bronze_consumer_can_write</code>, <code>enable_grants</code>.
-Output: <code>catalog_name</code>.</p>
 <h3><code>modules/databricks/uc_domain_catalog</code> (once per domain)</h3>
-<p>Inputs: <code>environment</code>, <code>domain</code> (required), <code>metastore_id</code>, <code>workspace_id</code>,
-<code>storage_credential_name</code>, <code>catalog_storage_root</code>, <code>ci_service_principal_name</code>,
-<code>ci_group_name</code>, <code>enable_grants</code>. Group names derive from <code>var.domain</code>; the owner is
-<code>grp-&lt;domain&gt;-data-governance-&lt;env&gt;</code>.</p>
+<p>Group names derive from <code>var.domain</code>; the owner is <code>grp-&lt;domain&gt;-data-governance-&lt;env&gt;</code>.</p>
 <div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -460,11 +434,9 @@ Output: <code>catalog_name</code>.</p>
 </tr>
 </tbody>
 </table></div>
-<p>Engineers use blanket <code>MODIFY</code> because the metastore's privilege version (1.0)
-rejects <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code> at catalog level. <code>databricks_grants</code> (plural,
-authoritative) is used over <code>databricks_grant</code> so Terraform is the single source of truth.</p>
-<p><code>enable_grants</code> gates business-group grants only. Sales and marketing both use
-<code>var.enable_grants</code> (true in dev, off in prod until its first apply).</p>
+<p>Engineers use blanket <code>MODIFY</code> because metastore privilege version 1.0 rejects <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>
+at catalog level. <code>databricks_grants</code> is authoritative, so Terraform is the single source of truth.
+<code>enable_grants</code> gates business-group grants only (on in dev, off in prod until its first apply).</p>
 <h3><code>modules/databricks/compute</code> (once per environment, dev only so far)</h3>
 <div style="overflow-x:auto"><table>
 <thead>
@@ -492,16 +464,12 @@ authoritative) is used over <code>databricks_grant</code> so Terraform is the si
 </tr>
 </tbody>
 </table></div>
-<p><strong>The cluster is off.</strong> No classic cluster can start on the current subscription in northeurope. The subscription has a
-4 vCPU regional quota. The 4-vCPU node types Databricks supports are either restricted
-(<code>DS3_v2</code>, <code>F4s_v2</code>, <code>D4ads_v5</code>, <code>D4s_v3</code> and others are <code>NotAvailableForSubscription</code>) or
-have a family quota of 0 (<code>DC4ads_v6</code> failed with <code>AZURE_QUOTA_EXCEEDED_EXCEPTION</code>), and the larger types
-exceed the regional quota. Turn <code>enable_cluster</code> on after the restriction and quota are lifted, by upgrading from a
-trial subscription or through an Azure support request, and check the node type first with <code>az vm list-skus</code> and
-<code>az vm list-usage</code>.</p>
-<p><strong>What runs where.</strong> The warehouse is serverless, so it uses no VM quota, but it runs SQL only: queries,
-dashboards, alerts and SQL cells. Python and Spark code run on serverless notebook compute, which needs no cluster and
-is billed per DBU while it runs.</p>
+<p><strong>The cluster is off.</strong> No classic cluster can start on this subscription in northeurope: it has a 4 vCPU regional
+quota, and the supported 4-vCPU sizes are restricted (<code>NotAvailableForSubscription</code>) or have a family quota of 0
+(<code>DC4ads_v6</code> failed with <code>AZURE_QUOTA_EXCEEDED_EXCEPTION</code>). Turn <code>enable_cluster</code> on once that is lifted
+(upgrade or an Azure support request), after checking the node type with <code>az vm list-skus</code> and <code>az vm list-usage</code>.</p>
+<p><strong>What runs where.</strong> The warehouse is serverless and uses no VM quota, but runs SQL only. Python and Spark run on
+serverless notebook compute, billed per DBU while it runs.</p>
 <p><strong>Hourly cost</strong> (EUR, northeurope, Premium, pay-as-you-go list prices from Azure's retail price API):</p>
 <div style="overflow-x:auto"><table>
 <thead>
@@ -524,9 +492,8 @@ is billed per DBU while it runs.</p>
 </tr>
 </tbody>
 </table></div>
-<p>The cluster's 0.75 DBU per hour is an assumption for a 4-vCPU node. Creating the warehouse starts it once, and each idle tail
-before the auto-stop costs about 0.52. Against the dev budget of 20 that is roughly 6 warehouse hours a month. The workspace's
-managed resource group, where cluster VMs would bill, has its own budget.</p></section>
+<p>The cluster's 0.75 DBU per hour is an assumption. Against the dev budget of 20, the warehouse gives roughly 6 hours a month;
+cluster VMs would bill in the managed resource group, which has its own budget.</p></section>
 <section id="root-module-platform"><h2><span class="num">03</span>Root module (<code>platform</code>)</h2><p>One root serves both environments. Environment-specific pieces are switched by variables in each environment's <code>values.tfvars</code>: <code>enable_compute</code> and <code>bronze_consumer_can_write</code> (dev only so far) and <code>workspace_user_domains</code> (sales and marketing in both).</p><div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -573,39 +540,23 @@ managed resource group, where cluster VMs would bill, has its own budget.</p></s
 </tr>
 </tbody>
 </table></div>
-<p>The metastore grant is in each root because <code>databricks_grants</code> needs the
-workspace-level provider, which the account-level <code>shared</code> root lacks. Dev's and
-prod's copies are identical so they converge. Grants go to the CI <strong>group</strong>, not the
-service principal, so a new CI identity is a membership change.</p>
-<p><strong>Why the workspace access is shaped this way.</strong></p>
-<ul>
-<li>The assignment is <code>ADMIN</code>, not <code>USER</code>: Terraform reads it on every plan, and reading permission
-assignments needs a workspace admin. <code>group_name</code> is a bare string because a workspace-scoped lookup would
-need the membership the resource creates. It is applied once by a human who is already a workspace member; CI cannot
-grant itself this.</li>
-<li>Membership alone carries no entitlement to call the workspace API, so the entitlement resource grants
-<code>workspace_access</code>, the narrowest one accepted. The group lookup that feeds it is safe there because the group is
-already a member.</li>
-<li>The platform and governance groups have no workspace presence. They only own Unity Catalog objects.</li>
-<li>The metastore grant goes to the CI groups, not <code>grp-databricks-account-admins</code>, which would hand CI full account
-admin. Each environment's CI group therefore gets <code>CREATE_*</code> across the whole metastore, not only its own catalogs.</li>
-</ul>
-<p>The root splits its configuration by concern: <code>main.tf</code> (naming, data lake, workspace, budgets),
-<code>access.tf</code> (workspace assignment, entitlements, metastore grant), <code>catalogs.tf</code>
-(<code>uc_storage</code>, <code>uc_ingestion</code> and the domain catalogs), <code>compute.tf</code> (shared compute),
-<code>providers.tf</code> and <code>backend.tf</code>. The backend is partial: <code>terraform init -backend-config=../&lt;env&gt;.backend.hcl</code>
-supplies the state key, and <code>-reconfigure</code> switches environment in the same checkout.</p></section>
-<section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> comes from <code>module.databricks_workspace.workspace_url</code>.
-Its <code>auth_type</code> is the <code>databricks_auth_type</code> variable, null by default so <code>DATABRICKS_AUTH_TYPE</code> decides
-(<code>azure-cli</code> locally; in CI the dev jobs use OIDC); <code>config/prod/values.tfvars</code> pins <code>azure-cli</code> until a prod workflow supplies the variables. In CI it uses the same OIDC variables as
-<code>azurerm</code>. The account-level provider in <code>shared</code> sets its
-Databricks account ID inline; no other root needs it.</p>
-<p><strong>Two-stage first apply.</strong> A provider block cannot reference a computed attribute, so
-on a new environment the workspace must exist before the <code>databricks</code> provider can
-be configured: first <code>terraform apply -target=module.databricks_workspace.azurerm_databricks_workspace.this</code>,
-then a normal apply. The workspace stays <code>azurerm</code> permanently because the
-<code>databricks</code> provider cannot create Azure workspaces. Resource-group <code>Contributor</code>
-is enough to create it and the access connector.</p></section>
+<p>The metastore grant is in each root because <code>databricks_grants</code> needs the workspace-level provider; both
+environments declare the same set. It goes to the CI <strong>groups</strong> (not account admins, which would be too broad, and not the
+service principal), so a new CI identity is a membership change. Each CI group gets <code>CREATE_*</code> across the whole metastore.</p>
+<p>The CI group is workspace <code>ADMIN</code> because reading permission assignments on every plan needs it; a human applies that once,
+since CI cannot grant it to itself. Its entitlement is <code>workspace_access</code>, the narrowest accepted. The platform and governance
+groups have no workspace presence.</p>
+<p>Files: <code>main.tf</code> (naming, data lake, workspace, budgets), <code>access.tf</code> (assignments, entitlements, metastore grant),
+<code>catalogs.tf</code>, <code>compute.tf</code>, <code>providers.tf</code>, <code>backend.tf</code>. The backend is partial:
+<code>terraform init -backend-config=../config/&lt;env&gt;/backend.hcl</code> supplies the state key, and <code>-reconfigure</code> switches
+environment in the same checkout.</p></section>
+<section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> is the workspace URL. Its <code>auth_type</code> is
+<code>databricks_auth_type</code>, null by default so <code>DATABRICKS_AUTH_TYPE</code> decides (<code>azure-cli</code> locally, OIDC in
+the dev CI jobs); prod pins <code>azure-cli</code> until its workflow supplies the variables. The <code>shared</code> provider sets the
+Databricks account ID inline.</p>
+<p><strong>Two-stage first apply.</strong> A provider cannot use a computed attribute, so on a new environment first run
+<code>terraform apply -target=module.databricks_workspace.azurerm_databricks_workspace.this</code>, then a normal apply.
+Resource-group <code>Contributor</code> is enough to create the workspace and access connector.</p></section>
 <section id="ci-permission-model"><h2><span class="num">05</span>CI permission model</h2><p>CI runs as <code>sp-terraform-&lt;env&gt;</code> (a member of <code>grp-databricks-ci-&lt;env&gt;</code>), which is
 <strong>not</strong> a metastore admin.</p>
 <div style="overflow-x:auto"><table>
@@ -637,9 +588,9 @@ is enough to create it and the access connector.</p></section>
 <p><code>drift-detection.yml</code> is a manual workflow that never applies. It runs <code>plan -refresh-only</code>
 (state vs Azure/Databricks; a warning, since it can show provider spelling noise) and a
 plain <code>plan</code> (code vs reality; fails on any diff). <code>shared</code> has no CI job.</p>
-<p><strong>Azure roles.</strong> Each <code>sp-terraform-&lt;env&gt;</code> needs <code>Contributor</code> on its environment's resource group and
-<code>Cost Management Contributor</code> on the workspace's managed resource group, so CI can read the budget there. Both are granted by hand, outside
-Terraform, and are lost when the resource groups are recreated: grant them again after a rebuild, once the workspace's managed group exists.</p></section>
+<p><strong>Azure roles.</strong> Each <code>sp-terraform-&lt;env&gt;</code> needs <code>Contributor</code> on its resource group and
+<code>Cost Management Contributor</code> on the workspace's managed resource group (to read its budget). Both are granted by hand and lost
+when the groups are recreated.</p></section>
 <section id="naming"><h2><span class="num">06</span>Naming</h2><div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -695,23 +646,17 @@ truth; copy it to <code>common.tfvars</code> if the metastore is ever recreated.
 is ForceNew, and <code>prevent_destroy</code> is set on the metastore.</p>
 <p><strong>Applied once, by hand.</strong> The metastore was adopted once, by an account admin signed in with the Azure CLI, and this root
 is not expected to change. It has no CI job and none is planned; a change is applied manually the same way, by an account admin.</p></section>
-<section id="bootstrap"><h2><span class="num">08</span>Bootstrap</h2><p><strong>Metastore.</strong> Created once by hand, like the App Registrations. Databricks
-auto-creates an empty default metastore when a region's first workspace appears;
-adopt it with <code>terraform import</code> rather than fighting it. The Account Console does not
-work until one Azure Databricks workspace exists, so for a new tenant: (1) apply the
-workspace for one environment, (2) in the Account Console create the metastore's
-resource group, storage account and access connector, then the metastore, and assign
-it, (3) if Databricks auto-created a metastore first, fill in its storage config
-instead of creating another. Never wire the pre-staged access connector in the
-workspace's managed resource group to anything: it inherits that workspace's lifecycle
-and cannot be deleted.</p>
+<section id="bootstrap"><h2><span class="num">08</span>Bootstrap</h2><p><strong>Metastore.</strong> Created once by hand, like the App Registrations. Databricks auto-creates an empty metastore when a
+region's first workspace appears; adopt it with <code>terraform import</code>. For a new tenant: apply one environment's workspace (the
+Account Console needs one), then create the metastore's resource group, storage account and access connector in the Account Console
+and assign it, filling in the auto-created metastore's storage rather than creating another. Do not use the access connector in the
+workspace's managed resource group: it shares the workspace's lifecycle.</p>
 <p><strong>Groups.</strong> Create each <code>grp-*</code> group in Entra ID and register it in the Databricks
 account before any grant that references it applies.</p>
-<p><strong>Rebuilding an environment.</strong> Unity Catalog objects belong to the metastore, not to a workspace: the storage credential, external
-locations and catalogs survive a workspace's deletion. Recreating the workspace without removing them fails with "already exists". An
-isolated catalog bound only to the deleted workspace is unreachable until it is bound to the new one, which is needed before it can be deleted.
-After a rebuild also grant the CI service principal its Azure roles again (see the CI permission model) and confirm the Entra group nesting.
-Because storage now has <code>prevent_destroy</code>, a full destroy of an environment first needs a reviewed change removing it.</p></section>
+<p><strong>Rebuilding an environment.</strong> Unity Catalog objects belong to the metastore and survive a workspace deletion, so recreating
+the workspace fails with "already exists" unless they are removed. An isolated catalog bound only to the deleted workspace must be bound
+to the new one before it can be deleted. Afterwards, re-grant the CI Azure roles and confirm the Entra group nesting. A full destroy
+first needs a reviewed change removing <code>prevent_destroy</code>.</p></section>
 <section id="prod-bootstrap"><h2><span class="num">09</span>Prod bootstrap</h2><p>Prod (<code>platform</code> with <code>config/prod/values.tfvars</code>) has never had a full apply; <code>apply-prod</code> waits
 on the <code>production</code> approval. Its state already holds an early resource group, storage account and budget, under the old
 <code>module.analytics_group</code> address; a <code>moved</code> block in <code>main.tf</code> maps them to <code>module.datalake</code> so an apply
