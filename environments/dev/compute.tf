@@ -1,7 +1,10 @@
-# Shared compute: one single-node cluster and one serverless SQL warehouse,
-# the smallest this subscription allows, both stopping after 10 idle minutes.
-# Dev only for now. Engineers can attach to and restart the cluster; every
-# other workspace group can only attach to it.
+# Shared compute for dev: a serverless SQL warehouse, stopping after 10 idle
+# minutes. The single-node cluster is off (enable_cluster defaults to false):
+# this subscription cannot start a classic cluster in northeurope, see
+# modules/databricks/compute/main.tf. Serverless notebook compute covers
+# Python meanwhile. Engineers would get CAN_RESTART on the cluster and every
+# other workspace group CAN_ATTACH_TO; all of them have CAN_USE on the
+# warehouse.
 module "compute" {
   source = "../../modules/databricks/compute"
 

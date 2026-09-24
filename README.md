@@ -171,7 +171,7 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 │   │   └── cost_budget/       # resource-group budget
 │   └── databricks/
 │       ├── workspace/         # workspace, access connector, metastore assignment
-│       ├── compute/           # shared single-node cluster, SQL warehouse
+│       ├── compute/           # serverless SQL warehouse, optional cluster
 │       ├── uc_storage/        # storage credential, external locations
 │       ├── uc_ingestion/      # ingestion catalog, bronze schema, volumes
 │       └── uc_domain_catalog/ # per-domain catalog, schemas, grants
