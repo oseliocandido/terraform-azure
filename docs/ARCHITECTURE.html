@@ -161,7 +161,7 @@ pre.mermaid{ background:transparent; border:0; padding:6px 0; margin:12px 0; ove
     <div class="metarow">
       <span>Providers <b>azurerm &middot; databricks</b></span>
       <span><span class="pill dev">dev</span> <b>applied, converged</b></span>
-      <span><span class="pill prod">prod</span> <b>coded, not yet applied</b></span>
+      <span><span class="pill prod">prod</span> <b>planned, not yet fully applied</b></span>
     </div>
 
     <div class="scopenote">
@@ -419,7 +419,7 @@ flowchart TB
           <ul>
             <li>One Azure subscription. Each environment has its own resource group and its own CI service principal with <code>Contributor</code> scoped to that group, plus <code>Cost Management Contributor</code> on the workspace's managed resource group (to read its budget).</li>
             <li>One metastore (account-level, per region) shared by both environments. Data-layer isolation comes from <b>workspace-bound catalogs</b>, not separate metastores.</li>
-            <li>The metastore has its own resource group and storage, outside both environments, so it outlives any single workspace. Databricks' auto-created access connector in a workspace's managed resource group is unused.</li>
+            <li>The metastore has its own resource group and storage, outside both environments, so it outlives any single workspace. Databricks' auto-created access connector in a workspace's managed resource group is unused. The metastore has <code>prevent_destroy</code> and is applied once, by hand.</li>
           </ul>
         </div>
         <div class="cdc cons"><span class="tag">Consequences</span><p>Resource-group RBAC is narrower than Azure's recommended subscription-per-environment split (the account tier allows one subscription). Dev and prod share billing, policy scope, and quota. Splitting prod into its own subscription later is a backend key and provider change, not a redesign.</p></div>
@@ -448,7 +448,7 @@ flowchart TB
         <ul>
           <li>One <b>premium</b> workspace per environment (Unity Catalog requires premium), with default public networking.</li>
           <li>An access connector (managed identity) holds <code>Storage Blob Data Contributor</code> on the storage account and backs a single storage credential per environment, <code>cred-analytics-&lt;env&gt;</code>. No secrets to rotate.</li>
-          <li><b>Compute.</b> A serverless SQL warehouse (2X-Small, stops after 10 idle minutes). A single-node cluster exists in the code but is off: the subscription has a 4 vCPU regional quota in <code>northeurope</code> and restricts the common small VM sizes, so no classic cluster can start. The warehouse runs SQL only; Python runs on serverless notebook compute.</li>
+          <li><b>Compute.</b> A serverless SQL warehouse (2X-Small, stops after 10 idle minutes), dev only for now. A single-node cluster exists in the code but is off: the subscription has a 4 vCPU regional quota in <code>northeurope</code> and restricts the common small VM sizes, so no classic cluster can start. The warehouse runs SQL only; Python runs on serverless notebook compute.</li>
           <li><b>Workspace users.</b> Each domain's data engineers, analysts and stakeholders are workspace users; the platform and governance groups are not, since they only own Unity Catalog objects. Data engineers can restart the cluster (when enabled) and every workspace group can use the warehouse.</li>
         </ul>
       </div>
@@ -509,6 +509,7 @@ flowchart TB
         </table>
         <p>Every Unity Catalog object is group-owned, never person-owned or owned by the CI identity. Owner is an administrative role, so operators and owners are separate groups (separation of duties). The CI group is nested in each owner group, so <code>sp-terraform-&lt;env&gt;</code> can keep managing what it creates after ownership moves to the group; without the nesting, the first apply of a new catalog fails with <code>User does not have MANAGE</code>.</p>
         <p><b>Grant scoping.</b> Privileges inherit downward, so engineers and CI get catalog-level grants, while stakeholders and analysts get only <code>USE_CATALOG</code> on the catalog plus schema-level grants on the layers they may see. Engineers use blanket <code>MODIFY</code> because the metastore's privilege version (1.0) does not support fine-grained DML privileges at catalog level.</p>
+        <p><b>Gating.</b> Grants to the business groups of every domain and of the ingestion catalog follow one switch, <code>enable_grants</code>: on in dev, off in prod until its first apply. CI's own grants are never gated.</p>
       </div>
     </section>
 
