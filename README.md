@@ -70,10 +70,10 @@ workspace even for users who hold grants.
 
 ## Terraform structure
 
-Seven reusable modules with no state of their own: `naming` (the name suffix and
+Eight reusable modules with no state of their own: `naming` (the name suffix and
 tag set, computed once per root), and, grouped by plane, `azure/`
 (`datalake`: resource group, storage, containers; `cost_budget`) and `databricks/`
-(`workspace`, `uc_storage`, `uc_ingestion`, `uc_domain_catalog`). Each environment
+(`workspace`, `compute`, `uc_storage`, `uc_ingestion`, `uc_domain_catalog`). Each environment
 root (`dev`, `prod`) composes them and keeps its own state; `shared` holds the
 account-level metastore. `uc_domain_catalog` is called once per business domain,
 so adding a domain is one more module call, plus nesting the CI group in the
@@ -171,6 +171,7 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 │   │   └── cost_budget/       # resource-group budget
 │   └── databricks/
 │       ├── workspace/         # workspace, access connector, metastore assignment
+│       ├── compute/           # shared single-node cluster, SQL warehouse
 │       ├── uc_storage/        # storage credential, external locations
 │       ├── uc_ingestion/      # ingestion catalog, bronze schema, volumes
 │       └── uc_domain_catalog/ # per-domain catalog, schemas, grants

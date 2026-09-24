@@ -71,7 +71,7 @@ jobs:
       ARM_USE_OIDC: "true"
       ARM_USE_CLI: "false"
       DATABRICKS_AUTH_TYPE: github-oidc
-      DATABRICKS_HOST: https://adb-7405615984891164.4.azuredatabricks.net/
+      DATABRICKS_HOST: https://adb-7405616518239095.15.azuredatabricks.net/
       DATABRICKS_CLIENT_ID: 5e93b219-9bc5-4a7b-8956-40d6c3648c1d # sp-terraform-dev
     steps:
       - uses: actions/checkout@v4
@@ -175,7 +175,7 @@ jobs:
       ARM_USE_OIDC: "true"
       ARM_USE_CLI: "false"
       DATABRICKS_AUTH_TYPE: github-oidc
-      DATABRICKS_HOST: https://adb-7405615984891164.4.azuredatabricks.net/
+      DATABRICKS_HOST: https://adb-7405616518239095.15.azuredatabricks.net/
       DATABRICKS_CLIENT_ID: 5e93b219-9bc5-4a7b-8956-40d6c3648c1d # sp-terraform-dev
     steps:
       - uses: actions/checkout@v4
