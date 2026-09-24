@@ -8,7 +8,7 @@
 # warehouse.
 module "compute" {
   count  = var.enable_compute ? 1 : 0
-  source = "../../modules/databricks/compute"
+  source = "../modules/databricks/compute"
 
   suffix         = module.naming.suffix
   tags           = module.naming.tags

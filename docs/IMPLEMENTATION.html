@@ -131,11 +131,11 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
     <div class="toc-title">On this page</div>
     <a href="#layout">Layout</a>
     <a href="#objects-by-module">Objects by module</a>
-    <a href="#root-module-environments-platform">Root module (<code>environments/platform</code>)</a>
+    <a href="#root-module-platform">Root module (<code>platform</code>)</a>
     <a href="#providers-and-authentication">Providers and authentication</a>
     <a href="#ci-permission-model">CI permission model</a>
     <a href="#naming">Naming</a>
-    <a href="#environments-shared"><code>environments/shared</code></a>
+    <a href="#root-shared"><code>shared</code></a>
     <a href="#bootstrap">Bootstrap</a>
     <a href="#prod-bootstrap">Prod bootstrap</a>
   </nav>
@@ -164,12 +164,12 @@ arguments.</p>
     ├── uc_storage/        once per environment: credential, external locations
     ├── uc_ingestion/      once per environment: ingestion catalog, bronze, volumes
     └── uc_domain_catalog/ once per domain: catalog, silver/gold, grants
-environments/
+platform/               the one root module for dev and prod
+shared/                 root module: account-level metastore, applied by hand
+config/
 ├── common.tfvars       values shared by every environment (passed with -var-file, not auto-loaded)
-├── dev.tfvars  prod.tfvars              values per environment
-├── dev.backend.hcl  prod.backend.hcl    state key per environment
-├── platform/           the one root module for dev and prod
-└── shared/             account-level metastore, applied by hand
+├── dev/                backend.hcl (state key) and values.tfvars
+└── prod/               backend.hcl (state key) and values.tfvars
 .github/workflows/      terraform.yml (plan/apply), drift-detection.yml (manual)
 </code></pre>
 <p><code>naming</code> holds the region-code map and builds two values once per root: <code>suffix</code>
@@ -517,7 +517,7 @@ is billed per DBU while it runs.</p>
 <p>The cluster's 0.75 DBU per hour is an assumption for a 4-vCPU node. Creating the warehouse starts it once, and each idle tail
 before the auto-stop costs about 0.52. Against the dev budget of 20 that is roughly 6 warehouse hours a month. The workspace's
 managed resource group, where cluster VMs would bill, has its own budget.</p></section>
-<section id="root-module-environments-platform"><h2><span class="num">03</span>Root module (<code>environments/platform</code>)</h2><p>One root serves both environments. Dev-only pieces are switched by variables in <code>dev.tfvars</code>: <code>enable_compute</code>, <code>workspace_user_domains</code> and <code>bronze_consumer_can_write</code>.</p><div style="overflow-x:auto"><table>
+<section id="root-module-platform"><h2><span class="num">03</span>Root module (<code>platform</code>)</h2><p>One root serves both environments. Dev-only pieces are switched by variables in <code>config/dev/values.tfvars</code>: <code>enable_compute</code>, <code>workspace_user_domains</code> and <code>bronze_consumer_can_write</code>.</p><div style="overflow-x:auto"><table>
 <thead>
 <tr>
 <th>Object</th>
@@ -587,8 +587,8 @@ admin. Each environment's CI group therefore gets <code>CREATE_*</code> across t
 supplies the state key, and <code>-reconfigure</code> switches environment in the same checkout.</p></section>
 <section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> comes from <code>module.databricks_workspace.workspace_url</code>.
 Its <code>auth_type</code> is the <code>databricks_auth_type</code> variable, null by default so <code>DATABRICKS_AUTH_TYPE</code> decides
-(<code>azure-cli</code> locally; in CI the dev jobs use OIDC); <code>prod.tfvars</code> pins <code>azure-cli</code> until a prod workflow supplies the variables. In CI it uses the same OIDC variables as
-<code>azurerm</code>. The account-level provider in <code>environments/shared</code> sets its
+(<code>azure-cli</code> locally; in CI the dev jobs use OIDC); <code>config/prod/values.tfvars</code> pins <code>azure-cli</code> until a prod workflow supplies the variables. In CI it uses the same OIDC variables as
+<code>azurerm</code>. The account-level provider in <code>shared</code> sets its
 Databricks account ID inline; no other root needs it.</p>
 <p><strong>Two-stage first apply.</strong> A provider block cannot reference a computed attribute, so
 on a new environment the workspace must exist before the <code>databricks</code> provider can
@@ -626,7 +626,7 @@ is enough to create it and the access connector.</p></section>
 </table></div>
 <p><code>drift-detection.yml</code> is a manual workflow that never applies. It runs <code>plan -refresh-only</code>
 (state vs Azure/Databricks; a warning, since it can show provider spelling noise) and a
-plain <code>plan</code> (code vs reality; fails on any diff). <code>environments/shared</code> has no CI job.</p></section>
+plain <code>plan</code> (code vs reality; fails on any diff). <code>shared</code> has no CI job.</p></section>
 <section id="naming"><h2><span class="num">06</span>Naming</h2><div style="overflow-x:auto"><table>
 <thead>
 <tr>
@@ -675,7 +675,7 @@ plain <code>plan</code> (code vs reality; fails on any diff). <code>environments
 </table></div>
 <p>Groups are created in Entra ID and registered in the Databricks account by hand;
 Terraform only references them by name.</p></section>
-<section id="environments-shared"><h2><span class="num">07</span><code>environments/shared</code></h2><p>Account-level root with its own state. It reads only <code>common.tfvars</code> and manages one
+<section id="root-shared"><h2><span class="num">07</span><code>shared</code></h2><p>Account-level root with its own state. It reads only <code>common.tfvars</code> and manages one
 object: <code>databricks_metastore.primary</code> (<code>metastore_azure_northeurope</code>, owned by
 <code>grp-databricks-account-admins</code>). <code>terraform output metastore_id</code> is the source of
 truth; copy it to <code>common.tfvars</code> if the metastore is ever recreated. <code>storage_root</code>
@@ -692,7 +692,7 @@ workspace's managed resource group to anything: it inherits that workspace's lif
 and cannot be deleted.</p>
 <p><strong>Groups.</strong> Create each <code>grp-*</code> group in Entra ID and register it in the Databricks
 account before any grant that references it applies.</p></section>
-<section id="prod-bootstrap"><h2><span class="num">09</span>Prod bootstrap</h2><p>Prod (<code>environments/platform</code> with <code>prod.tfvars</code>) has never had a full apply; <code>apply-prod</code> waits
+<section id="prod-bootstrap"><h2><span class="num">09</span>Prod bootstrap</h2><p>Prod (<code>platform</code> with <code>config/prod/values.tfvars</code>) has never had a full apply; <code>apply-prod</code> waits
 on the <code>production</code> approval. Its state already holds an early resource group, storage account and budget, under the old
 <code>module.analytics_group</code> address; a <code>moved</code> block in <code>main.tf</code> maps them to <code>module.datalake</code> so an apply
 updates them in place instead of destroying the real prod storage. Before approving it:</p>

@@ -4,7 +4,7 @@
 # Environment-scoped, called once: the storage credential and the bronze,
 # landing and ingestion-managed external locations.
 module "uc_storage" {
-  source = "../../modules/databricks/uc_storage"
+  source = "../modules/databricks/uc_storage"
 
   environment         = var.environment
   access_connector_id = module.databricks_workspace.access_connector_id
@@ -29,7 +29,7 @@ module "uc_storage" {
 # checkpoint volumes. The locations in uc_storage must exist first (bronze is
 # referenced by plain URL, so the ordering is explicit).
 module "uc_ingestion" {
-  source = "../../modules/databricks/uc_ingestion"
+  source = "../modules/databricks/uc_ingestion"
 
   environment                = var.environment
   metastore_id               = var.metastore_id
@@ -48,7 +48,7 @@ module "uc_ingestion" {
 # One module call per business domain. Without the depends_on, applies race:
 # the catalog needs the metastore grant and the storage credential first.
 module "unity_catalog_sales" {
-  source = "../../modules/databricks/uc_domain_catalog"
+  source = "../modules/databricks/uc_domain_catalog"
 
   environment               = var.environment
   domain                    = "sales"
@@ -69,7 +69,7 @@ module "unity_catalog_sales" {
 # domain cannot share sales' "managed" one: Unity Catalog locations may not
 # overlap).
 module "unity_catalog_marketing" {
-  source = "../../modules/databricks/uc_domain_catalog"
+  source = "../modules/databricks/uc_domain_catalog"
 
   environment               = var.environment
   domain                    = "marketing"

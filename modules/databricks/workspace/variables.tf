@@ -20,7 +20,7 @@ variable "storage_account_id" {
 
 variable "metastore_id" {
   type        = string
-  description = "Account-level Unity Catalog metastore ID (output of environments/shared) to assign this workspace to."
+  description = "Account-level Unity Catalog metastore ID (output of shared) to assign this workspace to."
 }
 
 variable "managed_resource_group_name" {

@@ -74,7 +74,7 @@ resource "databricks_entitlements" "users" {
 }
 
 # Metastore-wide, so not per catalog. It lives here rather than in
-# environments/shared because databricks_grants needs a workspace-level
+# shared because databricks_grants needs a workspace-level
 # provider. The prod root declares the identical grant set, so whichever
 # environment applies last converges to the same state.
 #

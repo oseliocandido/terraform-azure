@@ -1,5 +1,5 @@
 # Dev values, applied on top of common.tfvars:
-#   terraform plan -var-file=../common.tfvars -var-file=../dev.tfvars
+#   terraform plan -var-file=../config/common.tfvars -var-file=../config/dev/values.tfvars
 
 environment   = "dev"
 budget_amount = 20
