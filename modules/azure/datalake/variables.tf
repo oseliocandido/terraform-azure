@@ -1,17 +1,11 @@
-variable "workload" {
+variable "suffix" {
   type        = string
-  default     = "analytics"
-  description = "Short workload name used to derive every resource name."
-
-  validation {
-    condition     = can(regex("^[a-z][a-z0-9]{2,11}$", var.workload))
-    error_message = "workload must be 3-12 lowercase alphanumeric characters, starting with a letter."
-  }
+  description = "Name suffix from modules/naming (e.g. analytics-dev-neu-01). The resource group is rg-<suffix> and the storage account derives from it."
 }
 
 variable "environment" {
   type        = string
-  description = "Deployment environment. Drives tagging and sizing decisions. No default -- every caller must decide this explicitly."
+  description = "Deployment environment. Drives sizing and protection decisions (replication, soft delete, prevent_destroy). No default -- every caller must decide this explicitly."
 
   validation {
     condition     = contains(["dev", "prod"], var.environment)
@@ -22,17 +16,6 @@ variable "environment" {
 variable "location" {
   type        = string
   description = "The Azure region to deploy resources into. Lowercase, no spaces (e.g. westeurope). No default -- differs per environment."
-
-  validation {
-    condition     = can(regex("^[a-z]+[a-z0-9]*$", var.location))
-    error_message = "Use the lowercase, no-space form, e.g. westeurope, not \"West Europe\"."
-  }
-}
-
-variable "instance" {
-  type        = number
-  default     = 1
-  description = "Instance number, for when more than one copy of this workload exists side by side."
 }
 
 variable "storage_account_suffix" {
@@ -70,5 +53,5 @@ variable "landing_source_systems" {
 
 variable "tags" {
   type        = map(string)
-  description = "Base tags applied to every taggable resource this module creates, merged with workload/environment (see README.md's \"Working with the repo\" section for the required keys and why each exists). Passed in from the calling root module rather than hardcoded here, since managed_by/repository/cost_center/data_owner are account-wide constants, not module-specific."
+  description = "Tags applied to every taggable resource this module creates: modules/naming's tags output (see README.md's \"Working with the repo\" section for the required keys and why each exists)."
 }

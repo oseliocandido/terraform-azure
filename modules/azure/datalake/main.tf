@@ -1,28 +1,11 @@
 locals {
-  # Azure's short region codes. Add to this map as new regions are needed;
-  # an unmapped region fails loudly here (Invalid index) rather than
-  # silently producing a name containing the string "null".
-  region_short = {
-    westeurope  = "weu"
-    northeurope = "neu"
-    uksouth     = "uks"
-    eastus      = "eus"
-  }
-
-  suffix = join("-", [
-    var.workload,
-    var.environment,
-    local.region_short[var.location],
-    format("%02d", var.instance),
-  ])
-
   # Storage accounts: 3-24 chars, lowercase alphanumeric only, no hyphens.
   # substr() guarantees the 24-char cap even if workload/environment grow.
   # storage_account_suffix is appended AFTER truncation -- it's an escape
   # hatch for a global name collision, not part of the normal naming
   # scheme, so it must never get silently cut off by substr().
   sa_name = "${substr(
-    lower(replace("st${local.suffix}", "-", "")),
+    lower(replace("st${var.suffix}", "-", "")),
     0, 24 - length(var.storage_account_suffix)
   )}${var.storage_account_suffix}"
 
@@ -46,11 +29,6 @@ locals {
   # Soft delete: a deleted blob/container stays recoverable for this many
   # days. Longer in prod, where an accidental delete costs the most.
   soft_delete_days = var.environment == "prod" ? 14 : 7
-
-  common_tags = merge(var.tags, {
-    workload    = var.workload
-    environment = var.environment
-  })
 }
 
 ## -----------------------------------------------------------------------
@@ -58,10 +36,10 @@ locals {
 ## -----------------------------------------------------------------------
 
 resource "azurerm_resource_group" "analytics" {
-  name     = "rg-${local.suffix}"
+  name     = "rg-${var.suffix}"
   location = var.location
 
-  tags = local.common_tags
+  tags = var.tags
 }
 
 resource "azurerm_storage_account" "analytics" {
@@ -92,7 +70,7 @@ resource "azurerm_storage_account" "analytics" {
   allow_nested_items_to_be_public = false
   shared_access_key_enabled       = false # AAD auth only -- no account key to leak
 
-  tags = local.common_tags
+  tags = var.tags
 
   blob_properties {
     # Blob versioning stays off: soft delete above covers accidental deletes.
@@ -138,7 +116,7 @@ resource "azurerm_storage_account" "analytics_protected" {
   allow_nested_items_to_be_public = false
   shared_access_key_enabled       = false # AAD auth only -- no account key to leak
 
-  tags = local.common_tags
+  tags = var.tags
 
   blob_properties {
     # Blob versioning stays off: soft delete above covers accidental deletes.

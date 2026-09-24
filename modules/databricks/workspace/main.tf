@@ -1,31 +1,4 @@
 ## -----------------------------------------------------------------------
-## Locals
-## -----------------------------------------------------------------------
-
-locals {
-  # Kept in sync with modules/azure/datalake's own region_short map -- add to
-  # both if a new region is ever needed.
-  region_short = {
-    westeurope  = "weu"
-    northeurope = "neu"
-    uksouth     = "uks"
-    eastus      = "eus"
-  }
-
-  suffix = join("-", [
-    var.workload,
-    var.environment,
-    local.region_short[var.location],
-    format("%02d", var.instance),
-  ])
-
-  common_tags = merge(var.tags, {
-    workload    = var.workload
-    environment = var.environment
-  })
-}
-
-## -----------------------------------------------------------------------
 ## Resources -- stage 1 of the bootstrap sequence documented in
 ## docs/IMPLEMENTATION.html ("Providers and
 ## authentication"). Only azurerm-provider resources
@@ -50,7 +23,7 @@ locals {
 # has the "this" addresses, so keeping them around served no further
 # purpose).
 resource "azurerm_databricks_workspace" "this" {
-  name                = "dbw-${local.suffix}"
+  name                = "dbw-${var.suffix}"
   resource_group_name = var.resource_group_name
   location            = var.location
 
@@ -62,11 +35,11 @@ resource "azurerm_databricks_workspace" "this" {
   # workspaces -- see variable description for why this must stay opt-in.
   managed_resource_group_name = var.managed_resource_group_name
 
-  tags = local.common_tags
+  tags = var.tags
 }
 
 resource "azurerm_databricks_access_connector" "this" {
-  name                = "dbac-${local.suffix}"
+  name                = "dbac-${var.suffix}"
   resource_group_name = var.resource_group_name
   location            = var.location
 
@@ -74,7 +47,7 @@ resource "azurerm_databricks_access_connector" "this" {
     type = "SystemAssigned"
   }
 
-  tags = local.common_tags
+  tags = var.tags
 }
 
 resource "azurerm_role_assignment" "access_connector_storage" {

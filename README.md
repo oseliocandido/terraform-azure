@@ -70,7 +70,8 @@ workspace even for users who hold grants.
 
 ## Terraform structure
 
-Six reusable modules with no state of their own, grouped by plane: `azure/`
+Seven reusable modules with no state of their own: `naming` (the name suffix and
+tag set, computed once per root), and, grouped by plane, `azure/`
 (`datalake`: resource group, storage, containers; `cost_budget`) and `databricks/`
 (`workspace`, `uc_storage`, `uc_ingestion`, `uc_domain_catalog`). Each environment
 root (`dev`, `prod`) composes them and keeps its own state; `shared` holds the
@@ -164,6 +165,7 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 ```text
 .
 ├── modules/
+│   ├── naming/                # name suffix and tags, no resources
 │   ├── azure/
 │   │   ├── datalake/          # resource group, storage account, containers
 │   │   └── cost_budget/       # resource-group budget

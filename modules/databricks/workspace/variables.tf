@@ -5,28 +5,12 @@ variable "resource_group_name" {
 
 variable "location" {
   type        = string
-  description = "Azure region for this environment's resources. Must match the region_short map in locals -- add new regions there before using them here."
+  description = "Azure region for this environment's resources."
 }
 
-variable "workload" {
+variable "suffix" {
   type        = string
-  description = "Short workload name used to derive every resource name -- same value passed to modules/azure/datalake."
-}
-
-variable "environment" {
-  type        = string
-  description = "Deployment environment. No default -- every caller must decide this explicitly."
-
-  validation {
-    condition     = contains(["dev", "prod"], var.environment)
-    error_message = "environment must be one of: dev, prod."
-  }
-}
-
-variable "instance" {
-  type        = number
-  default     = 1
-  description = "Instance number, for when more than one copy of this workload exists side by side."
+  description = "Name suffix from modules/naming (e.g. analytics-dev-neu-01) -- the same value passed to modules/azure/datalake. The workspace is dbw-<suffix> and the access connector dbac-<suffix>."
 }
 
 variable "storage_account_id" {
@@ -47,5 +31,5 @@ variable "managed_resource_group_name" {
 
 variable "tags" {
   type        = map(string)
-  description = "Base tags applied to every taggable resource this module creates, merged with workload/environment -- see README.md's \"Working with the repo\" section. Note: the workspace's own managed resource group (databricks-rg-...) is Azure/Databricks-owned, not Terraform's, and never receives these tags -- see that module's own comments for why nothing in it is manageable from here."
+  description = "Tags applied to every taggable resource this module creates: modules/naming's tags output -- see README.md's \"Working with the repo\" section. Note: the workspace's own managed resource group (databricks-rg-...) is Azure/Databricks-owned, not Terraform's, and never receives these tags -- see that module's own comments for why nothing in it is manageable from here."
 }
