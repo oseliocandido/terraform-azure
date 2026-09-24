@@ -679,7 +679,9 @@ Terraform only references them by name.</p></section>
 object: <code>databricks_metastore.primary</code> (<code>metastore_azure_northeurope</code>, owned by
 <code>grp-databricks-account-admins</code>). <code>terraform output metastore_id</code> is the source of
 truth; copy it to <code>common.tfvars</code> if the metastore is ever recreated. <code>storage_root</code>
-is ForceNew.</p></section>
+is ForceNew, and <code>prevent_destroy</code> is set on the metastore.</p>
+<p><strong>Applied once, by hand.</strong> The metastore was adopted once, by an account admin signed in with the Azure CLI, and this root
+is not expected to change. It has no CI job and none is planned; a change is applied manually the same way, by an account admin.</p></section>
 <section id="bootstrap"><h2><span class="num">08</span>Bootstrap</h2><p><strong>Metastore.</strong> Created once by hand, like the App Registrations. Databricks
 auto-creates an empty default metastore when a region's first workspace appears;
 adopt it with <code>terraform import</code> rather than fighting it. The Account Console does not
