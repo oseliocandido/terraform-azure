@@ -6,9 +6,13 @@ budget_amount = 100
 instance      = 1
 
 # No prod workflow supplies DATABRICKS_AUTH_TYPE yet, so authenticate through
-# the Azure CLI (see platform/providers.tf). compute, workspace users and
-# bronze writes stay off (their defaults) until prod has real users.
+# the Azure CLI (see platform/providers.tf). compute and bronze writes stay
+# off (their defaults) until prod has a real need for them.
 databricks_auth_type = "azure-cli"
+
+# Every grp-<domain>-{data-engineers,analysts,stakeholders}-prod group below is
+# registered in the Databricks account; they become workspace users.
+workspace_user_domains = ["sales", "marketing"]
 
 # sp-terraform-prod's Application (client) ID, not its display name --
 # Databricks grants identify an Azure-managed SP by this ID.

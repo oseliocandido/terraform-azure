@@ -517,7 +517,7 @@ is billed per DBU while it runs.</p>
 <p>The cluster's 0.75 DBU per hour is an assumption for a 4-vCPU node. Creating the warehouse starts it once, and each idle tail
 before the auto-stop costs about 0.52. Against the dev budget of 20 that is roughly 6 warehouse hours a month. The workspace's
 managed resource group, where cluster VMs would bill, has its own budget.</p></section>
-<section id="root-module-platform"><h2><span class="num">03</span>Root module (<code>platform</code>)</h2><p>One root serves both environments. Dev-only pieces are switched by variables in <code>config/dev/values.tfvars</code>: <code>enable_compute</code>, <code>workspace_user_domains</code> and <code>bronze_consumer_can_write</code>.</p><div style="overflow-x:auto"><table>
+<section id="root-module-platform"><h2><span class="num">03</span>Root module (<code>platform</code>)</h2><p>One root serves both environments. Environment-specific pieces are switched by variables in each environment's <code>values.tfvars</code>: <code>enable_compute</code> and <code>bronze_consumer_can_write</code> (dev only so far) and <code>workspace_user_domains</code> (sales and marketing in both).</p><div style="overflow-x:auto"><table>
 <thead>
 <tr>
 <th>Object</th>
@@ -543,7 +543,7 @@ managed resource group, where cluster VMs would bill, has its own budget.</p></s
 </tr>
 <tr>
 <td><code>databricks_permission_assignment.users</code>, <code>databricks_entitlements.users</code></td>
-<td>For each domain in <code>workspace_user_domains</code> (dev: sales, marketing), the data engineers, analysts and stakeholders become workspace <code>USER</code>s with <code>workspace_access</code> and <code>databricks_sql_access</code>. Platform and governance groups are not added</td>
+<td>For each domain in <code>workspace_user_domains</code> (dev and prod: sales, marketing), the data engineers, analysts and stakeholders become workspace <code>USER</code>s with <code>workspace_access</code> and <code>databricks_sql_access</code>. Platform and governance groups are not added</td>
 </tr>
 <tr>
 <td><code>databricks_grants.metastore_admins</code></td>
