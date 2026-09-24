@@ -73,9 +73,9 @@ workspace even for users who hold grants.
 Eight reusable modules with no state of their own: `naming` (the name suffix and
 tag set, computed once per root), and, grouped by plane, `azure/`
 (`datalake`: resource group, storage, containers; `cost_budget`) and `databricks/`
-(`workspace`, `compute`, `uc_storage`, `uc_ingestion`, `uc_domain_catalog`). Each environment
-root (`dev`, `prod`) composes them and keeps its own state; `shared` holds the
-account-level metastore. `uc_domain_catalog` is called once per business domain,
+(`workspace`, `compute`, `uc_storage`, `uc_ingestion`, `uc_domain_catalog`). One root,
+`environments/platform`, composes them for every environment and keeps a state
+per environment; `shared` holds the account-level metastore. `uc_domain_catalog` is called once per business domain,
 so adding a domain is one more module call, plus nesting the CI group in the
 domain's governance group in Entra ID (see [IMPLEMENTATION](docs/IMPLEMENTATION.html)). `uc_storage` and `uc_ingestion` are
 called once per environment because the storage credential and the raw ingestion
@@ -129,16 +129,19 @@ flowchart LR
 | `prod` | Production platform, **not yet applied** | CI behind manual approval; first apply is done by an admin | Contributor on its own resource group |
 | `shared` | The account-level Unity Catalog metastore | By hand, by an account admin | Databricks account admin |
 
-Each environment is its own Terraform root with its own state file in the shared
-backend (`sttfstateanalyticsneu01`, container `tfstate`). Values common to all
-environments live in `environments/common.tfvars`, which is **not** auto-loaded.
+One Terraform root, `environments/platform`, serves every environment. Each
+environment has its own state file in the shared backend
+(`sttfstateanalyticsneu01`, container `tfstate`), chosen by
+`environments/<env>.backend.hcl`, and its own values in `environments/<env>.tfvars`.
+Values common to all environments live in `environments/common.tfvars`, which is
+**not** auto-loaded.
 
 ## Working with the repo
 
 ```bash
-cd environments/dev            # or environments/prod
-terraform init
-terraform plan -var-file=../common.tfvars -var-file=terraform.tfvars
+cd environments/platform
+terraform init -reconfigure -backend-config=../dev.backend.hcl        # or ../prod.backend.hcl
+terraform plan -var-file=../common.tfvars -var-file=../dev.tfvars     # or ../prod.tfvars
 ```
 
 - Sign in first with `az login`. Databricks resources use the same Azure identity.
@@ -177,7 +180,9 @@ Every taggable resource carries `managed_by`, `repository`, `cost_center`,
 │       └── uc_domain_catalog/ # per-domain catalog, schemas, grants
 ├── environments/
 │   ├── common.tfvars         # values shared by every environment
-│   ├── dev/  prod/           # root modules, own state and tfvars
+│   ├── dev.tfvars  prod.tfvars              # values per environment
+│   ├── dev.backend.hcl  prod.backend.hcl    # state key per environment
+│   ├── platform/             # the one root module for dev and prod
 │   └── shared/               # account-level metastore, applied by hand
 ├── docs/
 │   ├── PRD.html              # business requirements

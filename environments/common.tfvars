@@ -4,7 +4,7 @@
 #
 # Anything that should genuinely differ per environment (environment,
 # location, budget_amount, instance) stays out of this file and lives in
-# environments/<env>/terraform.tfvars instead.
+# environments/<env>.tfvars instead.
 #
 # subscription_id here MUST match whatever identity CI authenticates as
 # (see .github/workflows/terraform.yml's ARM_SUBSCRIPTION_ID) -- dev and

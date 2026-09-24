@@ -131,7 +131,7 @@ pre.mermaid{ background:transparent; border:0; text-align:center; overflow-x:aut
     <div class="toc-title">On this page</div>
     <a href="#layout">Layout</a>
     <a href="#objects-by-module">Objects by module</a>
-    <a href="#root-modules-environments-dev-environments-prod">Root modules (<code>environments/dev</code>, <code>environments/prod</code>)</a>
+    <a href="#root-module-environments-platform">Root module (<code>environments/platform</code>)</a>
     <a href="#providers-and-authentication">Providers and authentication</a>
     <a href="#ci-permission-model">CI permission model</a>
     <a href="#naming">Naming</a>
@@ -165,8 +165,10 @@ arguments.</p>
     ├── uc_ingestion/      once per environment: ingestion catalog, bronze, volumes
     └── uc_domain_catalog/ once per domain: catalog, silver/gold, grants
 environments/
-├── common.tfvars       values shared by every root (passed with -var-file, not auto-loaded)
-├── dev/  prod/         root modules, own state and tfvars
+├── common.tfvars       values shared by every environment (passed with -var-file, not auto-loaded)
+├── dev.tfvars  prod.tfvars              values per environment
+├── dev.backend.hcl  prod.backend.hcl    state key per environment
+├── platform/           the one root module for dev and prod
 └── shared/             account-level metastore, applied by hand
 .github/workflows/      terraform.yml (plan/apply), drift-detection.yml (manual)
 </code></pre>
@@ -515,7 +517,7 @@ is billed per DBU while it runs.</p>
 <p>The cluster's 0.75 DBU per hour is an assumption for a 4-vCPU node. Creating the warehouse starts it once, and each idle tail
 before the auto-stop costs about 0.52. Against the dev budget of 20 that is roughly 6 warehouse hours a month. The workspace's
 managed resource group, where cluster VMs would bill, has its own budget.</p></section>
-<section id="root-modules-environments-dev-environments-prod"><h2><span class="num">03</span>Root modules (<code>environments/dev</code>, <code>environments/prod</code>)</h2><div style="overflow-x:auto"><table>
+<section id="root-module-environments-platform"><h2><span class="num">03</span>Root module (<code>environments/platform</code>)</h2><p>One root serves both environments. Dev-only pieces are switched by variables in <code>dev.tfvars</code>: <code>enable_compute</code>, <code>workspace_user_domains</code> and <code>bronze_consumer_can_write</code>.</p><div style="overflow-x:auto"><table>
 <thead>
 <tr>
 <th>Object</th>
@@ -541,7 +543,7 @@ managed resource group, where cluster VMs would bill, has its own budget.</p></s
 </tr>
 <tr>
 <td><code>databricks_permission_assignment.users</code>, <code>databricks_entitlements.users</code></td>
-<td>Each domain's data engineers, analysts and stakeholders become workspace <code>USER</code>s with <code>workspace_access</code> and <code>databricks_sql_access</code>. Platform and governance groups are not added</td>
+<td>For each domain in <code>workspace_user_domains</code> (dev: sales, marketing), the data engineers, analysts and stakeholders become workspace <code>USER</code>s with <code>workspace_access</code> and <code>databricks_sql_access</code>. Platform and governance groups are not added</td>
 </tr>
 <tr>
 <td><code>databricks_grants.metastore_admins</code></td>
@@ -556,7 +558,7 @@ managed resource group, where cluster VMs would bill, has its own budget.</p></s
 <td>The <code>uc_domain_catalog</code> module once per domain</td>
 </tr>
 <tr>
-<td><code>module.compute</code> (dev only)</td>
+<td><code>module.compute</code> (when <code>enable_compute</code> is set; dev)</td>
 <td>The shared serverless SQL warehouse (and the cluster, when enabled)</td>
 </tr>
 </tbody>
@@ -578,11 +580,14 @@ already a member.</li>
 <li>The metastore grant goes to the CI groups, not <code>grp-databricks-account-admins</code>, which would hand CI full account
 admin. Each environment's CI group therefore gets <code>CREATE_*</code> across the whole metastore, not only its own catalogs.</li>
 </ul>
-<p>Each root splits its configuration by concern: <code>azure.tf</code> (naming, data lake, workspace, budgets),
-<code>databricks_access.tf</code> (workspace assignment, entitlements, metastore grant) and <code>unity_catalog.tf</code>
-(<code>uc_storage</code>, <code>uc_ingestion</code> and the domain catalogs). Dev also has <code>compute.tf</code>.</p></section>
+<p>The root splits its configuration by concern: <code>main.tf</code> (naming, data lake, workspace, budgets),
+<code>access.tf</code> (workspace assignment, entitlements, metastore grant), <code>catalogs.tf</code>
+(<code>uc_storage</code>, <code>uc_ingestion</code> and the domain catalogs), <code>compute.tf</code> (shared compute),
+<code>providers.tf</code> and <code>backend.tf</code>. The backend is partial: <code>terraform init -backend-config=../&lt;env&gt;.backend.hcl</code>
+supplies the state key, and <code>-reconfigure</code> switches environment in the same checkout.</p></section>
 <section id="providers-and-authentication"><h2><span class="num">04</span>Providers and authentication</h2><p>The <code>databricks</code> provider's <code>host</code> comes from <code>module.databricks_workspace.workspace_url</code>.
-Locally it uses <code>auth_type = "azure-cli"</code>; in CI it uses the same OIDC variables as
+Its <code>auth_type</code> is the <code>databricks_auth_type</code> variable, null by default so <code>DATABRICKS_AUTH_TYPE</code> decides
+(<code>azure-cli</code> locally; in CI the dev jobs use OIDC); <code>prod.tfvars</code> pins <code>azure-cli</code> until a prod workflow supplies the variables. In CI it uses the same OIDC variables as
 <code>azurerm</code>. The account-level provider in <code>environments/shared</code> sets its
 Databricks account ID inline; no other root needs it.</p>
 <p><strong>Two-stage first apply.</strong> A provider block cannot reference a computed attribute, so
@@ -687,8 +692,10 @@ workspace's managed resource group to anything: it inherits that workspace's lif
 and cannot be deleted.</p>
 <p><strong>Groups.</strong> Create each <code>grp-*</code> group in Entra ID and register it in the Databricks
 account before any grant that references it applies.</p></section>
-<section id="prod-bootstrap"><h2><span class="num">09</span>Prod bootstrap</h2><p><code>environments/prod</code> has never been applied; <code>apply-prod</code> waits on the <code>production</code>
-approval. Before approving it:</p>
+<section id="prod-bootstrap"><h2><span class="num">09</span>Prod bootstrap</h2><p>Prod (<code>environments/platform</code> with <code>prod.tfvars</code>) has never had a full apply; <code>apply-prod</code> waits
+on the <code>production</code> approval. Its state already holds an early resource group, storage account and budget, under the old
+<code>module.analytics_group</code> address; a <code>moved</code> block in <code>main.tf</code> maps them to <code>module.datalake</code> so an apply
+updates them in place instead of destroying the real prod storage. Before approving it:</p>
 <ol>
 <li>Run the first prod apply locally as a metastore admin (the metastore grant is
    admin-only and ignored by CI).</li>

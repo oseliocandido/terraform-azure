@@ -1,7 +1,7 @@
 # Account-level Unity Catalog metastore
 # "Unity Catalog: metastore, catalog, and schema strategy" and "Metastore's
 # own Azure resources" decisions). Lives in its own root module, not
-# environments/dev or environments/prod, because it isn't owned by either.
+# environments/platform, because it isn't owned by any one environment.
 # Imported, not newly created: Databricks auto-provisioned this metastore
 # the moment the first workspace landed in northeurope, before this module
 # existed
