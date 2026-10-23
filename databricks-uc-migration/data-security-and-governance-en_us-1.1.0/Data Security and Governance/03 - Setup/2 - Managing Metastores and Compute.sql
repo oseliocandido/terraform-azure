@@ -1,0 +1,238 @@
+-- Databricks notebook source
+-- MAGIC %md-sandbox
+-- MAGIC <div style="display:flex; align-items:center; padding:10px 18px; background:#F8F9FA; border-bottom:1px solid #E0E0E0; gap:10px;">
+-- MAGIC   <img src="https://cdn.simpleicons.org/databricks/FF3621" width="22" height="22"/>
+-- MAGIC   <div style="font-size:14px; color:#666; white-space:nowrap;">
+-- MAGIC     <span style="font-weight:600; color:#333;">Academy</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Data Security & Governance Delivery Expert</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Setup</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span style="font-weight:600; color:#eb1900;">Managing Metastores and Compute</span>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC
+-- MAGIC <div style="text-align: center; line-height: 0; padding-top: 9px;">
+-- MAGIC   <img
+-- MAGIC     src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png"
+-- MAGIC     alt="Databricks Learning"
+-- MAGIC   >
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC # Managing Metastores and Compute
+-- MAGIC
+-- MAGIC Unity Catalog’s namespace design centers on a three-level hierarchy: catalog, schema, and data object (for example, a table). This is key for logical data isolation, governance, and scalable storage organization.
+-- MAGIC
+-- MAGIC It is recommended to isolate environments (development, staging, production; although some organizations may have more or less) and organizational units (such as business units, projects, etc) at the catalog level for most scenarios, assigning dedicated storage locations to each catalog for managed tables and managed volumes.
+-- MAGIC
+-- MAGIC Storage considerations focus on avoiding overlap between managed and external locations, using explicit storage credentials, and enforcing governance boundaries through cloud storage configuration and Unity Catalog controls.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       This notebook is not supported for execution on Databricks Academy provided workspaces. The material is intended to be a study guide, to be run in your own sandbox environments if you would like. Databricks Academy does not provide an account with a live HMS, administrator level access, or an AWS account, all of which would be required to perform all the activities in these notebooks.<p>
+-- MAGIC       <strong>The notebooks flagged as labs in the agenda can be run in a Databricks Academy provided Vocareum workspace and allow you to put the concepts into practice.</strong>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## Learning Objectives
+-- MAGIC
+-- MAGIC By the end of this lesson, you will be able to:
+-- MAGIC - Create and assign metastores
+-- MAGIC - Delegate the metastore admin role
+-- MAGIC - Configure compute resources for UC compatibility
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## A. Managing Metastores
+-- MAGIC
+-- MAGIC A **metastore** is a persistent metadata repository that records information about data assets and the policies that govern access to them.  It typically stores object definitions and properties for items like schemas (often referred to as databases), tables, views, and authorized storage locations, along with ownership and permissions used by the platform to authorize reads and writes.  
+-- MAGIC Operationally, it provides a common namespace for discovery and consistent references to data, allowing administrators to manage policies centrally while engines use the metadata to resolve and validate data operations.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A1. Creating a Metastore
+-- MAGIC
+-- MAGIC 1. In the **Account Console**, select **Catalog** in the left sidebar.
+-- MAGIC 1. Click **Create metastore**.
+-- MAGIC 1. Fill in the following info:
+-- MAGIC   - Provide a name to identify the metastore, which must be unique within the account
+-- MAGIC   - Specify the region. Only workspaces with that region will be able to attach to the metastore.
+-- MAGIC   - S3 bucket path and IAM role ARN (optional), if you wish to override the managed data storage location. By default, Databricks will store data associated with tables and volumes in Databricks-provided storage; this allows you to override that.
+-- MAGIC
+-- MAGIC ![Create Metastore](https://files.training.databricks.com/binder/prod_main/data-security-and-governance-en_us-1.1.0/images/20261012T073742Z/Data Security and Governance/03 - Setup/Includes/images/account_console_create_metastore.png)
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A2. Designating a Metastore Admin
+-- MAGIC
+-- MAGIC The metastore admin role is a critical position in Unity Catalog, responsible for governing all securable objects and managing access controls at the metastore layer. This role is essential for robust data governance and operational flexibility across Databricks workspaces.
+-- MAGIC
+-- MAGIC Metastore admins are responsible for the following tasks:
+-- MAGIC - Creating catalogs, schemas, external locations, storage credentials, shares, and more.
+-- MAGIC - Transferring ownership of any object, update metadata, set tags, and, if needed, grant themselves or others access—ensuring that no data asset is orphaned if team members leave or responsibilities change.
+-- MAGIC - Adding managed storage to a metastore
+-- MAGIC - Establishing connections to external data sources.
+-- MAGIC - Delegating the ability to perform these tasks to others, via privilege grants.
+-- MAGIC
+-- MAGIC Because of the importance of this role, being aware of and following these best practices is advised:
+-- MAGIC - Assigning metastore admin rights to a group, preferably a platform operations or central governance team, is recommended over individual assignment for streamlined administration and continuity. 
+-- MAGIC - Maintain role separation, since the metastore admin role complements account admin and workspace admin responsibilities. A clear delineation of roles supports clear workflows and escalation paths in larger organizations. 
+-- MAGIC - Assign cautiously, since improper delegation risks overexposure of privileges, but lack of assignment can hamper critical operations in production.
+-- MAGIC - Remember that some administrative tasks can be delegated to non-admin users via fine-grained privileges(such as `CREATE CATALOG`, `CREATE STORAGE CREDENTIAL`, and others); take this into consideration when designating admins
+-- MAGIC
+-- MAGIC 1. In the **Account Console**, select **Catalog** in the left sidebar.
+-- MAGIC 1. Locate and select the desired metastore.
+-- MAGIC 1. In the **Metastore Admin** field, click **Edit** to change (or remove) the role.
+-- MAGIC
+-- MAGIC ![Configure Metastore](https://files.training.databricks.com/binder/prod_main/data-security-and-governance-en_us-1.1.0/images/20261012T073742Z/Data Security and Governance/03 - Setup/Includes/images/account_console_config_metastore.png)
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### A3. Assigning a Metastore
+-- MAGIC
+-- MAGIC Metastore assignment can be done when creating a workspace, although it can be done at any time. But care should be taken when reassigning metastores in an established workspace, because:
+-- MAGIC - The operation is not instantaneous; Time-To-Live can take up to ten minutes
+-- MAGIC - The operation can have an impact on resident users and processes
+-- MAGIC
+-- MAGIC 1. In the **Account Console**, select **Workspaces** from the left sidebar.
+-- MAGIC 1. Locate and select the desired workspace.
+-- MAGIC 1. Click **Update workspace**.
+-- MAGIC 1. Turn **Enable Unity Catalog** on.
+-- MAGIC 1. Select a metastore from the dropdown.
+-- MAGIC 1. Click **Update**.
+-- MAGIC
+-- MAGIC ![Assign Metastore](https://files.training.databricks.com/binder/prod_main/data-security-and-governance-en_us-1.1.0/images/20261012T073742Z/Data Security and Governance/03 - Setup/Includes/images/account_console_attach_metastore.png)
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## B. Managing Compute
+-- MAGIC
+-- MAGIC To securely access Unity Catalog, clusters must be configured with the right access mode—specifically, standard or dedicated access modes on supported Databricks Runtime versions (11.3 LTS or above). Unity Catalog is secure by default, meaning that unless these access modes are selected, clusters cannot access Unity Catalog-managed data. This model enforces strict data permissions, centralizes governance, and prevents unintended data exposure independent of lower-level storage access 
+-- MAGIC .
+-- MAGIC
+-- MAGIC In contrast, legacy Hive metastore clusters require manual configuration. You must set Spark and Hive options, including versions and JARs, plus JDBC connection details through cluster settings or init scripts. Critically, in this "not safe by default" model, cluster-scoped credentials (like instance profiles, access keys, or service principal credentials) are broadly available to any user with cluster access, allowing them to bypass table-level security controls in Hive and directly access storage. This exposes the platform to risks because legacy clusters are open by default, and data controls can be circumvented unless explicitly tightened by admins. The “not safe by default” model also lacks the centralized, cross-workspace policy and lineage features provided by Unity Catalog.
+-- MAGIC
+-- MAGIC The universal, recommended solution is to implement a policy allowing users to create their own compute, subject to restrictions set out in the policy. Workspace admins can set up a policy to restrict compute creation as follows:
+-- MAGIC
+-- MAGIC <style>
+-- MAGIC table{
+-- MAGIC   border-collapse: separate;
+-- MAGIC   border-spacing: 0;
+-- MAGIC   width: auto;
+-- MAGIC   max-width: 100%;
+-- MAGIC   margin: 16px 0;
+-- MAGIC   float: none;
+-- MAGIC   clear: both;
+-- MAGIC   display: table;
+-- MAGIC   font-size: 0.95em;
+-- MAGIC   line-height: 1.35;
+-- MAGIC   background: #ffffff;
+-- MAGIC   border-radius: 8px;
+-- MAGIC   overflow: hidden;
+-- MAGIC   box-shadow: 0 0 0 1px #303F47;
+-- MAGIC   margin-left: 2px !important;
+-- MAGIC   margin-right: 0px !important;
+-- MAGIC   box-sizing: border-box !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC thead th{
+-- MAGIC   background: #DADADA;
+-- MAGIC   color: #1B3139;
+-- MAGIC   font-weight: 600;
+-- MAGIC   text-align: left;
+-- MAGIC   padding: 10px 12px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody td{
+-- MAGIC   padding: 10px 12px;
+-- MAGIC   border-top: 1px solid #DCE0E2;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(odd){
+-- MAGIC   background: #FFFFFF !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(even){
+-- MAGIC   background: #F5F3F2 !important;
+-- MAGIC }
+-- MAGIC </style>
+-- MAGIC 1. In the workspace, select **Compute** from the left sidebar.
+-- MAGIC 1. In the **Policies** tab, click **Create policy**.
+-- MAGIC 1. Specify a name, and choose a **Family** from which to derive your policy, if desired, or choose *Custom*.
+-- MAGIC 1. In the **Definition** section, configure the following settings.
+-- MAGIC <table>
+-- MAGIC   <thead>
+-- MAGIC     <tr>
+-- MAGIC       <th>Field</th>
+-- MAGIC       <th>Type</th>
+-- MAGIC       <th>Values</th>
+-- MAGIC       <th>Default value</th>
+-- MAGIC     </tr>
+-- MAGIC   </thead>
+-- MAGIC   <tbody>
+-- MAGIC     <tr>
+-- MAGIC       <td>data_security_mode</td>
+-- MAGIC       <td>Allowlist</td>
+-- MAGIC       <td>DATA_SECURITY_MODE_AUTO<br>DATA_SECURITY_MODE_DEDICATED<br>DATA_SECURITY_MODE_STANDARD</td>
+-- MAGIC       <td>DATA_SECURITY_MODE_AUTO</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>spark_version</td>
+-- MAGIC       <td>Blocklist</td>
+-- MAGIC       <td>10.4 LTS ML (Scala 2.12, Spark 3.2.1)<br>10.4 LTS ML (GPU, Scala 2.12, Spark 3.2.1)<br>10.4 LTS (Scala 2.12, Spark 3.2.1)</td>
+-- MAGIC       <td>auto:latest-lts</td>
+-- MAGIC     </tr>
+-- MAGIC   </tbody>
+-- MAGIC </table>
+-- MAGIC 1. After configuring any other desired settings, click **Create**.
+-- MAGIC ![Create policy](https://files.training.databricks.com/binder/prod_main/data-security-and-governance-en_us-1.1.0/images/20261012T073742Z/Data Security and Governance/03 - Setup/Includes/images/workspace_config_compute_policy.png)
+-- MAGIC If creating the policy programmatically, the JSON equivalent for implementing the above restrictions is as follows:
+-- MAGIC ```
+-- MAGIC {
+-- MAGIC   "data_security_mode": {
+-- MAGIC     "type": "allowlist",
+-- MAGIC     "values": [
+-- MAGIC       "DATA_SECURITY_MODE_AUTO",
+-- MAGIC       "DATA_SECURITY_MODE_DEDICATED",
+-- MAGIC       "DATA_SECURITY_MODE_STANDARD"
+-- MAGIC     ],
+-- MAGIC     "defaultValue": "DATA_SECURITY_MODE_AUTO"
+-- MAGIC   },
+-- MAGIC   "spark_version": {
+-- MAGIC     "type": "blocklist",
+-- MAGIC     "values": [
+-- MAGIC       "10.4.x-cpu-ml-scala2.12",
+-- MAGIC       "10.4.x-gpu-ml-scala2.12",
+-- MAGIC       "10.4.x-scala2.12"
+-- MAGIC     ],
+-- MAGIC     "defaultValue": "auto:latest-lts"
+-- MAGIC   }
+-- MAGIC }
+-- MAGIC ```
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC &copy; <span id="dbx-year"></span> Databricks, Inc. All rights reserved. Apache, Apache Spark, Spark, the Spark Logo, Apache Iceberg, Iceberg, and the Apache Iceberg logo are trademarks of the <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a>.<br/><br/><a href="https://databricks.com/privacy-policy" target="_blank">Privacy Policy</a> | <a href="https://databricks.com/terms-of-use" target="_blank">Terms of Use</a> | <a href="https://help.databricks.com/" target="_blank">Support</a>
+-- MAGIC <script>
+-- MAGIC   document.getElementById("dbx-year").textContent = new Date().getFullYear();
+-- MAGIC </script>

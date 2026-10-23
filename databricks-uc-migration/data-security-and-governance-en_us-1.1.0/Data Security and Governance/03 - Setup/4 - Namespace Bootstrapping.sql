@@ -1,0 +1,347 @@
+-- Databricks notebook source
+-- MAGIC %md-sandbox
+-- MAGIC <div style="display:flex; align-items:center; padding:10px 18px; background:#F8F9FA; border-bottom:1px solid #E0E0E0; gap:10px;">
+-- MAGIC   <img src="https://cdn.simpleicons.org/databricks/FF3621" width="22" height="22"/>
+-- MAGIC   <div style="font-size:14px; color:#666; white-space:nowrap;">
+-- MAGIC     <span style="font-weight:600; color:#333;">Academy</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Data Security & Governance Delivery Expert</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Setup</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span style="font-weight:600; color:#eb1900;">Namespace Bootstrapping</span>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC
+-- MAGIC <div style="text-align: center; line-height: 0; padding-top: 9px;">
+-- MAGIC   <img
+-- MAGIC     src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png"
+-- MAGIC     alt="Databricks Learning"
+-- MAGIC   >
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC # Namespace Bootstrapping
+-- MAGIC
+-- MAGIC A successful migration from HMS to UC begins with defining a new catalog namespace: catalogs, schemas, and ownerships. This process lays the groundwork by creating the three-level namespace (`catalog.schema.table`) that replaces the legacy two-level (`database.table`) structure of HMS.
+-- MAGIC
+-- MAGIC During this phase, teams provision baseline catalogs and schemas, allocate ownership to the right groups, and set default privileges according to user personas and security requirements. 
+-- MAGIC
+-- MAGIC Namespace bootstrapping ensures organizational data is properly segmented by environment, business unit, or team—enabling fine-grained governance, clear lineage tracking, and scalable privilege management from the start. By establishing these logical boundaries, migration teams can orchestrate their UC upgrade knowing each workload and user has access only to their appropriate data sets. 
+-- MAGIC
+-- MAGIC This initial setup phase also supports streamlined migration tooling (like UCX and SYNC), simplifies code refactoring for the UC three-level namespace, and helps validate readiness before moving underlying tables and jobs. In short, catalog namespace bootstrapping is the critical first move to make Unity Catalog’s centralized governance real for your Databricks estate.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       This notebook is not supported for execution on Databricks Academy provided workspaces. The material is intended to be a study guide, to be run in your own sandbox environments if you would like. Databricks Academy does not provide an account with a live HMS, administrator level access, or an AWS account, all of which would be required to perform all the activities in these notebooks.<p>
+-- MAGIC       <strong>The notebooks flagged as labs in the agenda can be run in a Databricks Academy provided Vocareum workspace and allow you to put the concepts into practice.</strong>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## Learning Objectives
+-- MAGIC
+-- MAGIC By the end of this lesson, you will be able to:
+-- MAGIC - Implement a catalog naming strategy that supports SDLC and business unit requirements
+-- MAGIC - Apply security best practices for catalog and storage management in enterprise environments
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## A. Catalog Recap
+-- MAGIC
+-- MAGIC A catalog in Unity Catalog acts as the top-level container for organizing data assets, providing a layer of data isolation and governance. It serves as the primary unit for grouping schemas, tables, views, and models, enabling centralized access control, auditing, and data discovery across all attached Databricks workspaces.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### A1. Catalog Types
+-- MAGIC
+-- MAGIC Unity Catalog supports four catalog types to address various use cases:
+-- MAGIC
+-- MAGIC - **Standard:** the default and primary type, designed to organize and govern data and AI assets that are natively managed within a Unity Catalog metastore. It's ideal for direct Databricks data management and governance, enabling full control over access, lineage, and auditing. 
+-- MAGIC - **Foreign:** mirrors of an external database like MySQL, SQL Server, or even HMS in a Databricks workspace. This enables Lakehouse Federation, allowing users to run queries against external datasets from within their Databricks environment. 
+-- MAGIC - **Shared:** enables secure access to shared datasets through OpenSharing. It’s primarily used when data providers want to share collections of data (and AI assets) with recipients via Unity Catalog, keeping sharing secure and governance compliant. 
+-- MAGIC - **Lakebase Postgres:** represents a fully managed, cloud-native PostgreSQL database within the Databricks Lakebase offering. Registering a Lakebase Postgres database in Unity Catalog creates a read-only catalog that mirrors your Postgres schema and tables—integrating transactional data governance and enabling cross-source analytics alongside your lakehouse data. 
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       In this demo, we focus on building an initial namespace using <strong>Standard</strong> catalogs.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A2. Ownership
+-- MAGIC
+-- MAGIC Catalog ownership is central to secure, scalable, and governable data management in a new Unity Catalog metastore. Assigning critical catalog ownership to groups — not individual users — is a best practice because it ensures continuity, collaborative administration, and clear accountability for permissions and privilege grants.
+-- MAGIC
+-- MAGIC Owners of catalogs have comprehensive authority: they can manage privileges, transfer ownership, and control which users and groups can access, modify, or discover data within the catalog. By setting ownership on all objects to governance-oriented groups, organizations prevent single points of failure when individuals leave or change roles, and enable robust distributed stewardship.
+-- MAGIC
+-- MAGIC This structured approach supports regulatory compliance, promotes consistent access patterns across teams and environments, and reduces the risk of accidental privilege escalations or unauthorized data modifications. In summary, catalog ownership defines the foundation for data security, isolation, and effective privilege management in Unity Catalog, underpinning an organization’s ability to scale its data governance model efficiently.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A3. Privileges
+-- MAGIC
+-- MAGIC Catalogs support an extensive set of privileges which are important to understand in order to implement a safe and efficient namespace.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC #### A3.1 Catalog-level Privileges
+-- MAGIC
+-- MAGIC The table below summarizes privileges that can be applied to catalogs directly:
+-- MAGIC <style>
+-- MAGIC table{
+-- MAGIC   border-collapse: separate;
+-- MAGIC   border-spacing: 0;
+-- MAGIC   width: auto;
+-- MAGIC   max-width: 100%;
+-- MAGIC   margin: 16px 0;
+-- MAGIC   float: none;
+-- MAGIC   clear: both;
+-- MAGIC   display: table;
+-- MAGIC   font-size: 0.95em;
+-- MAGIC   line-height: 1.35;
+-- MAGIC   background: #ffffff;
+-- MAGIC   border-radius: 8px;
+-- MAGIC   overflow: hidden;
+-- MAGIC   box-shadow: 0 0 0 1px #303F47;
+-- MAGIC   margin-left: 2px !important;
+-- MAGIC   margin-right: 0px !important;
+-- MAGIC   box-sizing: border-box !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC thead th{
+-- MAGIC   background: #DADADA;
+-- MAGIC   color: #1B3139;
+-- MAGIC   font-weight: 600;
+-- MAGIC   text-align: left;
+-- MAGIC   padding: 10px 12px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody td{
+-- MAGIC   padding: 10px 12px;
+-- MAGIC   border-top: 1px solid #DCE0E2;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(odd){
+-- MAGIC   background: #FFFFFF !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(even){
+-- MAGIC   background: #F5F3F2 !important;
+-- MAGIC }
+-- MAGIC </style>
+-- MAGIC <table>
+-- MAGIC   <thead>
+-- MAGIC     <tr>
+-- MAGIC       <th>Privilege</th>
+-- MAGIC       <th>Meaning</th>
+-- MAGIC     </tr>
+-- MAGIC   </thead>
+-- MAGIC   <tbody>
+-- MAGIC     <tr>
+-- MAGIC       <td>CREATE SCHEMA</td>
+-- MAGIC       <td>Allows creating schemas within a catalog.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>APPLY TAG</td>
+-- MAGIC       <td>Allows adding and editing tags on objects; enables column or model version tagging.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>BROWSE</td>
+-- MAGIC       <td>Allows viewing object metadata (discoverability) in Catalog Explorer or via REST APIs, without requiring <code>USE CATALOG</code>.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>USE CATALOG</td>
+-- MAGIC       <td>Enables accessing or using the catalog; prerequisite for most other actions.</td>
+-- MAGIC     </tr>
+-- MAGIC   </tbody>
+-- MAGIC </table>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC #### A3.2 Inherited Privileges
+-- MAGIC
+-- MAGIC The following privileges can be applied on catalogs, although they don't apply directly to catalogs but rather are inherited downward to any contained objects to which they apply:
+-- MAGIC
+-- MAGIC <style>
+-- MAGIC table{
+-- MAGIC   border-collapse: separate;
+-- MAGIC   border-spacing: 0;
+-- MAGIC   width: auto;
+-- MAGIC   max-width: 100%;
+-- MAGIC   margin: 16px 0;
+-- MAGIC   float: none;
+-- MAGIC   clear: both;
+-- MAGIC   display: table;
+-- MAGIC   font-size: 0.95em;
+-- MAGIC   line-height: 1.35;
+-- MAGIC   background: #ffffff;
+-- MAGIC   border-radius: 8px;
+-- MAGIC   overflow: hidden;
+-- MAGIC   box-shadow: 0 0 0 1px #303F47;
+-- MAGIC   margin-left: 2px !important;
+-- MAGIC   margin-right: 0px !important;
+-- MAGIC   box-sizing: border-box !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC thead th{
+-- MAGIC   background: #DADADA;
+-- MAGIC   color: #1B3139;
+-- MAGIC   font-weight: 600;
+-- MAGIC   text-align: left;
+-- MAGIC   padding: 10px 12px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody td{
+-- MAGIC   padding: 10px 12px;
+-- MAGIC   border-top: 1px solid #DCE0E2;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(odd){
+-- MAGIC   background: #FFFFFF !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(even){
+-- MAGIC   background: #F5F3F2 !important;
+-- MAGIC }
+-- MAGIC </style>
+-- MAGIC <table>
+-- MAGIC   <thead>
+-- MAGIC     <tr>
+-- MAGIC       <th>Privilege</th>
+-- MAGIC       <th>Meaning</th>
+-- MAGIC     </tr>
+-- MAGIC   </thead>
+-- MAGIC   <tbody>
+-- MAGIC     <tr>
+-- MAGIC       <td>SELECT</td>
+-- MAGIC       <td>Allows reading/querying data (from tables, views, materialized views).</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>CREATE TABLE<br>CREATE FUNCTION<br>CREATE MODEL</td>
+-- MAGIC       <td>Allows creating applicable object in a contained schema.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>MODIFY</td>
+-- MAGIC       <td>Permits editing or updating metadata or object definitions in a contained schema.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>WRITE VOLUME<br>READ VOLUME</td>
+-- MAGIC       <td>Controls writing to/reading from data volumes (unstructured data) in a contained schema.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>EXECUTE</td>
+-- MAGIC       <td>Permits running functions, procedures, or models in a contained schema.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>REFRESH</td>
+-- MAGIC       <td>Allows refreshing materialized views in a contained schema.</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>USE SCHEMA</td>
+-- MAGIC       <td>Enables accessing any contained schema.</td>
+-- MAGIC     </tr>
+-- MAGIC   </tbody>
+-- MAGIC </table>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC #### A3.3 Administration Privileges
+-- MAGIC
+-- MAGIC The following can be applied on a catalog, but should be treated very carefully:
+-- MAGIC
+-- MAGIC <style>
+-- MAGIC table{
+-- MAGIC   border-collapse: separate;
+-- MAGIC   border-spacing: 0;
+-- MAGIC   width: auto;
+-- MAGIC   max-width: 100%;
+-- MAGIC   margin: 16px 0;
+-- MAGIC   float: none;
+-- MAGIC   clear: both;
+-- MAGIC   display: table;
+-- MAGIC   font-size: 0.95em;
+-- MAGIC   line-height: 1.35;
+-- MAGIC   background: #ffffff;
+-- MAGIC   border-radius: 8px;
+-- MAGIC   overflow: hidden;
+-- MAGIC   box-shadow: 0 0 0 1px #303F47;
+-- MAGIC   margin-left: 2px !important;
+-- MAGIC   margin-right: 0px !important;
+-- MAGIC   box-sizing: border-box !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC thead th{
+-- MAGIC   background: #DADADA;
+-- MAGIC   color: #1B3139;
+-- MAGIC   font-weight: 600;
+-- MAGIC   text-align: left;
+-- MAGIC   padding: 10px 12px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody td{
+-- MAGIC   padding: 10px 12px;
+-- MAGIC   border-top: 1px solid #DCE0E2;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(odd){
+-- MAGIC   background: #FFFFFF !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(even){
+-- MAGIC   background: #F5F3F2 !important;
+-- MAGIC }
+-- MAGIC </style>
+-- MAGIC <table>
+-- MAGIC   <thead>
+-- MAGIC     <tr>
+-- MAGIC       <th>Privilege</th>
+-- MAGIC       <th>Meaning</th>
+-- MAGIC     </tr>
+-- MAGIC   </thead>
+-- MAGIC   <tbody>
+-- MAGIC     <tr>
+-- MAGIC       <td>ALL PRIVILEGES</td>
+-- MAGIC       <td>Grants all available privileges for the catalog and all contained objects. Excludes certain sensitive privileges (like <code>MANAGE</code>).</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>MANAGE</td>
+-- MAGIC       <td>Provides ownership-like capability of the object:
+-- MAGIC         <ul>
+-- MAGIC           <li>Granting/revoking privileges</li>
+-- MAGIC           <li>Setting object ownership</li>
+-- MAGIC           <li>Dropping the catalog.</li>
+-- MAGIC         </ul>
+-- MAGIC       </td>
+-- MAGIC   </tbody>
+-- MAGIC </table>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC &copy; <span id="dbx-year"></span> Databricks, Inc. All rights reserved. Apache, Apache Spark, Spark, the Spark Logo, Apache Iceberg, Iceberg, and the Apache Iceberg logo are trademarks of the <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a>.<br/><br/><a href="https://databricks.com/privacy-policy" target="_blank">Privacy Policy</a> | <a href="https://databricks.com/terms-of-use" target="_blank">Terms of Use</a> | <a href="https://help.databricks.com/" target="_blank">Support</a>
+-- MAGIC <script>
+-- MAGIC   document.getElementById("dbx-year").textContent = new Date().getFullYear();
+-- MAGIC </script>

@@ -1,0 +1,411 @@
+-- Databricks notebook source
+-- MAGIC %md-sandbox
+-- MAGIC <div style="display:flex; align-items:center; padding:10px 18px; background:#F8F9FA; border-bottom:1px solid #E0E0E0; gap:10px;">
+-- MAGIC   <img src="https://cdn.simpleicons.org/databricks/FF3621" width="22" height="22"/>
+-- MAGIC   <div style="font-size:14px; color:#666; white-space:nowrap;">
+-- MAGIC     <span style="font-weight:600; color:#333;">Academy</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Data Security & Governance Delivery Expert</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Discover</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span style="font-weight:600; color:#eb1900;">Assessing Workspace with UCX</span>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC
+-- MAGIC <div style="text-align: center; line-height: 0; padding-top: 9px;">
+-- MAGIC   <img
+-- MAGIC     src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png"
+-- MAGIC     alt="Databricks Learning"
+-- MAGIC   >
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC # Assessing Workspace with UCX
+-- MAGIC
+-- MAGIC **Unity Catalog Accelerator (UCX)** is a suite of utilities designed to simplify and automate the process of upgrading to [Unity Catalog](https://docs.databricks.com/en/data-governance/unity-catalog/index.html). Running it should be one of the first steps of any successful UC migration project.
+-- MAGIC
+-- MAGIC In this demo, we walk you through a UCX installation that gives you a sense of the customization options of the UCX suite.
+-- MAGIC
+-- MAGIC Additionally, we will explore the execution assessment workflows to evaluate the compatibility of your workspace entities with Unity Catalog, ensuring a smooth and efficient upgrade process.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       This notebook is not supported for execution on Databricks Academy provided workspaces. The material is intended to be a study guide, to be run in your own sandbox environments if you would like. Databricks Academy does not provide an account with a live HMS, administrator level access, or an AWS account, all of which would be required to perform all the activities in these notebooks.<p>
+-- MAGIC       <strong>The notebooks flagged as labs in the agenda can be run in a Databricks Academy provided Vocareum workspace and allow you to put the concepts into practice.</strong>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## A. Setup
+-- MAGIC
+-- MAGIC In this section, we perform some prerequisite tasks to get UCX set up in the target workspace.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### A1. Obtaining Workspace Credentials
+-- MAGIC
+-- MAGIC UCX authentication requires a **Personal Access Token (PAT)** of a user with workspace admin privileges. We will obtain it in this section.
+-- MAGIC
+-- MAGIC 1. Click the user icon in the top-right corner of the page, and select **Settings**.
+-- MAGIC 1. Navigate to **Developer** from the left sidebar, and under **Access tokens**, click **Manage**.
+-- MAGIC 1. On the **Access tokens** page, click **Generate new token**.
+-- MAGIC    - Enter a helpful **Comment**, such as `ucx`
+-- MAGIC    - Specify the desired **Lifetime** (for example, **7** days)
+-- MAGIC    - Click **Generate**.
+-- MAGIC 1. Copy the PAT value to a secure temporary location, as you will not be able to see the value again once you dismiss the dialog box.
+-- MAGIC 1. You'll also need the workspace URL. You can copy that from the browser address bar (tab with your target workspace), or by running the following command in a notebook in the target workspace:
+-- MAGIC <div class="code-block" data-language="python">
+-- MAGIC %python
+-- MAGIC from databricks.sdk import WorkspaceClient
+-- MAGIC WorkspaceClient().config.host
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### A2. Installing/Updating the Databricks CLI
+-- MAGIC
+-- MAGIC Let's ensure the Databricks CLI is installed and updated to a recent version. For this we'll need to open a command-line terminal.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       <ul>
+-- MAGIC         <li>The instructions provided here use the direct download (curl) method for installing the CLI on MacOS/Linux. For other methods or environments, refer to the <a href="https://docs.databricks.com/aws/en/dev-tools/cli/install" target="_blank">Install or update the Databricks CLI</a> documentation.</li>
+-- MAGIC         <li>Some systems may require root-level access.</li>
+-- MAGIC       </ul>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC The installer script will not overwrite existing installations, so let's safely remove any existing installation by executing the following command:
+-- MAGIC
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC [ -x "$(command -v databricks)" ] && rm -f "$(command -v databricks)"
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC Next, execute the following command to install the latest version of the CLI:
+-- MAGIC
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+-- MAGIC </div>
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### A3. Configuring authentication
+-- MAGIC
+-- MAGIC In order to interact with the target workspace, we must first configure authentication. This will require the workspace URL and token gathered earlier. Run the following command in your command-line terminal:
+-- MAGIC
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC databricks configure
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC When prompted, enter the workspace URL and token for the target workspace.
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC #### A3.1 Validating authentication
+-- MAGIC
+-- MAGIC To verify connectivity and authentication, try running a simple command against your target workspace. There are numerous examples; we choose one here. Let's list the top-level folders in the workspace by executing the following command in the command-line terminal:
+-- MAGIC
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC databricks workspace list /
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC You should see a list of the topmost folders in the workspace (`/Users`, `/Shared`, etc).
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## B. Installation and Configuration
+-- MAGIC
+-- MAGIC To install and configure UCX—the collection of assessment and migration tools for upgrading to Unity Catalog—run the following command:
+-- MAGIC
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC databricks labs install ucx
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC During the installation, you will be prompted with several configuration options which we talked about previously.
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### B1. UCX Assessment
+-- MAGIC
+-- MAGIC The assessment workflow is crucial as it evaluates the compatibility of your workspace entities with Unity Catalog. It identifies incompatible entities and provides essential information for planning your upgrade.
+-- MAGIC
+-- MAGIC There are three methods to trigger the assessment:
+-- MAGIC
+-- MAGIC 1. **Automatically during UCX Configuration:** If you selected this option during the UCX installation, the assessment will run automatically.
+-- MAGIC 1. **Using the Databricks CLI:** Run the following command in your command-line environment:
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC databricks labs ucx ensure-assessment-run
+-- MAGIC </div>
+-- MAGIC 1. **Through the Workspace UI:** Manually trigger the workflow by navigating to the workspace's user interface and running the assessment workflow interactively.
+-- MAGIC
+-- MAGIC The output of each task within the assessment workflow is stored as tables in a database schema you specified during the UCX configuration.
+-- MAGIC
+-- MAGIC **Note:** Executing the assessment may require access privileges to read metadata about workspace entities. Ensure your user account has the necessary permissions or collaborate with a **Metastore Admin** if required.
+-- MAGIC
+-- MAGIC
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### B2. Viewing and Interpreting the Assessment Results
+-- MAGIC
+-- MAGIC The results of the assessment are compiled into a dashboard that provides insights into potential challenges and the overall readiness of your workspace for the upgrade.
+-- MAGIC
+-- MAGIC To access the dashboard:
+-- MAGIC
+-- MAGIC 1. In the left sidebar of your Databricks workspace, click on **Dashboards**.
+-- MAGIC 2. Navigate to the **Legacy Dashboards** tab.
+-- MAGIC 3. Select **UCX Assessment (Main)**.
+-- MAGIC
+-- MAGIC The dashboard presents an inventory of assets, highlighting any compatibility issues or concerns. Use this information to:
+-- MAGIC
+-- MAGIC - **Identify potential challenges.**
+-- MAGIC - **Prioritize your upgrade efforts.**
+-- MAGIC - **Develop a remediation plan to address any issues.**
+-- MAGIC
+-- MAGIC **Tip:** Interpreting the results may require a deep understanding of your workspace's data assets and dependencies. Collaborate with relevant stakeholders, such as data engineers or **Metastore Admins**, to address identified issues.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### B3. UCX Operation
+-- MAGIC
+-- MAGIC UCX supports many operations related to the migration process beyond the initial assessment of the workspace. These operations can be triggered directly within the target workspace, or through the Databricks CLI in the independent compute environment.
+-- MAGIC
+-- MAGIC <div style="display:flex; justify-content:center;">
+-- MAGIC <svg id="dsgsvg7" width="100%" xmlns="http://www.w3.org/2000/svg" class="flowchart" style="display:block;margin-left:auto;margin-right:auto;font-family:Arial, Helvetica, sans-serif !important;max-width: 421.84375px;" viewBox="0 0 421.84375 312.734375" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#dsgsvg7{font-family:Arial,Helvetica,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#dsgsvg7 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#dsgsvg7 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#dsgsvg7 .error-icon{fill:#552222;}#dsgsvg7 .error-text{fill:#552222;stroke:#552222;}#dsgsvg7 .edge-thickness-normal{stroke-width:1px;}#dsgsvg7 .edge-thickness-thick{stroke-width:3.5px;}#dsgsvg7 .edge-pattern-solid{stroke-dasharray:0;}#dsgsvg7 .edge-thickness-invisible{stroke-width:0;fill:none;}#dsgsvg7 .edge-pattern-dashed{stroke-dasharray:3;}#dsgsvg7 .edge-pattern-dotted{stroke-dasharray:2;}#dsgsvg7 .marker{fill:#333333;stroke:#333333;}#dsgsvg7 .marker.cross{stroke:#333333;}#dsgsvg7 svg{font-family:Arial,Helvetica,sans-serif;font-size:16px;}#dsgsvg7 p{margin:0;}#dsgsvg7 .label{font-family:Arial,Helvetica,sans-serif;color:#333;}#dsgsvg7 .cluster-label text{fill:#333;}#dsgsvg7 .cluster-label span{color:#333;}#dsgsvg7 .cluster-label span p{background-color:transparent;}#dsgsvg7 .label text,#dsgsvg7 span{fill:#333;color:#333;}#dsgsvg7 .node rect,#dsgsvg7 .node circle,#dsgsvg7 .node ellipse,#dsgsvg7 .node polygon,#dsgsvg7 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#dsgsvg7 .rough-node .label text,#dsgsvg7 .node .label text,#dsgsvg7 .image-shape .label,#dsgsvg7 .icon-shape .label{text-anchor:middle;}#dsgsvg7 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#dsgsvg7 .rough-node .label,#dsgsvg7 .node .label,#dsgsvg7 .image-shape .label,#dsgsvg7 .icon-shape .label{text-align:center;}#dsgsvg7 .node.clickable{cursor:pointer;}#dsgsvg7 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#dsgsvg7 .arrowheadPath{fill:#333333;}#dsgsvg7 .edgePaths .path{stroke:#333333;stroke-width:1px;}#dsgsvg7 .flowchart-link{stroke:#333333;fill:none;}#dsgsvg7 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#dsgsvg7 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#dsgsvg7 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#dsgsvg7 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#dsgsvg7 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#dsgsvg7 .cluster text{fill:#333;}#dsgsvg7 .cluster span{color:#333;}#dsgsvg7 .node .collapsed-indicator{fill:#aaaa33;stroke:none;opacity:0.6;}#dsgsvg7 .node .collapsed-separator{stroke:#aaaa33;stroke-width:0.75px;}#dsgsvg7 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:Arial,Helvetica,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#dsgsvg7 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#dsgsvg7 rect.text{fill:none;stroke-width:0;}#dsgsvg7 .icon-shape,#dsgsvg7 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#dsgsvg7 .icon-shape p,#dsgsvg7 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#dsgsvg7 .icon-shape .label rect,#dsgsvg7 .image-shape .label rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#dsgsvg7 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#dsgsvg7 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#dsgsvg7 .node .neo-node{stroke:#9370DB;}#dsgsvg7 [data-look="neo"].node rect,#dsgsvg7 [data-look="neo"].cluster rect,#dsgsvg7 [data-look="neo"].node polygon{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg7 [data-look="neo"].swimlane.cluster rect{filter:none;}#dsgsvg7 [data-look="neo"].node path{stroke:#9370DB;stroke-width:1px;}#dsgsvg7 [data-look="neo"].node .outer-path{filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg7 [data-look="neo"].node .neo-line path{stroke:#9370DB;filter:none;}#dsgsvg7 [data-look="neo"].node circle{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg7 [data-look="neo"].node circle .state-start{fill:#000000;}#dsgsvg7 [data-look="neo"].icon-shape .icon{fill:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg7 [data-look="neo"].icon-shape .icon-neo path{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg7 :root{--mermaid-font-family:Arial,Helvetica,sans-serif;}#dsgsvg7 .container rect{fill:rgb(238, 237, 233)!important;stroke:rgb(48, 63, 71)!important;color:rgb(27, 49, 57)!important;stroke-width:1.5px!important;}#dsgsvg7 .container polygon{fill:rgb(238, 237, 233)!important;stroke:rgb(48, 63, 71)!important;color:rgb(27, 49, 57)!important;stroke-width:1.5px!important;}#dsgsvg7 .container ellipse{fill:rgb(238, 237, 233)!important;stroke:rgb(48, 63, 71)!important;color:rgb(27, 49, 57)!important;stroke-width:1.5px!important;}#dsgsvg7 .container circle{fill:rgb(238, 237, 233)!important;stroke:rgb(48, 63, 71)!important;color:rgb(27, 49, 57)!important;stroke-width:1.5px!important;}#dsgsvg7 .container path{fill:rgb(238, 237, 233)!important;stroke:rgb(48, 63, 71)!important;color:rgb(27, 49, 57)!important;stroke-width:1.5px!important;}#dsgsvg7 .container tspan{fill:rgb(27, 49, 57)!important;}#dsgsvg7 .lane rect{fill:transparent!important;stroke:transparent!important;color:transparent!important;}#dsgsvg7 .lane polygon{fill:transparent!important;stroke:transparent!important;color:transparent!important;}#dsgsvg7 .lane ellipse{fill:transparent!important;stroke:transparent!important;color:transparent!important;}#dsgsvg7 .lane circle{fill:transparent!important;stroke:transparent!important;color:transparent!important;}#dsgsvg7 .lane path{fill:transparent!important;stroke:transparent!important;color:transparent!important;}#dsgsvg7 .lane tspan{fill:transparent!important;}#dsgsvg7 .author rect{fill:rgb(249, 247, 244)!important;stroke:rgb(90, 111, 119)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .author polygon{fill:rgb(249, 247, 244)!important;stroke:rgb(90, 111, 119)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .author ellipse{fill:rgb(249, 247, 244)!important;stroke:rgb(90, 111, 119)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .author circle{fill:rgb(249, 247, 244)!important;stroke:rgb(90, 111, 119)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .author path{fill:rgb(249, 247, 244)!important;stroke:rgb(90, 111, 119)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .author tspan{fill:rgb(27, 49, 57)!important;}#dsgsvg7 .exec rect{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .exec polygon{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .exec ellipse{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .exec circle{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .exec path{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .exec tspan{fill:rgb(255, 255, 255)!important;}#dsgsvg7 .output rect{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .output polygon{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .output ellipse{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .output circle{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .output path{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;stroke-width:2px!important;}#dsgsvg7 .output tspan{fill:rgb(255, 255, 255)!important;}#dsgsvg7 .cli_class rect{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .cli_class polygon{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .cli_class ellipse{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .cli_class circle{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .cli_class path{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;stroke-width:2px!important;}#dsgsvg7 .cli_class tspan{fill:rgb(27, 49, 57)!important;}</style><g><marker id="dsgsvg7_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg7_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg7_flowchart-v2-pointEnd-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="11.5" refY="7" markerUnits="userSpaceOnUse" markerWidth="10.5" markerHeight="14" orient="auto"><path d="M 0 0 L 11.5 7 L 0 14 z" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg7_flowchart-v2-pointStart-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="1" refY="7" markerUnits="userSpaceOnUse" markerWidth="11.5" markerHeight="14" orient="auto"><polygon points="0,7 11.5,14 11.5,0" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></polygon></marker><marker id="dsgsvg7_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg7_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg7_flowchart-v2-circleEnd-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refY="5" refX="12.25" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg7_flowchart-v2-circleStart-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-2" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg7_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg7_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg7_flowchart-v2-crossEnd-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="17.7" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5;"></path></marker><marker id="dsgsvg7_flowchart-v2-crossStart-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="-3.5" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5; stroke-dasharray: 1, 0;"></path></marker><g class="root"><g class="clusters"><g class="cluster container" id="dsgsvg7-target_ws" data-look="classic"><rect style="fill:#EEEDE9 !important;stroke:#303F47 !important;stroke-width:1.5px !important" x="8" y="8" width="405.84375" height="214.734375"></rect><g class="cluster-label " transform="translate(148.2265625, 8)"><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Target</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> workspace</tspan></tspan></text></g></g></g></g><g class="edgePaths"><path d="M208.602,66.684L218.842,66.684C229.083,66.684,249.565,66.684,268.501,78.458C287.437,90.233,304.826,113.783,313.521,125.558L322.216,137.333" id="dsgsvg7-L_cfg_jobs_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style="stroke:#303F47;stroke-width:2px;fill:none;;;stroke:#303F47;stroke-width:2px;fill:none" data-edge="true" data-et="edge" data-id="L_cfg_jobs_0" data-points="W3sieCI6MjA4LjYwMTU2MjUsInkiOjY2LjY4MzU5Mzc1fSx7IngiOjI3MC4wNDY4NzUsInkiOjY2LjY4MzU5Mzc1fSx7IngiOjMyNC41OTIzMDc2MDU1MTIzLCJ5IjoxNDAuNTUwNzgxMjV9XQ==" data-look="classic" marker-end="url(#dsgsvg7_flowchart-v2-pointEnd__303F47)"></path><path d="M213.492,164.051L222.918,164.051C232.344,164.051,251.195,164.051,264.121,164.051C277.047,164.051,284.047,164.051,287.547,164.051L291.047,164.051" id="dsgsvg7-L_objs_jobs_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style="stroke:#303F47;stroke-width:2px;fill:none;;;stroke:#303F47;stroke-width:2px;fill:none" data-edge="true" data-et="edge" data-id="L_objs_jobs_0" data-points="W3sieCI6MjEzLjQ5MjE4NzUsInkiOjE2NC4wNTA3ODEyNX0seyJ4IjoyNzAuMDQ2ODc1LCJ5IjoxNjQuMDUwNzgxMjV9LHsieCI6Mjk1LjA0Njg3NSwieSI6MTY0LjA1MDc4MTI1fV0=" data-look="classic" marker-end="url(#dsgsvg7_flowchart-v2-pointEnd__303F47)"></path><path d="M174.076,257.734L190.071,247.011C206.066,236.287,238.056,214.84,257.601,202.668C277.146,190.496,284.245,187.598,287.794,186.15L291.343,184.701" id="dsgsvg7-L_cli_jobs_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style="stroke:#303F47;stroke-width:2px;fill:none;;;stroke:#303F47;stroke-width:2px;fill:none" data-edge="true" data-et="edge" data-id="L_cli_jobs_0" data-points="W3sieCI6MTc0LjA3NTY2NjUxNjEyMDA3LCJ5IjoyNTcuNzM0Mzc1fSx7IngiOjI3MC4wNDY4NzUsInkiOjE5My4zOTI1NzgxMjV9LHsieCI6Mjk1LjA0Njg3NSwieSI6MTgzLjE5MDA2MjY0MDkxODd9XQ==" data-look="classic" marker-end="url(#dsgsvg7_flowchart-v2-pointEnd__303F47)"></path></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_cfg_jobs_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g><g class="edgeLabel"><g class="label" data-id="L_objs_jobs_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g><g class="edgeLabel"><g class="label" data-id="L_cli_jobs_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g></g><g class="nodes"><g class="node default cli_class " id="dsgsvg7-flowchart-cli-0" data-look="classic" transform="translate(139.0234375, 281.234375)"><rect class="basic label-container" style="fill:#FFAB00 !important;stroke:#1B3139 !important;stroke-width:2px !important" x="-106.0234375" y="-23.5" width="212.046875" height="47"></rect><g class="label" style="color:#1B3139 !important" transform="translate(0, -8.5)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#1B3139 !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Databricks</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> CLI</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> /</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> UCX</tspan></tspan></text></g></g></g><g class="node default cli_class " id="dsgsvg7-flowchart-cfg-1" data-look="classic" transform="translate(139.0234375, 66.68359375)"><rect class="basic label-container" style="fill:#FFAB00 !important;stroke:#1B3139 !important;stroke-width:2px !important" x="-69.578125" y="-23.68359375" width="139.15625" height="47.3671875"></rect><g class="label" style="color:#1B3139 !important" transform="translate(0, -8.68359375)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#1B3139 !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Config</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> files</tspan></tspan></text></g></g></g><g class="node default cli_class " id="dsgsvg7-flowchart-objs-2" data-look="classic" transform="translate(139.0234375, 164.05078125)"><rect class="basic label-container" style="fill:#FFAB00 !important;stroke:#1B3139 !important;stroke-width:2px !important" x="-74.46875" y="-23.68359375" width="148.9375" height="47.3671875"></rect><g class="label" style="color:#1B3139 !important" transform="translate(0, -8.68359375)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#1B3139 !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Data</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> objects</tspan></tspan></text></g></g></g><g class="node default exec " id="dsgsvg7-flowchart-jobs-3" data-look="classic" transform="translate(341.9453125, 164.05078125)"><rect class="basic label-container" style="fill:#2272B4 !important;stroke:#1B3139 !important;stroke-width:2px !important" x="-46.8984375" y="-23.5" width="93.796875" height="47"></rect><g class="label" style="color:#FFFFFF !important" transform="translate(0, -8.5)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#FFFFFF !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Jobs</tspan></tspan></text></g></g></g></g></g><marker id="dsgsvg7_flowchart-v2-pointEnd__303F47" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;" stroke="#303F47" fill="#303F47"></path></marker></g><defs><filter id="dsgsvg7-drop-shadow" height="130%" width="130%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-opacity="0.06" flood-color="#000000"></feDropShadow></filter></defs><defs><filter id="dsgsvg7-drop-shadow-small" height="150%" width="150%"><feDropShadow dx="2" dy="2" stdDeviation="0" flood-opacity="0.06" flood-color="#000000"></feDropShadow></filter></defs></svg>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC &copy; <span id="dbx-year"></span> Databricks, Inc. All rights reserved. Apache, Apache Spark, Spark, the Spark Logo, Apache Iceberg, Iceberg, and the Apache Iceberg logo are trademarks of the <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a>.<br/><br/><a href="https://databricks.com/privacy-policy" target="_blank">Privacy Policy</a> | <a href="https://databricks.com/terms-of-use" target="_blank">Terms of Use</a> | <a href="https://help.databricks.com/" target="_blank">Support</a>
+-- MAGIC <script>
+-- MAGIC   document.getElementById("dbx-year").textContent = new Date().getFullYear();
+-- MAGIC </script>

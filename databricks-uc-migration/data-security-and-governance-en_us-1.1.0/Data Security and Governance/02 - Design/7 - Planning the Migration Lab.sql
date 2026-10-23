@@ -1,0 +1,3842 @@
+-- Databricks notebook source
+-- MAGIC %md-sandbox
+-- MAGIC <div style="display:flex; align-items:center; padding:10px 18px; background:#F8F9FA; border-bottom:1px solid #E0E0E0; gap:10px;">
+-- MAGIC   <img src="https://cdn.simpleicons.org/databricks/FF3621" width="22" height="22"/>
+-- MAGIC   <div style="font-size:14px; color:#666; white-space:nowrap;">
+-- MAGIC     <span style="font-weight:600; color:#333;">Academy</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Data Security & Governance Delivery Expert</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Design</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span style="font-weight:600; color:#eb1900;">Planning the Migration Lab</span>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC
+-- MAGIC <div style="text-align: center; line-height: 0; padding-top: 9px;">
+-- MAGIC   <img
+-- MAGIC     src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png"
+-- MAGIC     alt="Databricks Learning"
+-- MAGIC   >
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC # Lab: Planning the Migration
+-- MAGIC
+-- MAGIC In this module, we covered many different aspects of a successful Unity Catalog design. In this hands-on lab, you'll put your knowledge to the test with some interactive exercises.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       This notebook is designed to run in a Databricks Academy provided workspace, but it will not work inside an embedded frame. To complete these activities:
+-- MAGIC       <ol>
+-- MAGIC         <li>Select the <strong>Databricks</strong> tile.</li>
+-- MAGIC         <li>Choose <strong>Workspace URL - Databricks Workspace</strong>.</li>
+-- MAGIC         <li>Navigate to this notebook in the new tab and proceed with the exercise.</li>
+-- MAGIC       </ol>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## Testing Your Knowledge
+-- MAGIC
+-- MAGIC Let's begin with a few questions about the module we just covered. For each question, choose the most suitable option (or options, as instructed)and click **Validate** to check your answer.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       You can adjust your answers as many times as you like.
+-- MAGIC     </div>
+-- MAGIC   </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### Metastore Design
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   title: "Multiple Choice",
+-- MAGIC   prompt: "Which are valid reasons for requesting multiple metastores per region?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"Multiple workspaces in the same region", kind:"a" },
+-- MAGIC     { id:"b", label:"Organizational or legal segregation for independent business units", kind:"a" },
+-- MAGIC     { id:"c", label:"Data isolation requirements between teams", kind:"a" },
+-- MAGIC     { id:"d", label:"Disaster recovery requirements with regional failover strategies", kind:"a" }
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["b","d"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>While Databricks recommends one metastore per region, exceptions may be granted for organizational/legal segregation and disaster recovery requirements.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### Principal Types
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   prompt: "Which statements of service principals are true?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"They are identified by their name", kind:"b" },
+-- MAGIC     { id:"b", label:"They are identified by a system-generated GUID", kind:"b" },
+-- MAGIC     { id:"c", label:"They can be members of a group", kind:"b" },
+-- MAGIC     { id:"d", label:"They are mainly used for integrating external storage", kind:"b" }
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["b","c"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>While display names can be associated with service principals to make management in the UI more user-friendly, the system identifies them by their GUID. Like any principal, they can belong to one or more groups.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### Data Isolation
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   prompt: "What are the main Unity Catalog features that can be used to facilitate isolation of data?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"External locations and storage credentials", kind:"c" },
+-- MAGIC     { id:"b", label:"Catalogs and schemas", kind:"c" },
+-- MAGIC     { id:"c", label:"DBFS mounts", kind:"c" },
+-- MAGIC     { id:"d", label:"Multiple metastores", kind:"c" },
+-- MAGIC     { id:"e", label:"Catalog/workspace bindings", kind:"c" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["a","b","e"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>Physical data isolation can be provided through external locations and storage credentials, while catalogs and schemas can be organized to provide logical isolation. Catalog/workspace binding can also be used to further downscope data access.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### System Tables
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   prompt: "What are primary use cases for Unity Catalog system tables?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"Real-time monitoring of active queries", kind:"d" },
+-- MAGIC     { id:"b", label:"Historical audit and compliance reporting", kind:"d" },
+-- MAGIC     { id:"c", label:"Data lineage and impact analysis", kind:"d" },
+-- MAGIC     { id:"d", label:"Direct modification of audit logs for compliance", kind:"d" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["b","c"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>System tables provide historical audit/compliance reporting and data lineage/impact analysis capabilities. They are read-only analytical stores that are not updated in real-time.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### Migration Approaches
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   prompt: "Which migration approach would be most appropriate for a large, complex environment requiring zero downtime?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"In-place migration", kind:"e" },
+-- MAGIC     { id:"b", label:"Parallel migration", kind:"e" },
+-- MAGIC     { id:"c", label:"HMS Federation", kind:"e" },
+-- MAGIC     { id:"d", label:"Direct cutover", kind:"e" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["b"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>Parallel migration is best for large, complex environments requiring zero downtime as it enables phased adoption, thorough validation before legacy HMS decommission, and easier rollback if issues are detected. In-place migration involves some downtime, while HMS Federation alone isn't a complete migration strategy.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### Workspace Binding
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   prompt: "How does catalog binding enhance Unity Catalog's security model?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"Replaces the need for fine-grained access controls", kind:"f" },
+-- MAGIC     { id:"b", label:"Provides a coarse boundary layer on top of fine-grained controls", kind:"f" },
+-- MAGIC     { id:"c", label:"Automatically grants access to all users in bound workspaces", kind:"f" },
+-- MAGIC     { id:"d", label:"Eliminates the need for storage credentials", kind:"f" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["b"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>Catalog binding provides an additional access boundary layer on top of Unity Catalog's fine-grained access controls. Even if a principal has permissions on objects within a catalog, they cannot access those objects unless they're in a workspace to which the catalog is bound.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### Roles and Responsibilities
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   prompt: "Which role has the ability to reassign ownership of any object in the metastore?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"Account Administrator", kind:"g" },
+-- MAGIC     { id:"b", label:"Workspace Administrator", kind:"g" },
+-- MAGIC     { id:"c", label:"Metastore Administrator", kind:"g" },
+-- MAGIC     { id:"d", label:"Data Owner", kind:"g" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["c"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>Metastore administrators have full administrative capabilities over the metastore, including the ability to reassign or take ownership of any objects, manage permissions, or delete objects. While data owners have full permissions on objects they own, metastore admins can override ownership when needed for governance purposes.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### Attribute-Based Access Control
+-- MAGIC
+-- MAGIC <div id="mcx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   prompt: "When planning tags for Attribute-Based Access Control (ABAC), which considerations are most important?",
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Optional accent for the card (defaults to blue600)
+-- MAGIC   accent: "blue600",
+-- MAGIC
+-- MAGIC   // Options (pills). kind controls dot/border color like your other widgets.
+-- MAGIC   options: [
+-- MAGIC     { id:"a", label:"Contact Databricks if you need custom tags", kind:"h" },
+-- MAGIC     { id:"b", label:"Design clear tag hierarchies with consistent naming conventions", kind:"h" },
+-- MAGIC     { id:"c", label:"Plan for tag inheritance from catalogs down to tables, but not to columns", kind:"h" },
+-- MAGIC     { id:"d", label:"Use tags primarily for performance optimization", kind:"h" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Correct answer(s)
+-- MAGIC   correct: ["b","c"],
+-- MAGIC   explain: {
+-- MAGIC     title: "Correct!",
+-- MAGIC     html: `
+-- MAGIC       <p>Effective ABAC tag planning requires clear hierarchies with consistent naming and understanding inheritance patterns (catalog/schema tags inherit to tables but not columns). Tags are for governance and discoverability, not performance optimization.
+-- MAGIC     `
+-- MAGIC   },
+-- MAGIC   // Kind → palette key (config-driven!)
+-- MAGIC   kinds: {
+-- MAGIC     a: "blue600",
+-- MAGIC     b:  "navy800",
+-- MAGIC     c:       "yellow600",
+-- MAGIC     d:       "green600",
+-- MAGIC     e:    "grayNav",
+-- MAGIC     f:    "navy800",
+-- MAGIC     g:    "maroon600",
+-- MAGIC     h:    "lava600"
+-- MAGIC   }
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initMCX(){
+-- MAGIC   const root = document.getElementById("mcx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const accent = CONFIG.palette[CONFIG.accent] || CONFIG.palette.blue600;
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef;
+-- MAGIC     return `.mcx-pill[data-kind="${kind}"]{--pill-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #mcx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #mcx, #mcx *{box-sizing:border-box;}
+-- MAGIC
+-- MAGIC .mcx-wrap{
+-- MAGIC   background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:10px;
+-- MAGIC   box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);
+-- MAGIC   padding:14px; overflow:hidden;
+-- MAGIC }
+-- MAGIC .mcx-prompt{
+-- MAGIC   background:${CONFIG.palette.oatLight};
+-- MAGIC   border:2px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:8px;
+-- MAGIC   padding:12px 14px;
+-- MAGIC   font-weight:800;
+-- MAGIC   line-height:1.35;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-hint{
+-- MAGIC   margin-top:6px;
+-- MAGIC   font-weight:600;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   font-size:13px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-choices{
+-- MAGIC   margin-top:12px;
+-- MAGIC   display:flex;
+-- MAGIC   flex-wrap:wrap;
+-- MAGIC   gap:10px;
+-- MAGIC   align-items:flex-start;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-pill{
+-- MAGIC   --pill-color:${CONFIG.palette.grayLines};
+-- MAGIC   user-select:none;
+-- MAGIC   cursor:pointer;
+-- MAGIC   display:inline-flex;
+-- MAGIC   align-items:center;
+-- MAGIC   gap:8px;
+-- MAGIC   padding:7px 12px;
+-- MAGIC   border-radius:999px;
+-- MAGIC   border:2px solid var(--pill-color);
+-- MAGIC   background:#fff;
+-- MAGIC   font-size:13px;
+-- MAGIC   font-weight:700;
+-- MAGIC   transition:transform .06s ease, background .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .mcx-pill:hover{ transform:translateY(-1px); box-shadow:0 2px 10px rgba(0,0,0,.06); }
+-- MAGIC .mcx-pill:active{ transform:translateY(0px); }
+-- MAGIC
+-- MAGIC .mcx-dot{ width:9px;height:9px;border-radius:999px;background:var(--pill-color); opacity:.95; }
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC /* Selected state */
+-- MAGIC .mcx-pill.selected{
+-- MAGIC   background:color-mix(in srgb, var(--pill-color) 12%, white);
+-- MAGIC   box-shadow:0 0 0 3px color-mix(in srgb, var(--pill-color) 22%, transparent);
+-- MAGIC }
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .mcx-pill.correct{
+-- MAGIC   border-color:${CONFIG.palette.green600};
+-- MAGIC   background:rgba(0,169,114,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .mcx-pill.wrong{
+-- MAGIC   border-color:${CONFIG.palette.lava600};
+-- MAGIC   background:rgba(255,54,33,.10);
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:mcx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .mcx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .mcx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border:1px solid ${CONFIG.palette.grayLines};
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:560px;
+-- MAGIC   width:92%;
+-- MAGIC   padding:18px 18px 14px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.18);
+-- MAGIC }
+-- MAGIC .mcx-modal-title{font-weight:900;font-size:16px;margin-bottom:10px;}
+-- MAGIC .mcx-modal-body{font-size:14px;color:${CONFIG.palette.grayText};line-height:1.55;}
+-- MAGIC .mcx-modal-actions{margin-top:14px;display:flex;justify-content:flex-end;}
+-- MAGIC
+-- MAGIC @keyframes mcx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .mcx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .mcx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .mcx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .mcx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .mcx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .mcx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .mcx-msg.bad{border-color:rgba(255,54,33,.35);color:${CONFIG.palette.lava600};background:rgba(255,54,33,.05);}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "mcx-wrap";
+-- MAGIC
+-- MAGIC   const prompt = document.createElement("div");
+-- MAGIC   prompt.className = "mcx-prompt";
+-- MAGIC   prompt.textContent = CONFIG.prompt;
+-- MAGIC
+-- MAGIC   const hint = document.createElement("div");
+-- MAGIC   hint.className = "mcx-hint";
+-- MAGIC   hint.textContent = (CONFIG.correct.length > 1)
+-- MAGIC     ? "Select all that apply, then Validate."
+-- MAGIC     : "Select one answer, then Validate.";
+-- MAGIC
+-- MAGIC   const choices = document.createElement("div");
+-- MAGIC   choices.className = "mcx-choices";
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "mcx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "mcx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "mcx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "mcx-msg";
+-- MAGIC   msg.textContent = "Choose an option, then validate.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   //controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "mcx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="mcx-modal" role="dialog" aria-modal="true">
+-- MAGIC       <div class="mcx-modal-title"></div>
+-- MAGIC       <div class="mcx-modal-body"></div>
+-- MAGIC       <div class="mcx-modal-actions">
+-- MAGIC         <button class="mcx-btn">Close</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC
+-- MAGIC   const overlayTitle = overlay.querySelector(".mcx-modal-title");
+-- MAGIC   const overlayBody  = overlay.querySelector(".mcx-modal-body");
+-- MAGIC   const overlayClose = overlay.querySelector(".mcx-modal-actions .mcx-btn");
+-- MAGIC   overlayClose.addEventListener("click", () => overlay.classList.add("hidden"));
+-- MAGIC
+-- MAGIC   wrap.appendChild(prompt);
+-- MAGIC   wrap.appendChild(hint);
+-- MAGIC   wrap.appendChild(choices);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   const selected = new Set();
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".mcx-pill").forEach(p => p.classList.remove("correct","wrong"));
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function render(){
+-- MAGIC     choices.innerHTML = "";
+-- MAGIC     for (const opt of CONFIG.options){
+-- MAGIC       const pill = document.createElement("div");
+-- MAGIC       pill.className = "mcx-pill";
+-- MAGIC       pill.dataset.id = opt.id;
+-- MAGIC       if (opt.kind) pill.dataset.kind = opt.kind;
+-- MAGIC
+-- MAGIC       const dot = document.createElement("span");
+-- MAGIC       dot.className = "mcx-dot";
+-- MAGIC       const label = document.createElement("span");
+-- MAGIC       label.textContent = opt.label;
+-- MAGIC
+-- MAGIC       pill.appendChild(dot);
+-- MAGIC       pill.appendChild(label);
+-- MAGIC
+-- MAGIC       if (selected.has(opt.id)) pill.classList.add("selected");
+-- MAGIC
+-- MAGIC       pill.addEventListener("click", () => {
+-- MAGIC         clearStates();
+-- MAGIC
+-- MAGIC         if (CONFIG.correct.length < 2){
+-- MAGIC           // single choice: clear others
+-- MAGIC           selected.clear();
+-- MAGIC           selected.add(opt.id);
+-- MAGIC         } else {
+-- MAGIC           // multi: toggle
+-- MAGIC           if (selected.has(opt.id)) selected.delete(opt.id);
+-- MAGIC           else selected.add(opt.id);
+-- MAGIC         }
+-- MAGIC
+-- MAGIC         render();
+-- MAGIC       });
+-- MAGIC
+-- MAGIC       choices.appendChild(pill);
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     const correctSet = new Set(CONFIG.correct || []);
+-- MAGIC     if (selected.size === 0){
+-- MAGIC       setMsg("Pick an option first.", "bad");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     // Mark selected pills as correct/wrong
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     // In single mode, require exact match to 1 correct (or exact set in multi)
+-- MAGIC     if (CONFIG.correct.length < 2){
+-- MAGIC       const only = Array.from(selected)[0];
+-- MAGIC       const isOk = correctSet.has(only) && correctSet.size === 1;
+-- MAGIC       allCorrect = isOk;
+-- MAGIC
+-- MAGIC       const pill = root.querySelector(`.mcx-pill[data-id="${only}"]`);
+-- MAGIC       if (pill) pill.classList.add(isOk ? "correct" : "wrong");
+-- MAGIC     } else {
+-- MAGIC       // multi mode: exact set match
+-- MAGIC       if (selected.size !== correctSet.size) allCorrect = false;
+-- MAGIC       for (const id of selected){
+-- MAGIC         const pill = root.querySelector(`.mcx-pill[data-id="${id}"]`);
+-- MAGIC         const ok = correctSet.has(id);
+-- MAGIC         if (!ok) allCorrect = false;
+-- MAGIC         if (pill) pill.classList.add(ok ? "correct" : "wrong");
+-- MAGIC       }
+-- MAGIC       // (optional) you could also highlight missing correct ones, but you said no fancy needed
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ Correct." : "Not quite — adjust your selection and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC
+-- MAGIC     if (allCorrect) {
+-- MAGIC       overlayTitle.textContent = CONFIG.explain?.title || "Why this is correct";
+-- MAGIC       overlayBody.innerHTML = CONFIG.explain?.html || "<p>No explanation provided.</p>";
+-- MAGIC       overlay.classList.remove("hidden");
+-- MAGIC     }
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     selected.clear();
+-- MAGIC     clearStates();
+-- MAGIC     render();
+-- MAGIC     setMsg("Reset. Choose again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC
+-- MAGIC   render();
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## Understanding Key Terminology
+-- MAGIC
+-- MAGIC Throughout this module, we covered many important terms related to the planning process. Match the terms below to their definitions by dragging them into the appropriate box. Drag each tag into the appropriate box that matches. When everything is placed, click **Validate**.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       You can adjust your answers as many times as you like.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div><div id="ddx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   title: "Match terms to definitions",
+-- MAGIC   minPairs: 2,
+-- MAGIC   maxPairs: 10, // you can push beyond 6 now; layout will wrap responsively
+-- MAGIC
+-- MAGIC   // Each item becomes: one draggable term + one definition card + one correct match
+-- MAGIC   pairs: [
+-- MAGIC     {
+-- MAGIC       id: "p01",
+-- MAGIC       term: "Metastore",
+-- MAGIC       kind: "tool",
+-- MAGIC       definition: "Top-level container in Unity Catalog that manages metadata for data and AI objects within a region."
+-- MAGIC     },
+-- MAGIC     {
+-- MAGIC       id: "p02",
+-- MAGIC       term: "External Location",
+-- MAGIC       kind: "tool",
+-- MAGIC       definition: "Represents a cloud storage path for creating secure access to external cloud storage."
+-- MAGIC     },
+-- MAGIC     {
+-- MAGIC       id: "p03",
+-- MAGIC       term: "Storage Credential",
+-- MAGIC       kind: "governance",
+-- MAGIC       definition: "Manages long-term cloud authentication details for accessing external storage."
+-- MAGIC     },
+-- MAGIC     {
+-- MAGIC       id: "p04",
+-- MAGIC       term: "Service Principal",
+-- MAGIC       kind: "tool",
+-- MAGIC       definition: "Identity used to represent clients such as automated processes, jobs, and external integrations."
+-- MAGIC     },
+-- MAGIC     {
+-- MAGIC       id: "p05",
+-- MAGIC       term: "User",
+-- MAGIC       kind: "data",
+-- MAGIC       definition: "Identity used to represent interactive clients."
+-- MAGIC     },
+-- MAGIC     {
+-- MAGIC       id: "p06",
+-- MAGIC       term: "Governed Tags",
+-- MAGIC       kind: "compute",
+-- MAGIC       definition: "Custom attributes used to enable dynamic, policy-driven data governance."
+-- MAGIC     },
+-- MAGIC     {
+-- MAGIC       id: "p07",
+-- MAGIC       term: "Classification Tags",
+-- MAGIC       kind: "compute",
+-- MAGIC       definition: "System-provided attributes used to classify data and enable dynamic, policy-driven data governance."
+-- MAGIC     },
+-- MAGIC   {
+-- MAGIC       id: "p08",
+-- MAGIC       term: "Catalog",
+-- MAGIC       kind: "tool",
+-- MAGIC       definition: "Top-level container in Unity Catalog for organizing data and AI objects."
+-- MAGIC     },
+-- MAGIC
+-- MAGIC
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Corp palette
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4",
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Card accents cycle
+-- MAGIC   zoneAccentOrder: ["blue600","green600","lava600","navy800","maroon600","yellow600"]
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initDDX(){
+-- MAGIC   const n = CONFIG.pairs.length;
+-- MAGIC   if (n < CONFIG.minPairs || n > CONFIG.maxPairs){
+-- MAGIC     throw new Error(`pairs must be between ${CONFIG.minPairs} and ${CONFIG.maxPairs}`);
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   const root = document.getElementById("ddx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #ddx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #ddx, #ddx *{box-sizing:border-box;}
+-- MAGIC .ddx-wrap{background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);padding:12px;overflow:hidden;}
+-- MAGIC .ddx-bank{background:${CONFIG.palette.oatLight};border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;padding:10px;min-height:92px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start;overflow:hidden;}
+-- MAGIC .ddx-grid{margin-top:12px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;width:100%;}
+-- MAGIC .ddx-zone{background:color-mix(in srgb, var(--zone-color) 8%, white);border: 2px solid var(--zone-color);border-radius:8px;padding:10px;min-width:0;overflow:hidden;display:flex;flex-direction:column;}
+-- MAGIC .ddx-label{font-weight:800;font-size:13px;letter-spacing:.2px;margin-bottom:6px;display:flex;align-items:center;gap:8px;}
+-- MAGIC .ddx-def{font-size:12px;color:${CONFIG.palette.grayText};line-height:1.35;margin:0 0 10px 0;white-space:normal;}
+-- MAGIC .ddx-drop{
+-- MAGIC   background:#fff;border:2px dashed rgba(48,63,71,.40);border-radius:8px;
+-- MAGIC   padding:10px;min-height:64px;display:flex;flex-wrap:wrap;gap:8px;align-content:center;
+-- MAGIC   overflow:hidden;min-width:0;max-width:100%;
+-- MAGIC }
+-- MAGIC .ddx-drop:empty::after{content:"Drop term here";font-size:12px;color:${CONFIG.palette.grayText};opacity:.55;}
+-- MAGIC .ddx-bank:empty::after{content:"";}
+-- MAGIC .ddx-drop.over{outline:3px solid rgba(0,169,114,.25);border-color:rgba(0,169,114,.55);background:rgba(0,169,114,.06);}
+-- MAGIC
+-- MAGIC .ddx-tag{user-select:none;cursor:grab;padding:6px 10px;border-radius:999px;border:2px solid ${CONFIG.palette.grayLines};background:#fff;font-size:13px;display:inline-flex;align-items:center;gap:8px;max-width:100%;}
+-- MAGIC .ddx-tag:active{cursor:grabbing;}
+-- MAGIC
+-- MAGIC .ddx-tag[data-kind="governance"]{--tag-color:${CONFIG.palette.blue600};}
+-- MAGIC .ddx-tag[data-kind="compute"]{--tag-color:${CONFIG.palette.grayNav};}
+-- MAGIC .ddx-tag[data-kind="data"]{--tag-color:${CONFIG.palette.green600};}
+-- MAGIC .ddx-tag[data-kind="tool"]{--tag-color:${CONFIG.palette.yellow600};}
+-- MAGIC .ddx-tag[data-kind="persona"]{--tag-color:${CONFIG.palette.oatMed};}
+-- MAGIC
+-- MAGIC .ddx-tag{border-color:var(--tag-color);}
+-- MAGIC .ddx-tag .ddx-dot{background:var(--tag-color);}
+-- MAGIC .ddx-dot{width:9px;height:9px;border-radius:999px;opacity:.95;flex:0 0 auto;}
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .ddx-tag.correct{border-color:rgba(0,169,114,.9);background:rgba(0,169,114,.10);}
+-- MAGIC .ddx-tag.wrong{border-color:rgba(255,54,33,.9);background:rgba(255,54,33,.10);animation:ddx-shake .25s linear 1;}
+-- MAGIC @keyframes ddx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .ddx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .ddx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .ddx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .ddx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .ddx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .ddx-zone .ddx-drop{margin-top: auto;}
+-- MAGIC
+-- MAGIC @media (max-width:980px){.ddx-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+-- MAGIC @media (max-width:620px){.ddx-grid{grid-template-columns:1fr;}}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "ddx-wrap";
+-- MAGIC
+-- MAGIC   const bank = document.createElement("div");
+-- MAGIC   bank.className = "ddx-bank ddx-drop";
+-- MAGIC   bank.setAttribute("data-dropzone","bank");
+-- MAGIC   bank.setAttribute("aria-label","Term bank");
+-- MAGIC
+-- MAGIC   const grid = document.createElement("div");
+-- MAGIC   grid.className = "ddx-grid";
+-- MAGIC
+-- MAGIC   // Build definition cards (each accepts ONE term)
+-- MAGIC   CONFIG.pairs.forEach((p, i) => {
+-- MAGIC     const zone = document.createElement("div");
+-- MAGIC     zone.className = "ddx-zone";
+-- MAGIC     zone.setAttribute("data-zone", p.id);
+-- MAGIC
+-- MAGIC     const accentKey = CONFIG.zoneAccentOrder[i % CONFIG.zoneAccentOrder.length];
+-- MAGIC     //const accent = CONFIG.palette[accentKey] || CONFIG.palette.blue600;
+-- MAGIC     const accent = CONFIG.palette.grayText;
+-- MAGIC     zone.style.setProperty("--zone-color", accent);
+-- MAGIC
+-- MAGIC     const label = document.createElement("div");
+-- MAGIC     label.className = "ddx-label";
+-- MAGIC     label.textContent = p.definition; // label IS the definition now
+-- MAGIC
+-- MAGIC     const drop = document.createElement("div");
+-- MAGIC     drop.className = "ddx-drop";
+-- MAGIC     drop.setAttribute("data-dropzone", p.id);
+-- MAGIC     drop.setAttribute("data-single", "true");
+-- MAGIC     drop.setAttribute("aria-label", `Definition ${i+1}`);
+-- MAGIC
+-- MAGIC     zone.appendChild(label);
+-- MAGIC     zone.appendChild(drop);
+-- MAGIC     grid.appendChild(zone);
+-- MAGIC   });
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "ddx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "ddx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "ddx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "ddx-msg";
+-- MAGIC   msg.textContent = "Drag each term onto its matching definition. Validate when done.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   wrap.appendChild(bank);
+-- MAGIC   wrap.appendChild(grid);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   // Helpers
+-- MAGIC   const pairIds = new Set(CONFIG.pairs.map(p => p.id));
+-- MAGIC   const termToPair = new Map(CONFIG.pairs.map(p => [p.term, p.id])); // not used, but handy
+-- MAGIC   const tagIdToPair = new Map(CONFIG.pairs.map(p => [`tag_${p.id}`, p.id])); // used for validation
+-- MAGIC
+-- MAGIC   function shuffle(array){
+-- MAGIC     const a = array.slice(); // don’t mutate config
+-- MAGIC     for (let i = a.length - 1; i > 0; i--){
+-- MAGIC       const j = Math.floor(Math.random() * (i + 1));
+-- MAGIC       [a[i], a[j]] = [a[j], a[i]];
+-- MAGIC     }
+-- MAGIC     return a;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function setMsg(text){
+-- MAGIC     msg.textContent = text;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".ddx-tag").forEach(t => t.classList.remove("correct","wrong"));
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function makeTag(p){
+-- MAGIC     const el = document.createElement("div");
+-- MAGIC     el.className = "ddx-tag";
+-- MAGIC     el.draggable = true;
+-- MAGIC     el.dataset.id = `tag_${p.id}`;   // stable id
+-- MAGIC     el.dataset.pair = p.id;          // correct destination
+-- MAGIC     if (p.kind) el.dataset.kind = p.kind;
+-- MAGIC
+-- MAGIC     const dot = document.createElement("span");
+-- MAGIC     dot.className = "ddx-dot";
+-- MAGIC     const label = document.createElement("span");
+-- MAGIC     label.textContent = p.term;
+-- MAGIC
+-- MAGIC     el.appendChild(dot);
+-- MAGIC     el.appendChild(label);
+-- MAGIC
+-- MAGIC     el.addEventListener("dragstart", (e) => {
+-- MAGIC       el.classList.remove("correct","wrong");
+-- MAGIC
+-- MAGIC       // Custom drag ghost
+-- MAGIC       const ghost = el.cloneNode(true);
+-- MAGIC       ghost.style.position = "absolute";
+-- MAGIC       ghost.style.top = "-1000px";
+-- MAGIC       ghost.style.left = "-1000px";
+-- MAGIC       ghost.style.pointerEvents = "none";
+-- MAGIC       ghost.style.opacity = "0.95";
+-- MAGIC       document.body.appendChild(ghost);
+-- MAGIC
+-- MAGIC       const rect = el.getBoundingClientRect();
+-- MAGIC       e.dataTransfer.setDragImage(ghost, rect.width / 2, rect.height / 2);
+-- MAGIC       setTimeout(() => ghost.remove(), 0);
+-- MAGIC
+-- MAGIC       e.dataTransfer.setData("text/plain", el.dataset.id);
+-- MAGIC       e.dataTransfer.effectAllowed = "move";
+-- MAGIC     });
+-- MAGIC
+-- MAGIC     return el;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function attachDropzone(zone){
+-- MAGIC     zone.addEventListener("dragover", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zone.classList.add("over");
+-- MAGIC       e.dataTransfer.dropEffect = "move";
+-- MAGIC     });
+-- MAGIC     zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+-- MAGIC     zone.addEventListener("drop", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zone.classList.remove("over");
+-- MAGIC
+-- MAGIC       const id = e.dataTransfer.getData("text/plain");
+-- MAGIC       const tag = root.querySelector(`.ddx-tag[data-id="${id}"]`);
+-- MAGIC       if (!tag) return;
+-- MAGIC
+-- MAGIC       tag.classList.remove("correct","wrong");
+-- MAGIC
+-- MAGIC       const isSingle = zone.getAttribute("data-single") === "true";
+-- MAGIC       if (!isSingle){
+-- MAGIC         zone.appendChild(tag);
+-- MAGIC         return;
+-- MAGIC       }
+-- MAGIC
+-- MAGIC       // SINGLE SLOT: true swap (swap with source container if occupied)
+-- MAGIC       const from = tag.parentElement;
+-- MAGIC       const existing = zone.querySelector(".ddx-tag");
+-- MAGIC       if (existing && existing !== tag){
+-- MAGIC         existing.classList.remove("correct","wrong");
+-- MAGIC         if (from && from.getAttribute("data-dropzone")){
+-- MAGIC           from.appendChild(existing);
+-- MAGIC         } else {
+-- MAGIC           bank.appendChild(existing);
+-- MAGIC         }
+-- MAGIC       }
+-- MAGIC
+-- MAGIC       zone.appendChild(tag);
+-- MAGIC     });
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     // Require every definition to have a term
+-- MAGIC     const drops = Array.from(root.querySelectorAll('.ddx-drop[data-single="true"]'));
+-- MAGIC     const unfilled = drops.filter(d => d.querySelectorAll(".ddx-tag").length === 0);
+-- MAGIC     if (unfilled.length > 0){
+-- MAGIC       setMsg("Fill every definition with one term before validating.");
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     for (const p of CONFIG.pairs){
+-- MAGIC       const tag = root.querySelector(`.ddx-tag[data-pair="${p.id}"]`);
+-- MAGIC       const actual = tag?.parentElement?.getAttribute("data-dropzone");
+-- MAGIC       const expected = p.id;
+-- MAGIC
+-- MAGIC       if (!pairIds.has(expected)){
+-- MAGIC         allCorrect = false;
+-- MAGIC         if (tag) tag.classList.add("wrong");
+-- MAGIC         continue;
+-- MAGIC       }
+-- MAGIC
+-- MAGIC       if (actual === expected) tag.classList.add("correct");
+-- MAGIC       else { tag.classList.add("wrong"); allCorrect = false; }
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ All correct." : "Fix the red ones and validate again.");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     CONFIG.pairs.forEach(p => {
+-- MAGIC       const tag = root.querySelector(`.ddx-tag[data-pair="${p.id}"]`);
+-- MAGIC       if (tag) bank.appendChild(tag);
+-- MAGIC     });
+-- MAGIC     clearStates();
+-- MAGIC     setMsg("Reset. Drag again.");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   // Init
+-- MAGIC   bank.innerHTML = "";
+-- MAGIC   shuffle(CONFIG.pairs).forEach(p => bank.appendChild(makeTag(p)));
+-- MAGIC   root.querySelectorAll(".ddx-drop").forEach(attachDropzone);
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## Designing a UC Deployment
+-- MAGIC
+-- MAGIC Your client, *Acme Analytics*, is a rapidly growing global organization with major operations in the US and Europe. Their primary development center is located in US West, where data engineers actively build and test pipelines. To support this workflow, they require both development and production environments there to ensure safe iteration without impacting business-critical workloads.
+-- MAGIC
+-- MAGIC The organization maintains a smaller footprint in Central Europe, focused on sales and customer support. Both functions rely on curated production data to serve customers and monitor regional performance. While these teams do not perform development locally, they need secure, reliable access to a subset of production datasets originating from US West.
+-- MAGIC
+-- MAGIC Acme's leadership has two key concerns:
+-- MAGIC 1. They want to ensure strict isolation between development and production environments, and have proposed deploying separate metastores to enforce this boundary.
+-- MAGIC 1. They need a scalable way to provide European teams visibility into selected US West production tables, and have proposed an ETL pipeline to sync production data between the two regions.
+-- MAGIC
+-- MAGIC Your task is to help Acme design a data platform architecture that meets these requirements while aligning with best practices for governance, isolation, and secure cross-region data access.
+-- MAGIC
+-- MAGIC Distribute items to the regions where they're needed by dragging them to the appropriate dropzone. 
+-- MAGIC - Use as many or as few of the items as you think you need to satisfy the minimal requirements
+-- MAGIC - You do not have to use all the items
+-- MAGIC - When everything is placed, click **Validate**.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       You can adjust your answers as many times as you like.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC <div id="ddx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   title: "Drag & Drop",
+-- MAGIC   minZones: 2,
+-- MAGIC   maxZones: 6,
+-- MAGIC
+-- MAGIC   tags: [
+-- MAGIC     { id:"w1", label:"Workspace", kind:"workspace" },
+-- MAGIC     { id:"w2", label:"Workspace", kind:"workspace" },
+-- MAGIC     { id:"w3", label:"Workspace", kind:"workspace" },
+-- MAGIC     { id:"w4", label:"Workspace", kind:"workspace" },
+-- MAGIC     { id:"m1", label:"Metastore", kind:"metastore" },
+-- MAGIC     { id:"m2", label:"Metastore", kind:"metastore" },
+-- MAGIC     { id:"m3", label:"Metastore", kind:"metastore" },
+-- MAGIC     { id:"m4", label:"Metastore", kind:"metastore" },
+-- MAGIC     { id:"p1", label:"OpenSharing (provider)", kind:"data" },
+-- MAGIC     { id:"p2", label:"OpenSharing (provider)", kind:"data" },
+-- MAGIC     { id:"r1", label:"OpenSharing (recipient)", kind:"data" },
+-- MAGIC     { id:"r2", label:"OpenSharing (recipient)", kind:"data" },
+-- MAGIC     { id:"c1", label:"Catalog", kind:"catalog" },
+-- MAGIC     { id:"c2", label:"Catalog", kind:"catalog" },
+-- MAGIC     { id:"c3", label:"Catalog", kind:"catalog" },
+-- MAGIC     { id:"c4", label:"Catalog", kind:"catalog" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // expects = list of groups
+-- MAGIC   // Each group is either:
+-- MAGIC   //  - "t05"                 => require that exact tag
+-- MAGIC   //  - ["t01","t02"]         => require 1 of these tags (OR)
+-- MAGIC   // Repeating a group means "two of" with distinct tags
+-- MAGIC   zones: [
+-- MAGIC     {
+-- MAGIC       id: "usw",
+-- MAGIC       label: "US West",
+-- MAGIC       expects: [
+-- MAGIC         ["w1","w2","w3","w4"],  // 2 workspaces
+-- MAGIC         ["w1","w2","w3","w4"],
+-- MAGIC         ["m1","m2","m3","m4"],  // 1 metastore
+-- MAGIC         ["p1","p2"],            // Delta share provider
+-- MAGIC         ["c1","c2","c3","c4"],  // 2 catalogs
+-- MAGIC         ["c1","c2","c3","c4"],
+-- MAGIC       ],
+-- MAGIC       allow_extra: [
+-- MAGIC         ["w1","w2","w3","w4"],  // up to 3 workspaces
+-- MAGIC         ["c1","c2","c3","c4"],  // up to 3 catalogs
+-- MAGIC       ],
+-- MAGIC     },
+-- MAGIC     {
+-- MAGIC       id: "euc",
+-- MAGIC       label: "Central Europe",
+-- MAGIC       expects: [
+-- MAGIC         ["w1","w2","w3","w4"],     // 1 workspace at minimum
+-- MAGIC         ["m1","m2","m3","m4"],  // 1 metastore
+-- MAGIC         ["r1","r2"],            // Delta share receiver
+-- MAGIC       ],
+-- MAGIC       allow_extra: [
+-- MAGIC         ["w1","w2","w3","w4"],  // up to 2 workspaces
+-- MAGIC         ["c1","c2","c3","c4"],  // up to 2 catalogs
+-- MAGIC         ["c1","c2","c3","c4"],
+-- MAGIC       ],
+-- MAGIC     }
+-- MAGIC   ],
+-- MAGIC   explain: {
+-- MAGIC     title: "How to reason about this",
+-- MAGIC     introHtml: `
+-- MAGIC       <p>Build each region with a minimal set of components needed to satisfy the requirements.</p>
+-- MAGIC     `,
+-- MAGIC     zones: {
+-- MAGIC       usw: `
+-- MAGIC         <ul>
+-- MAGIC           <li>Needs two distinct workspaces for separating <code>dev</code> and <code>prod</code>.</li>
+-- MAGIC           <li>Two metastores are not needed; separation can be acheived with catalogs.</li>
+-- MAGIC           <li>Shares data through OpenSharing.</li>
+-- MAGIC         </ul>
+-- MAGIC       `,
+-- MAGIC       euc: `
+-- MAGIC         <ul>
+-- MAGIC           <li>Needs at least one workspace and a metastore.</li>
+-- MAGIC           <li>Reads from a Delta Share provided by US West.</li>
+-- MAGIC           <li>No additional catalogs are strictly required, but they are not forbidden.</li>
+-- MAGIC         </ul>
+-- MAGIC       `
+-- MAGIC     }
+-- MAGIC   },
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     lava500:  "#FF5F46",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     navy900:  "#0B2026",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     blue600:  "#2272B4"
+-- MAGIC   },
+-- MAGIC   kinds: {
+-- MAGIC     metastore: "blue600",
+-- MAGIC     data:       "green600",
+-- MAGIC     catalog:    "yellow600",
+-- MAGIC     workspace:  "lava600"
+-- MAGIC   },
+-- MAGIC   zoneAccentOrder: ["blue600","green600","lava600","navy800","maroon600","yellow600"]
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initDDX(){
+-- MAGIC   const n = CONFIG.zones.length;
+-- MAGIC   if (n < CONFIG.minZones || n > CONFIG.maxZones){
+-- MAGIC     throw new Error(`zones must be between ${CONFIG.minZones} and ${CONFIG.maxZones}`);
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   const root = document.getElementById("ddx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   const kindCss = Object.entries(CONFIG.kinds || {}).map(([kind, colorRef]) => {
+-- MAGIC     const color = CONFIG.palette[colorRef] || colorRef; // palette key or literal
+-- MAGIC     return `.ddx-tag[data-kind="${kind}"]{--tag-color:${color};}`;
+-- MAGIC   }).join("\n");
+-- MAGIC
+-- MAGIC   const css = `
+-- MAGIC #ddx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #ddx, #ddx *{box-sizing:border-box;}
+-- MAGIC .ddx-wrap{background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);padding:12px;overflow:hidden;}
+-- MAGIC .ddx-bank{background:${CONFIG.palette.oatLight};border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;padding:10px;min-height:100px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start;overflow:hidden;}
+-- MAGIC .ddx-grid{margin-top:12px;display:grid;grid-template-columns:repeat(${n},minmax(0,1fr));gap:12px;width:100%;}
+-- MAGIC .ddx-zone{
+-- MAGIC   background:color-mix(in srgb, var(--zone-color) 8%, white);
+-- MAGIC   border:2px solid var(--zone-color);
+-- MAGIC   border-radius:8px;padding:10px;min-width:0;overflow:hidden;
+-- MAGIC   transition:transform .12s ease, box-shadow .12s ease;
+-- MAGIC }
+-- MAGIC .ddx-label{font-weight:800;font-size:13px;letter-spacing:.2px;margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+-- MAGIC .ddx-drop{background:#fff;border:2px dashed rgba(48,63,71,.40);border-radius:8px;padding:10px;min-height:160px;display:flex;flex-wrap:wrap;gap:8px;align-content:flex-start;overflow:hidden;min-width:0;max-width:100%;}
+-- MAGIC .ddx-drop.over{outline:3px solid rgba(0,169,114,.25);border-color:rgba(0,169,114,.55);background:rgba(0,169,114,.06);}
+-- MAGIC
+-- MAGIC .ddx-tag{user-select:none;cursor:grab;padding:6px 10px;border-radius:999px;border:2px solid ${CONFIG.palette.grayLines};background:#fff;font-size:13px;display:inline-flex;align-items:center;gap:8px;max-width:100%;}
+-- MAGIC .ddx-tag:active{cursor:grabbing;}
+-- MAGIC
+-- MAGIC ${kindCss}
+-- MAGIC
+-- MAGIC .ddx-tag{border-color:var(--tag-color);}
+-- MAGIC .ddx-tag .ddx-dot{background: var(--tag-color);}
+-- MAGIC .ddx-dot{width:9px;height:9px;border-radius:999px;opacity:.95;flex:0 0 auto;}
+-- MAGIC
+-- MAGIC /* Zone validation states (zones, not tags) */
+-- MAGIC .ddx-zone.ok{
+-- MAGIC   box-shadow:0 0 0 3px rgba(0,169,114,.18);
+-- MAGIC }
+-- MAGIC .ddx-zone.bad{
+-- MAGIC   box-shadow:0 0 0 3px rgba(255,54,33,.18);
+-- MAGIC   animation:ddx-shake .25s linear 1;
+-- MAGIC }
+-- MAGIC @keyframes ddx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .ddx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .ddx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .ddx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .ddx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .ddx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .ddx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .ddx-msg.bad{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:rgba(152,16,42,.05);}
+-- MAGIC
+-- MAGIC .ddx-overlay{
+-- MAGIC   position:fixed;
+-- MAGIC   inset:0;
+-- MAGIC   backdrop-filter: blur(2px);
+-- MAGIC   display:flex;
+-- MAGIC   align-items:center;
+-- MAGIC   justify-content:center;
+-- MAGIC   z-index:999;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .ddx-overlay.hidden{display:none;}
+-- MAGIC
+-- MAGIC .ddx-modal{
+-- MAGIC   background:#fff;
+-- MAGIC   border-radius:12px;
+-- MAGIC   max-width:520px;
+-- MAGIC   width:90%;
+-- MAGIC   padding:20px;
+-- MAGIC   box-shadow:0 10px 40px rgba(0,0,0,.25);
+-- MAGIC }
+-- MAGIC
+-- MAGIC .ddx-modal-title{
+-- MAGIC   font-weight:800;
+-- MAGIC   font-size:16px;
+-- MAGIC   margin-bottom:12px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .ddx-modal-body{
+-- MAGIC   font-size:14px;
+-- MAGIC   color:${CONFIG.palette.grayText};
+-- MAGIC   line-height:1.5;
+-- MAGIC }
+-- MAGIC
+-- MAGIC .ddx-modal-actions{
+-- MAGIC   margin-top:16px;
+-- MAGIC   display:flex;
+-- MAGIC   justify-content:flex-end;
+-- MAGIC   gap:10px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC @media (max-width:980px){.ddx-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+-- MAGIC @media (max-width:620px){.ddx-grid{grid-template-columns:1fr;}}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "ddx-wrap";
+-- MAGIC
+-- MAGIC   const bank = document.createElement("div");
+-- MAGIC   bank.className = "ddx-bank ddx-drop";
+-- MAGIC   bank.setAttribute("data-dropzone","bank");
+-- MAGIC   bank.setAttribute("aria-label","Tag bank");
+-- MAGIC
+-- MAGIC   const grid = document.createElement("div");
+-- MAGIC   grid.className = "ddx-grid";
+-- MAGIC
+-- MAGIC   // Build zones
+-- MAGIC   CONFIG.zones.forEach((z, i) => {
+-- MAGIC     const zone = document.createElement("div");
+-- MAGIC     zone.className = "ddx-zone";
+-- MAGIC     zone.setAttribute("data-zone", z.id);
+-- MAGIC
+-- MAGIC     const accentKey = CONFIG.zoneAccentOrder[i % CONFIG.zoneAccentOrder.length];
+-- MAGIC     const accent = CONFIG.palette[accentKey] || CONFIG.palette.blue600;
+-- MAGIC     zone.style.setProperty("--zone-color", accent);
+-- MAGIC
+-- MAGIC     const label = document.createElement("div");
+-- MAGIC     label.className = "ddx-label";
+-- MAGIC     label.textContent = z.label;
+-- MAGIC
+-- MAGIC     const drop = document.createElement("div");
+-- MAGIC     drop.className = "ddx-drop";
+-- MAGIC     drop.setAttribute("data-dropzone", z.id);
+-- MAGIC     drop.setAttribute("aria-label", z.label);
+-- MAGIC
+-- MAGIC     zone.appendChild(label);
+-- MAGIC     zone.appendChild(drop);
+-- MAGIC     grid.appendChild(zone);
+-- MAGIC   });
+-- MAGIC
+-- MAGIC   function buildExplanation(){
+-- MAGIC     const title = CONFIG.explain?.title || "How to reason about this";
+-- MAGIC     const intro = CONFIG.explain?.introHtml || "";
+-- MAGIC
+-- MAGIC     let html = intro;
+-- MAGIC
+-- MAGIC     for (const z of CONFIG.zones){
+-- MAGIC       const authored = CONFIG.explain?.zones?.[z.id];
+-- MAGIC       html += `<div style="margin-top:12px"><strong>${z.label}</strong></div>`;
+-- MAGIC
+-- MAGIC       if (authored){
+-- MAGIC         html += `<div>${authored}</div>`;
+-- MAGIC       }
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     return { title, html };
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   // Controls
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "ddx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "ddx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "ddx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "ddx-msg";
+-- MAGIC   msg.textContent = "Drag tags into zones. Validate when done.";
+-- MAGIC
+-- MAGIC   const btnExplain = document.createElement("button");
+-- MAGIC   btnExplain.className = "ddx-btn";
+-- MAGIC   btnExplain.textContent = "Help";
+-- MAGIC   btnExplain.addEventListener("click", () => {
+-- MAGIC     const out = buildExplanation();
+-- MAGIC     overlay.querySelector(".ddx-modal-title").textContent = out.title;
+-- MAGIC     overlayBody.innerHTML = out.html;
+-- MAGIC     overlay.classList.remove("hidden");
+-- MAGIC   });
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC   controls.appendChild(btnExplain);
+-- MAGIC
+-- MAGIC
+-- MAGIC   const overlay = document.createElement("div");
+-- MAGIC   overlay.className = "ddx-overlay hidden";
+-- MAGIC   overlay.innerHTML = `
+-- MAGIC     <div class="ddx-modal">
+-- MAGIC       <div class="ddx-modal-title">How to reason about this</div>
+-- MAGIC       <div class="ddx-modal-body"></div>
+-- MAGIC       <div class="ddx-modal-actions">
+-- MAGIC         <button class="ddx-btn">Close</button>
+-- MAGIC         <button class="ddx-btn primary">Reset & Try Again</button>
+-- MAGIC       </div>
+-- MAGIC     </div>
+-- MAGIC   `;
+-- MAGIC   const overlayBody = overlay.querySelector(".ddx-modal-body");
+-- MAGIC   const overlayCloseBtn = overlay.querySelector(".ddx-modal-actions .ddx-btn");
+-- MAGIC   const overlayResetBtn = overlay.querySelector(".ddx-modal-actions .primary");
+-- MAGIC
+-- MAGIC   overlayCloseBtn.addEventListener("click", () => {
+-- MAGIC     overlay.classList.add("hidden");
+-- MAGIC   });
+-- MAGIC
+-- MAGIC   overlayResetBtn.addEventListener("click", () => {
+-- MAGIC     overlay.classList.add("hidden");
+-- MAGIC     reset(); // reuse your existing reset logic
+-- MAGIC   });
+-- MAGIC
+-- MAGIC   wrap.appendChild(bank);
+-- MAGIC   wrap.appendChild(grid);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   wrap.appendChild(overlay);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   // Helpers
+-- MAGIC   const zoneMap = new Map(CONFIG.zones.map(z => [z.id, z]));
+-- MAGIC   const tagMap  = new Map(CONFIG.tags.map(t => [t.id, t]));
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearZoneStates(){
+-- MAGIC     root.querySelectorAll(".ddx-zone").forEach(z => z.classList.remove("ok","bad"));
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function makeTag(t){
+-- MAGIC     const el = document.createElement("div");
+-- MAGIC     el.className = "ddx-tag";
+-- MAGIC     el.draggable = true;
+-- MAGIC     el.dataset.id = t.id;
+-- MAGIC     if (t.kind) el.dataset.kind = t.kind;
+-- MAGIC
+-- MAGIC     const dot = document.createElement("span");
+-- MAGIC     dot.className = "ddx-dot";
+-- MAGIC     const label = document.createElement("span");
+-- MAGIC     label.textContent = t.label;
+-- MAGIC
+-- MAGIC     el.appendChild(dot);
+-- MAGIC     el.appendChild(label);
+-- MAGIC
+-- MAGIC     el.addEventListener("dragstart", (e) => {
+-- MAGIC       // Custom drag ghost (keep pill shape)
+-- MAGIC       const ghost = el.cloneNode(true);
+-- MAGIC       ghost.style.position = "absolute";
+-- MAGIC       ghost.style.top = "-1000px";
+-- MAGIC       ghost.style.left = "-1000px";
+-- MAGIC       ghost.style.pointerEvents = "none";
+-- MAGIC       ghost.style.opacity = "0.95";
+-- MAGIC       document.body.appendChild(ghost);
+-- MAGIC
+-- MAGIC       const rect = el.getBoundingClientRect();
+-- MAGIC       e.dataTransfer.setDragImage(ghost, rect.width / 2, rect.height / 2);
+-- MAGIC       setTimeout(() => ghost.remove(), 0);
+-- MAGIC
+-- MAGIC       e.dataTransfer.setData("text/plain", t.id);
+-- MAGIC       e.dataTransfer.effectAllowed = "move";
+-- MAGIC
+-- MAGIC       // If user is fixing things, clear zone feedback
+-- MAGIC       clearZoneStates();
+-- MAGIC       msg.classList.remove("good","bad");
+-- MAGIC     });
+-- MAGIC
+-- MAGIC     return el;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function attachDropzone(zoneEl){
+-- MAGIC     zoneEl.addEventListener("dragover", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zoneEl.classList.add("over");
+-- MAGIC       e.dataTransfer.dropEffect = "move";
+-- MAGIC     });
+-- MAGIC     zoneEl.addEventListener("dragleave", () => zoneEl.classList.remove("over"));
+-- MAGIC     zoneEl.addEventListener("drop", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zoneEl.classList.remove("over");
+-- MAGIC       const id = e.dataTransfer.getData("text/plain");
+-- MAGIC       const tag = root.querySelector(`.ddx-tag[data-id="${id}"]`);
+-- MAGIC       if (tag) zoneEl.appendChild(tag);
+-- MAGIC     });
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function consumeRequired(available, spec){
+-- MAGIC     for (const req of spec || []){
+-- MAGIC       if (typeof req === "string"){
+-- MAGIC         if (!available.has(req)) return false;
+-- MAGIC         available.delete(req);
+-- MAGIC       } else if (Array.isArray(req)){
+-- MAGIC         const pick = req.find(tid => available.has(tid));
+-- MAGIC         if (!pick) return false;
+-- MAGIC         available.delete(pick);
+-- MAGIC       } else {
+-- MAGIC         return false;
+-- MAGIC       }
+-- MAGIC     }
+-- MAGIC     return true;
+-- MAGIC   }
+-- MAGIC   function consumeAllowance(leftovers, allowance){
+-- MAGIC     for (const req of allowance || []){
+-- MAGIC       if (typeof req === "string"){
+-- MAGIC         if (leftovers.has(req)) leftovers.delete(req);
+-- MAGIC       } else if (Array.isArray(req)){
+-- MAGIC         const pick = req.find(tid => leftovers.has(tid));
+-- MAGIC         if (pick) leftovers.delete(pick);
+-- MAGIC       } else {
+-- MAGIC         return false; // invalid config
+-- MAGIC       }
+-- MAGIC     }
+-- MAGIC     return true;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function zoneMeetsExpectations(zoneId){
+-- MAGIC     const zoneCfg = zoneMap.get(zoneId);
+-- MAGIC     if (!zoneCfg) return false;
+-- MAGIC
+-- MAGIC     const drop = root.querySelector(`.ddx-drop[data-dropzone="${zoneId}"]`);
+-- MAGIC     const placed = Array.from(drop.querySelectorAll(".ddx-tag"))
+-- MAGIC       .map(el => el.dataset.id)
+-- MAGIC       .filter(Boolean);
+-- MAGIC
+-- MAGIC     // available starts as ALL tags in the zone
+-- MAGIC     const available = new Set(placed);
+-- MAGIC
+-- MAGIC     // 1) Required expectations must be satisfied
+-- MAGIC     if (!consumeRequired(available, zoneCfg.expects || [])) return false;
+-- MAGIC
+-- MAGIC     // 2) Now "available" is exactly the leftover extras
+-- MAGIC     const extraPolicy =
+-- MAGIC       (zoneCfg.allow_extra !== undefined) ? zoneCfg.allow_extra :
+-- MAGIC       (CONFIG.allow_extra_default !== undefined) ? CONFIG.allow_extra_default :
+-- MAGIC       false;
+-- MAGIC
+-- MAGIC     if (extraPolicy === true) return true;               // any extras allowed
+-- MAGIC     if (extraPolicy === false) return available.size===0; // no extras allowed
+-- MAGIC
+-- MAGIC     // allowance spec: only SOME extras allowed, up to capacity
+-- MAGIC     const leftovers = new Set(available); // keep original extras intact for debugging
+-- MAGIC     if (!consumeAllowance(leftovers, extraPolicy)) return false;
+-- MAGIC
+-- MAGIC     // If anything remains, it's an extra that wasn't allowed
+-- MAGIC     return leftovers.size === 0;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearZoneStates();
+-- MAGIC
+-- MAGIC     let allOk = true;
+-- MAGIC
+-- MAGIC     for (const z of CONFIG.zones){
+-- MAGIC       const ok = zoneMeetsExpectations(z.id);
+-- MAGIC       const zoneCard = root.querySelector(`.ddx-zone[data-zone="${z.id}"]`);
+-- MAGIC       if (!zoneCard) continue;
+-- MAGIC
+-- MAGIC       if (ok) zoneCard.classList.add("ok");
+-- MAGIC       else { zoneCard.classList.add("bad"); allOk = false; }
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allOk ? "✅ All zones satisfy their requirements." : "Some zones are incomplete or incorrect. Adjust and validate again.", allOk ? "good" : "bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     // Return all tags from every dropzone back to bank (bank can have distractors too)
+-- MAGIC     root.querySelectorAll('.ddx-drop[data-dropzone]:not([data-dropzone="bank"]) .ddx-tag')
+-- MAGIC       .forEach(tag => bank.appendChild(tag));
+-- MAGIC
+-- MAGIC     clearZoneStates();
+-- MAGIC     setMsg("Reset. Drag again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   // Init
+-- MAGIC   bank.innerHTML = "";
+-- MAGIC   CONFIG.tags.forEach(t => bank.appendChild(makeTag(t)));
+-- MAGIC   root.querySelectorAll(".ddx-drop").forEach(attachDropzone);
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC &copy; <span id="dbx-year"></span> Databricks, Inc. All rights reserved. Apache, Apache Spark, Spark, the Spark Logo, Apache Iceberg, Iceberg, and the Apache Iceberg logo are trademarks of the <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a>.<br/><br/><a href="https://databricks.com/privacy-policy" target="_blank">Privacy Policy</a> | <a href="https://databricks.com/terms-of-use" target="_blank">Terms of Use</a> | <a href="https://help.databricks.com/" target="_blank">Support</a>
+-- MAGIC <script>
+-- MAGIC   document.getElementById("dbx-year").textContent = new Date().getFullYear();
+-- MAGIC </script>
