@@ -1,0 +1,22 @@
+# One task per domain catalog, all running the same SQL file with a different
+# `catalog` parameter. A new domain is one more task block.
+resources:
+  jobs:
+    create_security_functions:
+      name: create-security-functions-${var.environment}
+      tasks:
+        - task_key: sales
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ../src/security_functions.sql
+            parameters:
+              catalog: sales_${var.environment}
+
+        - task_key: marketing
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ../src/security_functions.sql
+            parameters:
+              catalog: marketing_${var.environment}

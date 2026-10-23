@@ -1,0 +1,28 @@
+# Stage 2 of the governance rollout: creates the mask and row-filter functions
+# that the ABAC policies in ../governance call. Terraform cannot create SQL
+# functions, so a job runs the DDL.
+#
+# No workspace host here. CI exports DATABRICKS_HOST from
+# `terraform output -raw workspace_url` (platform), so a new environment needs
+# no edit to this file. See README.md for the full sequence.
+
+bundle:
+  name: governance
+
+include:
+  - resources/*.yml
+
+variables:
+  environment:
+    description: dev or prod; suffixes the catalog names (sales_dev).
+  warehouse_id:
+    description: SQL warehouse that runs the DDL. `terraform output -raw warehouse_id` in platform.
+
+targets:
+  dev:
+    default: true
+    variables:
+      environment: dev
+  prod:
+    variables:
+      environment: prod

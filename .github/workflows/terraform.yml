@@ -8,6 +8,8 @@ on:
       - "platform/**"
       - "shared/**"
       - "config/**"
+      - "governance/**"
+      - "governance-bundle/**"
       - ".github/workflows/terraform.yml"
   pull_request:
     branches: [main]
@@ -174,7 +176,7 @@ jobs:
   # "production" GitHub Environment (required reviewer). ---
 
   plan-prod:
-    needs: apply-dev
+    needs: [apply-dev, governance-dev]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -257,3 +259,136 @@ jobs:
           name: tfplan-prod
           path: platform
       - run: terraform apply -input=false -lock-timeout=5m tfplan
+
+  # --- Governance (masking functions and ABAC policies) ---
+  # Order: platform apply -> bundle deploys and runs the function job ->
+  # governance root applies the policies. The workspace URL and warehouse id are
+  # read from platform's state, so nothing about the workspace is hardcoded here.
+
+  governance-validate:
+    needs: fmt-check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: governance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # No backend and no credentials: this only checks the configuration.
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  governance-dev:
+    needs: apply-dev
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      DATABRICKS_AUTH_TYPE: github-oidc
+      DATABRICKS_CLIENT_ID: 5e93b219-9bc5-4a7b-8956-40d6c3648c1d # sp-terraform-dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # Pin to a release tag once you have chosen one.
+      - uses: databricks/setup-cli@main
+
+      # Outputs come from the state apply-dev just wrote. Masking keeps the URL
+      # out of logs; the warehouse id is not secret.
+      - name: Read workspace URL and warehouse id from platform state
+        working-directory: platform
+        run: |
+          terraform init -input=false -backend-config=../config/dev/backend.hcl
+          WORKSPACE_URL=$(terraform output -raw workspace_url)
+          WAREHOUSE_ID=$(terraform output -raw warehouse_id)
+          if [ -z "$WORKSPACE_URL" ] || [ -z "$WAREHOUSE_ID" ]; then
+            echo "::error::platform has no workspace_url or warehouse_id output (is enable_compute on?)"
+            exit 1
+          fi
+          echo "::add-mask::$WORKSPACE_URL"
+          {
+            echo "DATABRICKS_HOST=https://$WORKSPACE_URL"
+            echo "TF_VAR_workspace_url=https://$WORKSPACE_URL"
+            echo "WAREHOUSE_ID=$WAREHOUSE_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy bundle and create the functions
+        working-directory: governance-bundle
+        run: |
+          databricks bundle deploy -t dev --var="warehouse_id=$WAREHOUSE_ID"
+          databricks bundle run create_security_functions -t dev --var="warehouse_id=$WAREHOUSE_ID"
+
+      - name: Plan and apply the policies
+        working-directory: governance
+        run: |
+          terraform init -input=false -backend-config=../config/dev/governance-backend.hcl
+          terraform plan -no-color -input=false -var-file=../config/common.tfvars -var-file=../config/dev/values.tfvars -out=tfplan -lock-timeout=5m
+          terraform apply -input=false -lock-timeout=5m tfplan
+
+  # Prod stays off until the repository variable GOVERNANCE_PROD_ENABLED is
+  # "true". Before that: enable_security_schema in config/prod/values.tfvars, and
+  # a Databricks federation policy on sp-terraform-prod so github-oidc works (the
+  # prod jobs above use no Databricks auth today).
+  governance-prod:
+    needs: apply-prod
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.GOVERNANCE_PROD_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production   # approval gate, as for apply-prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      DATABRICKS_AUTH_TYPE: github-oidc
+      DATABRICKS_CLIENT_ID: f922b7ef-fa80-4230-b1aa-1c9798fe8ebf # sp-terraform-prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: databricks/setup-cli@main
+
+      - name: Read workspace URL and warehouse id from platform state
+        working-directory: platform
+        run: |
+          terraform init -input=false -backend-config=../config/prod/backend.hcl
+          WORKSPACE_URL=$(terraform output -raw workspace_url)
+          WAREHOUSE_ID=$(terraform output -raw warehouse_id)
+          if [ -z "$WORKSPACE_URL" ] || [ -z "$WAREHOUSE_ID" ]; then
+            echo "::error::platform has no workspace_url or warehouse_id output (prod needs enable_compute for a warehouse)"
+            exit 1
+          fi
+          echo "::add-mask::$WORKSPACE_URL"
+          {
+            echo "DATABRICKS_HOST=https://$WORKSPACE_URL"
+            echo "TF_VAR_workspace_url=https://$WORKSPACE_URL"
+            echo "WAREHOUSE_ID=$WAREHOUSE_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy bundle and create the functions
+        working-directory: governance-bundle
+        run: |
+          databricks bundle deploy -t prod --var="warehouse_id=$WAREHOUSE_ID"
+          databricks bundle run create_security_functions -t prod --var="warehouse_id=$WAREHOUSE_ID"
+
+      # -var overrides config/prod/values.tfvars, which pins azure-cli for local use.
+      - name: Plan and apply the policies
+        working-directory: governance
+        run: |
+          terraform init -input=false -backend-config=../config/prod/governance-backend.hcl
+          terraform plan -no-color -input=false -var-file=../config/common.tfvars -var-file=../config/prod/values.tfvars -var="databricks_auth_type=github-oidc" -out=tfplan -lock-timeout=5m
+          terraform apply -input=false -lock-timeout=5m tfplan

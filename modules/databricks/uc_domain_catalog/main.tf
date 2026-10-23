@@ -19,6 +19,8 @@ resource "databricks_catalog" "this" {
   # Needed for databricks_workspace_binding; OPEN is visible from every workspace.
   isolation_mode = "ISOLATED"
 
+  enable_predictive_optimization = var.enable_predictive_optimization
+
   # Owned by the governance group, not the operating group: whoever writes the
   # data must not also decide who can access it (separation of duties).
   owner = local.data_governance_group_name
@@ -108,7 +110,11 @@ resource "databricks_grants" "catalog" {
   # tables belong to pipelines, not Terraform.
   grant {
     principal  = var.ci_service_principal_name # sp-terraform-dev / sp-terraform-prod
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "READ METADATA"]
+    privileges = concat(
+      ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "READ METADATA"],
+      # MANAGE lets the governance root create ABAC policies on this catalog.
+      var.enable_security_schema ? ["MANAGE"] : [],
+    )
   }
 }
 
@@ -156,4 +162,59 @@ resource "databricks_rfa_access_request_destinations" "catalog" {
       destination_type = "EMAIL"
     }
   ]
+}
+
+# Tags that later ABAC policies and discovery key on. The tag keys are defined
+# once per account (platform/governance.tf), not here. `layer` values must match
+# that tag policy.
+resource "databricks_entity_tag_assignment" "catalog_domain" {
+  count = var.enable_tags ? 1 : 0
+
+  entity_type = "catalogs"
+  entity_name = databricks_catalog.this.name
+  tag_key     = "domain"
+  tag_value   = var.domain
+}
+
+resource "databricks_entity_tag_assignment" "silver_layer" {
+  count = var.enable_tags ? 1 : 0
+
+  entity_type = "schemas"
+  entity_name = "${databricks_catalog.this.name}.${databricks_schema.silver.name}"
+  tag_key     = "layer"
+  tag_value   = "silver"
+}
+
+resource "databricks_entity_tag_assignment" "gold_layer" {
+  count = var.enable_tags ? 1 : 0
+
+  entity_type = "schemas"
+  entity_name = "${databricks_catalog.this.name}.${databricks_schema.gold.name}"
+  tag_key     = "layer"
+  tag_value   = "gold"
+}
+
+# Home of the mask and row-filter functions, created by the governance bundle
+# (governance-bundle/) and referenced by the ABAC policies in governance/.
+# Kept apart from silver and gold so no consumer grant reaches it by inheritance.
+resource "databricks_schema" "security" {
+  count = var.enable_security_schema ? 1 : 0
+
+  catalog_name = databricks_catalog.this.name
+  name         = "security"
+  owner        = local.data_governance_group_name
+  comment      = "Mask and row-filter functions for the ${var.domain} catalog; no data."
+
+  depends_on = [databricks_grants.catalog]
+}
+
+resource "databricks_grants" "security_schema" {
+  count = var.enable_security_schema ? 1 : 0
+
+  schema = databricks_schema.security[0].id
+
+  grant {
+    principal  = var.ci_service_principal_name
+    privileges = ["USE_SCHEMA", "CREATE_FUNCTION", "EXECUTE"]
+  }
 }
