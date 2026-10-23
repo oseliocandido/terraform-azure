@@ -60,6 +60,9 @@ module "unity_catalog_sales" {
   storage_credential_name   = module.uc_storage.storage_credential_name
   catalog_storage_root      = "abfss://${module.datalake.managed_container_name}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
 
+  engineers_can_modify = var.engineers_can_modify
+  access_request_email = var.access_request_email
+
   depends_on = [databricks_grants.metastore_admins, module.uc_storage]
 }
 
@@ -77,6 +80,9 @@ module "unity_catalog_marketing" {
   enable_grants             = var.enable_grants
   storage_credential_name   = module.uc_storage.storage_credential_name
   catalog_storage_root      = "abfss://${module.datalake.additional_managed_container_names["marketing"]}@${module.datalake.storage_account_name}.dfs.core.windows.net/"
+
+  engineers_can_modify = var.engineers_can_modify
+  access_request_email = var.access_request_email
 
   depends_on = [databricks_grants.metastore_admins, module.uc_storage]
 }

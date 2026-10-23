@@ -48,3 +48,15 @@ variable "enable_grants" {
   default     = false
   description = "Gates the grants to this domain's business groups, which must exist in the account. CI's grants are not gated."
 }
+
+variable "engineers_can_modify" {
+  type        = bool
+  default     = false
+  description = "Give the data-engineers group MODIFY on every table in the catalog. On in dev; off where a pipeline service principal should own production writes."
+}
+
+variable "access_request_email" {
+  type        = string
+  default     = null
+  description = "Email that receives access requests for this catalog; null leaves the destination unset. Use a shared mailbox."
+}

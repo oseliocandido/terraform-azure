@@ -84,8 +84,12 @@ resource "databricks_volume" "landing" {
 
   # Explicit group owner: otherwise the creating identity owns it and nobody
   # else can read the files.
-  owner            = local.platform_group_name
-  storage_location = each.value
+  owner = local.platform_group_name
+
+  # A subfolder, never the location root: an external volume at the root of an
+  # external location can conflict with the location's own path. Source systems
+  # must write under landing/. Changing this path replaces the volume.
+  storage_location = "${trimsuffix(each.value, "/")}/landing/"
   comment          = "Ingestion landing zone for ${each.key} source files. Read-only from Databricks; the source system writes here directly."
 }
 

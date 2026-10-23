@@ -87,9 +87,12 @@ whether silver and gold need any lifecycle handling.
 
 ## 6. Optional hardening
 
-- **Bind the credential and external locations to workspaces.** They are `OPEN`
-  today; `databricks_workspace_binding` (`storage_credential` / `external_location`)
-  can bind them. Catalog roots are already covered by their catalog's binding.
+- **Replace the access-request email.** `access_request_email` in
+  `config/common.tfvars` is a personal address; use a shared mailbox before prod.
+  The destination resource is Public Preview.
+- **Create the `landing/` folder in Terraform.** The landing volumes point at
+  `<container>/landing/`, but nothing creates the folder. If Databricks rejects a
+  volume on a missing path, add an `azurerm_storage_data_lake_gen2_path`.
 - **Isolate the default `main` catalog.** It is `OPEN`, owned by a person, and gives
   `account users` `USE_CATALOG`, so every workspace on the metastore sees it.
 - **Narrow CI's metastore privileges.** Each CI group holds `CREATE_CATALOG`,
@@ -111,7 +114,8 @@ whether silver and gold need any lifecycle handling.
   `tflint` and `checkov` or `trivy config`.
 - **Fine-grained DML privileges.** Engineers get blanket `MODIFY` because metastore
   privilege version 1.0 rejects `INSERT`/`UPDATE`/`DELETE` at catalog level. A newer
-  version would allow a dev/prod `DELETE` distinction.
+  version would allow a dev/prod `DELETE` distinction. `engineers_can_modify` already
+  keeps `MODIFY` off in prod (dev sets it true).
 
 ## 7. Accepted risk: `terraform destroy` ordering
 

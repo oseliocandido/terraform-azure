@@ -299,7 +299,7 @@ so the group needs no workspace membership.</p>
 <tr>
 <td><code>databricks_storage_credential.analytics</code></td>
 <td><code>cred-analytics-&lt;env&gt;</code>, wraps the access connector</td>
-<td>One per environment</td>
+<td>One per environment. <code>ISOLATION_MODE_ISOLATED</code>, auto-bound to the creating workspace (same on the bronze, landing and ingestion-managed locations)</td>
 </tr>
 <tr>
 <td><code>databricks_external_location.bronze</code></td>
@@ -351,8 +351,8 @@ so the group needs no workspace membership.</p>
 </tr>
 <tr>
 <td><code>databricks_volume.landing["&lt;system&gt;"]</code></td>
-<td>EXTERNAL volume <code>&lt;system&gt;_landing</code> over a landing location</td>
-<td>Group-owned</td>
+<td>EXTERNAL volume <code>&lt;system&gt;_landing</code> over the <code>landing/</code> folder of a landing location</td>
+<td>Group-owned. A subfolder, not the location root; changing the path replaces the volume</td>
 </tr>
 <tr>
 <td><code>databricks_volume.checkpoints</code></td>
@@ -395,7 +395,7 @@ so the group needs no workspace membership.</p>
 <tr>
 <td><code>databricks_catalog.this</code></td>
 <td><code>&lt;domain&gt;_&lt;env&gt;</code>, for example <code>sales_dev</code></td>
-<td><code>ISOLATED</code>, storage root is the domain's <code>managed-&lt;domain&gt;</code> container</td>
+<td><code>ISOLATED</code>, storage root is the domain's <code>managed-&lt;domain&gt;</code> container (its managed external location is isolated too)</td>
 </tr>
 <tr>
 <td><code>databricks_workspace_binding.this</code></td>
@@ -419,7 +419,7 @@ so the group needs no workspace membership.</p>
 </tr>
 <tr>
 <td><code>databricks_grants.catalog</code></td>
-<td>Stakeholders and analysts: <code>USE_CATALOG</code>. Engineers: <code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code>, <code>MODIFY</code>. CI: <code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>CREATE_SCHEMA</code>, <code>READ METADATA</code></td>
+<td>Stakeholders and analysts: <code>USE_CATALOG</code>. Engineers: <code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code>, plus <code>MODIFY</code> when <code>engineers_can_modify</code> (dev). <code>account users</code>: <code>BROWSE</code>. CI: <code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>CREATE_SCHEMA</code>, <code>READ METADATA</code></td>
 <td>Business groups gated by <code>enable_grants</code>; CI always on</td>
 </tr>
 <tr>
@@ -434,7 +434,7 @@ so the group needs no workspace membership.</p>
 </tr>
 </tbody>
 </table></div>
-<p>Engineers use blanket <code>MODIFY</code> because metastore privilege version 1.0 rejects <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>
+<p><code>databricks_rfa_access_request_destinations.catalog</code> (Public Preview) sends access requests for the catalog to <code>access_request_email</code>; it is skipped when the variable is null. Engineers use blanket <code>MODIFY</code> (gated by <code>engineers_can_modify</code>, on in dev) because metastore privilege version 1.0 rejects <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>
 at catalog level. <code>databricks_grants</code> is authoritative, so Terraform is the single source of truth.
 <code>enable_grants</code> gates business-group grants only (on in dev, off in prod until its first apply).</p>
 <h3><code>modules/databricks/compute</code> (once per environment, dev only so far)</h3>
@@ -698,8 +698,9 @@ Grants to the domain groups exist only where <code>enable_grants</code> is on (d
 <tr><td>Storage credential <code>cred-analytics-&lt;env&gt;</code></td><td>CI group</td><td><code>CREATE_EXTERNAL_LOCATION</code></td></tr>
 <tr><td>Bronze, landing and ingestion-managed locations</td><td>CI group</td><td><code>CREATE_EXTERNAL_TABLE</code></td></tr>
 <tr><td>Domain managed location</td><td>CI group</td><td><code>CREATE_EXTERNAL_TABLE</code>, <code>CREATE MANAGED STORAGE</code></td></tr>
-<tr><td rowspan="3"><code>&lt;d&gt;_&lt;env&gt;</code> catalog</td><td>data engineers</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code>, <code>MODIFY</code></td></tr>
+<tr><td rowspan="3"><code>&lt;d&gt;_&lt;env&gt;</code> catalog</td><td>data engineers</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code>; <code>MODIFY</code> in dev only</td></tr>
 <tr><td>analysts, stakeholders</td><td><code>USE_CATALOG</code></td></tr>
+<tr><td>account users</td><td><code>BROWSE</code></td></tr>
 <tr><td>CI service principal</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>CREATE_SCHEMA</code>, <code>READ METADATA</code></td></tr>
 <tr><td><code>gold</code> schema</td><td>analysts, stakeholders</td><td><code>USE_SCHEMA</code>, <code>SELECT</code></td></tr>
 <tr><td><code>silver</code> schema</td><td>analysts</td><td><code>USE_SCHEMA</code>, <code>SELECT</code></td></tr>
