@@ -1,0 +1,561 @@
+-- Databricks notebook source
+-- MAGIC %md-sandbox
+-- MAGIC <div style="display:flex; align-items:center; padding:10px 18px; background:#F8F9FA; border-bottom:1px solid #E0E0E0; gap:10px;">
+-- MAGIC   <img src="https://cdn.simpleicons.org/databricks/FF3621" width="22" height="22"/>
+-- MAGIC   <div style="font-size:14px; color:#666; white-space:nowrap;">
+-- MAGIC     <span style="font-weight:600; color:#333;">Academy</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Data Security & Governance Delivery Expert</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Discover</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span style="font-weight:600; color:#eb1900;">Migration Planning</span>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC
+-- MAGIC <div style="text-align: center; line-height: 0; padding-top: 9px;">
+-- MAGIC   <img
+-- MAGIC     src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png"
+-- MAGIC     alt="Databricks Learning"
+-- MAGIC   >
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC # Migration Planning
+-- MAGIC
+-- MAGIC Before beginning any UC migration project, let's cover some of the requirements that need to be satisfied before we begin.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       This notebook is not supported for execution on Databricks Academy provided workspaces. The material is intended to be a study guide, to be run in your own sandbox environments if you would like. Databricks Academy does not provide an account with a live HMS, administrator level access, or an AWS account, all of which would be required to perform all the activities in these notebooks.<p>
+-- MAGIC       <strong>The notebooks flagged as labs in the agenda can be run in a Databricks Academy provided Vocareum workspace and allow you to put the concepts into practice.</strong>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## A. Prerequisites
+-- MAGIC
+-- MAGIC To successfully migrate from Hive Metastore (HMS) to Unity Catalog (UC), there are crucial prerequisites involving IAM, storage credentials, networking, and service principals. Each of these is essential for a secure, reliable, and compliant migration process.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A.1 IAM (Identity and Access Management)
+-- MAGIC
+-- MAGIC Collaborate with the cloud and account admins to ensure the following:
+-- MAGIC - IAM roles (AWS), Managed Identities/Service Principals (Azure), or GCP service accounts must be set up with precise least-privilege access.
+-- MAGIC - For AWS: IAM roles should have the correct trust and permissions policies. The policies must include self-assume capabilities and cover all storage actions required for UC managed and external tables. Cross-account trust is necessary if data spans multiple AWS accounts.
+-- MAGIC - For Azure: Either a Managed Identity (preferred) or a Service Principal must have proper roles (e.g. Storage Blob Data Contributor at the required storage and/or container level). 
+-- MAGIC - The IAM identities must be mapped to Unity Catalog’s storage credentials to enable secure access to underlying data.
+-- MAGIC
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A2. Storage
+-- MAGIC
+-- MAGIC Collaborate with the cloud and account admins initially, and on an ongoing basis throughout the initial stages of the migration, to ensure the following:
+-- MAGIC - Storage credentials in Unity Catalog abstract away cloud-specific principals and enable fine-grained, centralized control. They must be created and tested in advance.
+-- MAGIC - Each external location in UC must have an associated storage credential mapping, ensuring only authorized access.
+-- MAGIC - On AWS, be sure to configure roles with KMS/CMK access if encryption is enabled. 
+-- MAGIC - On Azure, check for any firewalls, storage networking restrictions, and Managed Identity/Service Principal eligibility. 
+-- MAGIC - All paths/references in UC must have valid, active storage credentials. Missing or misconfigured credentials are among the most common root causes of migration issues. 
+-- MAGIC
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A3. Networking
+-- MAGIC
+-- MAGIC Collaborate with the cloud and account admins to:
+-- MAGIC - Validate that network routes, firewalls, VNet/subnet service endpoints, and security groups allow secure connectivity between Databricks workspaces, the UC control plane, and storage accounts/buckets.
+-- MAGIC - For restricted networks, ensure public endpoints are allowed if needed, or set up managed access via managed identities/service connectors (e.g., for Azure Data Lake Storage).
+-- MAGIC - In serverless environments, confirm firewall rules allow the necessary Databricks endpoints/subnets.
+-- MAGIC - For AWS, restrict Deny policies in the S3 bucket IAM to avoid blocking UC-managed network flows. 
+-- MAGIC - On Azure with private links, ensure correct configuration of access connectors and storage firewall exceptions.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A4. Service Principals & Identity
+-- MAGIC
+-- MAGIC Collaborate with the cloud, identity, account, and workspace admins initially and during the migration to ensure that:
+-- MAGIC - Service principals (Azure, Databricks) or service accounts (GCP) are recommended for production jobs and automation.
+-- MAGIC - Assign service principal owners to jobs, pipelines, and automation tasks to separate human from system/process access, enforce security, and simplify auditing. 
+-- MAGIC - Ensure all service principals are created at the account level and added to workspaces before migration begins. 
+-- MAGIC - Use SCIM/IdP federation to sync users, groups, and service principals for consistent entitlement management.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### A5. Recap
+-- MAGIC
+-- MAGIC Recommended prerequisite checks:
+-- MAGIC
+-- MAGIC <style>
+-- MAGIC table{
+-- MAGIC   border-collapse: separate;
+-- MAGIC   border-spacing: 0;
+-- MAGIC   width: auto;
+-- MAGIC   max-width: 100%;
+-- MAGIC   margin: 16px 0;
+-- MAGIC   float: none;
+-- MAGIC   clear: both;
+-- MAGIC   display: table;
+-- MAGIC   font-size: 0.95em;
+-- MAGIC   line-height: 1.35;
+-- MAGIC   background: #ffffff;
+-- MAGIC   border-radius: 8px;
+-- MAGIC   overflow: hidden;
+-- MAGIC   box-shadow: 0 0 0 1px #303F47;
+-- MAGIC   margin-left: 2px !important;
+-- MAGIC   margin-right: 0px !important;
+-- MAGIC   box-sizing: border-box !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC thead th{
+-- MAGIC   background: #DADADA;
+-- MAGIC   color: #1B3139;
+-- MAGIC   font-weight: 600;
+-- MAGIC   text-align: left;
+-- MAGIC   padding: 10px 12px;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody td{
+-- MAGIC   padding: 10px 12px;
+-- MAGIC   border-top: 1px solid #DCE0E2;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(odd){
+-- MAGIC   background: #FFFFFF !important;
+-- MAGIC }
+-- MAGIC
+-- MAGIC tbody tr:nth-child(even){
+-- MAGIC   background: #F5F3F2 !important;
+-- MAGIC }
+-- MAGIC </style>
+-- MAGIC <table>
+-- MAGIC   <thead>
+-- MAGIC     <tr>
+-- MAGIC       <th>Area</th>
+-- MAGIC       <th>Prerequisite</th>
+-- MAGIC       <th>Details</th>
+-- MAGIC     </tr>
+-- MAGIC   </thead>
+-- MAGIC   <tbody>
+-- MAGIC     <tr>
+-- MAGIC       <td>IAM</td>
+-- MAGIC       <td>Proper roles/policies set up</td>
+-- MAGIC       <td>Cross-account, KMS if needed</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>Storage Credentials</td>
+-- MAGIC       <td>Created and mapped to storage locations</td>
+-- MAGIC       <td>Valid, active, tested</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>Networking</td>
+-- MAGIC       <td>Network connectivity verified</td>
+-- MAGIC       <td>Proper endpoints/firewalls</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>Service Principals</td>
+-- MAGIC       <td>Defined, assigned, entitlements tested</td>
+-- MAGIC       <td>Synced via SCIM/IdP</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>Group/Access Model</td>
+-- MAGIC       <td>Account-level groups and ACLs set up</td>
+-- MAGIC       <td>Not workspace-local only</td>
+-- MAGIC     </tr>
+-- MAGIC     <tr>
+-- MAGIC       <td>Migration Tooling</td>
+-- MAGIC       <td>UCX/Assessment tools run and results reviewed</td>
+-- MAGIC       <td/>
+-- MAGIC     </tr>
+-- MAGIC   </tbody>
+-- MAGIC </table>
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       <strong>Key Pitfalls to Avoid</strong>
+-- MAGIC       <ul>
+-- MAGIC         <li>Missing storage credentials for a path or incomplete IAM policies.</li>
+-- MAGIC         <li>Network restrictions or firewalls that block workspace-to-storage or control plane connectivity.</li>
+-- MAGIC         <li>Trying to use DBFS root-mounted paths or unsupported storage types (e.g., Azure Gen1, legacy mounts).</li>
+-- MAGIC         <li>Workload jobs or services running as end users rather than service principals.</li>
+-- MAGIC         <li>Workspace-local groups not migrated to account-level before cutover.</li>
+-- MAGIC       </ul>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC
+-- MAGIC
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## B. Upgrade Plan
+-- MAGIC In this section, we provide a pragmatic, tested blueprint you can reuse in any UC migration project.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### B1. Workflow
+-- MAGIC
+-- MAGIC <div style="display:flex; justify-content:center;">
+-- MAGIC <svg id="dsgsvg8" width="100%" xmlns="http://www.w3.org/2000/svg" class="flowchart" style="display:block;margin-left:auto;margin-right:auto;font-family:Arial, Helvetica, sans-serif !important;max-width: 436.671875px;" viewBox="0 0 436.671875 566.6937255859375" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#dsgsvg8{font-family:Arial,Helvetica,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#dsgsvg8 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#dsgsvg8 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#dsgsvg8 .error-icon{fill:#552222;}#dsgsvg8 .error-text{fill:#552222;stroke:#552222;}#dsgsvg8 .edge-thickness-normal{stroke-width:1px;}#dsgsvg8 .edge-thickness-thick{stroke-width:3.5px;}#dsgsvg8 .edge-pattern-solid{stroke-dasharray:0;}#dsgsvg8 .edge-thickness-invisible{stroke-width:0;fill:none;}#dsgsvg8 .edge-pattern-dashed{stroke-dasharray:3;}#dsgsvg8 .edge-pattern-dotted{stroke-dasharray:2;}#dsgsvg8 .marker{fill:#333333;stroke:#333333;}#dsgsvg8 .marker.cross{stroke:#333333;}#dsgsvg8 svg{font-family:Arial,Helvetica,sans-serif;font-size:16px;}#dsgsvg8 p{margin:0;}#dsgsvg8 .label{font-family:Arial,Helvetica,sans-serif;color:#333;}#dsgsvg8 .cluster-label text{fill:#333;}#dsgsvg8 .cluster-label span{color:#333;}#dsgsvg8 .cluster-label span p{background-color:transparent;}#dsgsvg8 .label text,#dsgsvg8 span{fill:#333;color:#333;}#dsgsvg8 .node rect,#dsgsvg8 .node circle,#dsgsvg8 .node ellipse,#dsgsvg8 .node polygon,#dsgsvg8 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#dsgsvg8 .rough-node .label text,#dsgsvg8 .node .label text,#dsgsvg8 .image-shape .label,#dsgsvg8 .icon-shape .label{text-anchor:middle;}#dsgsvg8 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#dsgsvg8 .rough-node .label,#dsgsvg8 .node .label,#dsgsvg8 .image-shape .label,#dsgsvg8 .icon-shape .label{text-align:center;}#dsgsvg8 .node.clickable{cursor:pointer;}#dsgsvg8 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#dsgsvg8 .arrowheadPath{fill:#333333;}#dsgsvg8 .edgePaths .path{stroke:#333333;stroke-width:1px;}#dsgsvg8 .flowchart-link{stroke:#333333;fill:none;}#dsgsvg8 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#dsgsvg8 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#dsgsvg8 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#dsgsvg8 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#dsgsvg8 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#dsgsvg8 .cluster text{fill:#333;}#dsgsvg8 .cluster span{color:#333;}#dsgsvg8 .node .collapsed-indicator{fill:#aaaa33;stroke:none;opacity:0.6;}#dsgsvg8 .node .collapsed-separator{stroke:#aaaa33;stroke-width:0.75px;}#dsgsvg8 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:Arial,Helvetica,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#dsgsvg8 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#dsgsvg8 rect.text{fill:none;stroke-width:0;}#dsgsvg8 .icon-shape,#dsgsvg8 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#dsgsvg8 .icon-shape p,#dsgsvg8 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#dsgsvg8 .icon-shape .label rect,#dsgsvg8 .image-shape .label rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#dsgsvg8 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#dsgsvg8 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#dsgsvg8 .node .neo-node{stroke:#9370DB;}#dsgsvg8 [data-look="neo"].node rect,#dsgsvg8 [data-look="neo"].cluster rect,#dsgsvg8 [data-look="neo"].node polygon{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg8 [data-look="neo"].swimlane.cluster rect{filter:none;}#dsgsvg8 [data-look="neo"].node path{stroke:#9370DB;stroke-width:1px;}#dsgsvg8 [data-look="neo"].node .outer-path{filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg8 [data-look="neo"].node .neo-line path{stroke:#9370DB;filter:none;}#dsgsvg8 [data-look="neo"].node circle{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg8 [data-look="neo"].node circle .state-start{fill:#000000;}#dsgsvg8 [data-look="neo"].icon-shape .icon{fill:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg8 [data-look="neo"].icon-shape .icon-neo path{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg8 :root{--mermaid-font-family:Arial,Helvetica,sans-serif;}#dsgsvg8 .red rect{fill:rgb(255, 54, 33)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .red polygon{fill:rgb(255, 54, 33)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .red ellipse{fill:rgb(255, 54, 33)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .red circle{fill:rgb(255, 54, 33)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .red path{fill:rgb(255, 54, 33)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .red tspan{fill:rgb(255, 255, 255)!important;}#dsgsvg8 .yellow rect{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;}#dsgsvg8 .yellow polygon{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;}#dsgsvg8 .yellow ellipse{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;}#dsgsvg8 .yellow circle{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;}#dsgsvg8 .yellow path{fill:rgb(255, 171, 0)!important;stroke:rgb(27, 49, 57)!important;color:rgb(27, 49, 57)!important;}#dsgsvg8 .yellow tspan{fill:rgb(27, 49, 57)!important;}#dsgsvg8 .blue rect{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .blue polygon{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .blue ellipse{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .blue circle{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .blue path{fill:rgb(34, 114, 180)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .blue tspan{fill:rgb(255, 255, 255)!important;}#dsgsvg8 .green rect{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .green polygon{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .green ellipse{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .green circle{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .green path{fill:rgb(0, 169, 114)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .green tspan{fill:rgb(255, 255, 255)!important;}#dsgsvg8 .navy rect{fill:rgb(11, 32, 38)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .navy polygon{fill:rgb(11, 32, 38)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .navy ellipse{fill:rgb(11, 32, 38)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .navy circle{fill:rgb(11, 32, 38)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .navy path{fill:rgb(11, 32, 38)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .navy tspan{fill:rgb(255, 255, 255)!important;}#dsgsvg8 .gray rect{fill:rgb(90, 111, 119)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .gray polygon{fill:rgb(90, 111, 119)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .gray ellipse{fill:rgb(90, 111, 119)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .gray circle{fill:rgb(90, 111, 119)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .gray path{fill:rgb(90, 111, 119)!important;stroke:rgb(27, 49, 57)!important;color:rgb(255, 255, 255)!important;}#dsgsvg8 .gray tspan{fill:rgb(255, 255, 255)!important;}</style><g><marker id="dsgsvg8_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg8_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg8_flowchart-v2-pointEnd-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="11.5" refY="7" markerUnits="userSpaceOnUse" markerWidth="10.5" markerHeight="14" orient="auto"><path d="M 0 0 L 11.5 7 L 0 14 z" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg8_flowchart-v2-pointStart-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="1" refY="7" markerUnits="userSpaceOnUse" markerWidth="11.5" markerHeight="14" orient="auto"><polygon points="0,7 11.5,14 11.5,0" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></polygon></marker><marker id="dsgsvg8_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg8_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg8_flowchart-v2-circleEnd-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refY="5" refX="12.25" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg8_flowchart-v2-circleStart-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-2" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"></circle></marker><marker id="dsgsvg8_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg8_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"></path></marker><marker id="dsgsvg8_flowchart-v2-crossEnd-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="17.7" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5;"></path></marker><marker id="dsgsvg8_flowchart-v2-crossStart-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="-3.5" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5; stroke-dasharray: 1, 0;"></path></marker><g class="root"><g class="clusters"></g><g class="edgePaths"><path d="M240.723,55.18L240.723,59.346C240.723,63.513,240.723,71.846,240.723,79.513C240.723,87.18,240.723,94.18,240.723,97.68L240.723,101.18" id="dsgsvg8-L_step1_step2_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_step1_step2_0" data-points="W3sieCI6MjQwLjcyMjY1NjI1LCJ5Ijo1NS4xNzk2ODc1fSx7IngiOjI0MC43MjI2NTYyNSwieSI6ODAuMTc5Njg3NX0seyJ4IjoyNDAuNzIyNjU2MjUsInkiOjEwNS4xNzk2ODc1fV0=" data-look="classic" marker-end="url(#dsgsvg8_flowchart-v2-pointEnd)"></path><path d="M176.507,169.78L168.223,173.946C159.94,178.113,143.372,186.446,135.088,194.113C126.805,201.78,126.805,208.78,126.805,212.28L126.805,215.78" id="dsgsvg8-L_step2_step3_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_step2_step3_0" data-points="W3sieCI6MTc2LjUwNzExNzgwODM3NiwieSI6MTY5Ljc3OTY4NTk3NDEyMTF9LHsieCI6MTI2LjgwNDY4NzUsInkiOjE5NC43Nzk2ODU5NzQxMjExfSx7IngiOjEyNi44MDQ2ODc1LCJ5IjoyMTkuNzc5Njg1OTc0MTIxMX1d" data-look="classic" marker-end="url(#dsgsvg8_flowchart-v2-pointEnd)"></path><path d="M126.805,267.147L126.805,271.314C126.805,275.48,126.805,283.814,135.942,291.885C145.078,299.956,163.352,307.766,172.489,311.67L181.626,315.575" id="dsgsvg8-L_step3_step4_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_step3_step4_0" data-points="W3sieCI6MTI2LjgwNDY4NzUsInkiOjI2Ny4xNDY4NzM0NzQxMjExfSx7IngiOjEyNi44MDQ2ODc1LCJ5IjoyOTIuMTQ2ODczNDc0MTIxMX0seyJ4IjoxODUuMzAzODQ1MDA2MjE4NCwieSI6MzE3LjE0Njg3MzQ3NDEyMTF9XQ==" data-look="classic" marker-end="url(#dsgsvg8_flowchart-v2-pointEnd)"></path><path d="M240.723,364.514L240.723,368.681C240.723,372.847,240.723,381.181,240.723,388.847C240.723,396.514,240.723,403.514,240.723,407.014L240.723,410.514" id="dsgsvg8-L_step4_step5_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_step4_step5_0" data-points="W3sieCI6MjQwLjcyMjY1NjI1LCJ5IjozNjQuNTE0MDYwOTc0MTIxMX0seyJ4IjoyNDAuNzIyNjU2MjUsInkiOjM4OS41MTQwNjA5NzQxMjExfSx7IngiOjI0MC43MjI2NTYyNSwieSI6NDE0LjUxNDA2MDk3NDEyMTF9XQ==" data-look="classic" marker-end="url(#dsgsvg8_flowchart-v2-pointEnd)"></path><path d="M240.723,461.694L240.723,465.86C240.723,470.027,240.723,478.36,240.723,486.027C240.723,493.694,240.723,500.694,240.723,504.194L240.723,507.694" id="dsgsvg8-L_step5_step6_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_step5_step6_0" data-points="W3sieCI6MjQwLjcyMjY1NjI1LCJ5Ijo0NjEuNjkzNzQ4NDc0MTIxMX0seyJ4IjoyNDAuNzIyNjU2MjUsInkiOjQ4Ni42OTM3NDg0NzQxMjExfSx7IngiOjI0MC43MjI2NTYyNSwieSI6NTExLjY5Mzc0ODQ3NDEyMTF9XQ==" data-look="classic" marker-end="url(#dsgsvg8_flowchart-v2-pointEnd)"></path><path d="M296.141,317.147L305.891,312.98C315.641,308.814,335.141,300.48,344.891,288.2C354.641,275.919,354.641,259.691,354.641,243.463C354.641,227.235,354.641,211.008,346.952,199.027C339.264,187.045,323.888,179.311,316.2,175.444L308.512,171.577" id="dsgsvg8-L_step4_step2_0" class=" edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_step4_step2_0" data-points="W3sieCI6Mjk2LjE0MTQ2NzQ5Mzc4MTYsInkiOjMxNy4xNDY4NzM0NzQxMjExfSx7IngiOjM1NC42NDA2MjUsInkiOjI5Mi4xNDY4NzM0NzQxMjExfSx7IngiOjM1NC42NDA2MjUsInkiOjI0My40NjMyNzk3MjQxMjExfSx7IngiOjM1NC42NDA2MjUsInkiOjE5NC43Nzk2ODU5NzQxMjExfSx7IngiOjMwNC45MzgxOTQ2OTE2MjQsInkiOjE2OS43Nzk2ODU5NzQxMjExfV0=" data-look="classic" marker-end="url(#dsgsvg8_flowchart-v2-pointEnd)"></path></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_step1_step2_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g><g class="edgeLabel"><g class="label" data-id="L_step2_step3_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g><g class="edgeLabel"><g class="label" data-id="L_step3_step4_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g><g class="edgeLabel"><g class="label" data-id="L_step4_step5_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g><g class="edgeLabel"><g class="label" data-id="L_step5_step6_0" transform="translate(0, 0)"><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"></tspan></text></g></g><g><rect class="background" style="stroke: none"></rect></g><g class="edgeLabel" transform="translate(354.640869140625, 243.25119018554688)"><g class="label" data-id="L_step4_step2_0" transform="translate(0, 0)"><g><rect class="background" style="opacity:1 !important;fill:#F4F4F4 !important;stroke:none;" x="-78.00079345703125" y="-11.588944435119629" width="156.0015869140625" height="23.177888870239258" rx="3"></rect><text y="-10.1" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;" transform="translate(0, -10.588791847229004)"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" text-anchor="middle" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">For</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> each</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> workspace</tspan></tspan></text></g></g></g></g><g class="nodes"><g class="node default red " id="dsgsvg8-flowchart-step1-0" data-look="classic" transform="translate(240.72265625, 31.58984375)"><rect class="basic label-container" style="fill:#FF3621 !important;stroke:#1B3139 !important" x="-101.6015625" y="-23.58984375" width="203.203125" height="47.1796875"></rect><g class="label" style="color:#FFFFFF !important" transform="translate(0, -8.58984375)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#FFFFFF !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Prepare</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> and</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> Assess</tspan></tspan></text></g></g></g><g class="node default yellow " id="dsgsvg8-flowchart-step2-1" data-look="classic" transform="translate(240.72265625, 137.47968673706055)"><rect class="basic label-container" style="fill:#FFAB00 !important;stroke:#1B3139 !important" x="-90.9296875" y="-32.29999923706055" width="181.859375" height="64.5999984741211"></rect><g class="label" style="color:#1B3139 !important" transform="translate(0, -17.299999237060547)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#1B3139 !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Identity</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> &amp;</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> Access</tspan></tspan><tspan class="text-outer-tspan row" x="0" y="1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Readiness</tspan></tspan></text></g></g></g><g class="node default blue " id="dsgsvg8-flowchart-step3-2" data-look="classic" transform="translate(126.8046875, 243.4632797241211)"><rect class="basic label-container" style="fill:#2272B4 !important;stroke:#1B3139 !important" x="-118.8046875" y="-23.68359375" width="237.609375" height="47.3671875"></rect><g class="label" style="color:#FFFFFF !important" transform="translate(0, -8.68359375)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#FFFFFF !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Storage</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> &amp;</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> Table</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> Strategy</tspan></tspan></text></g></g></g><g class="node default green " id="dsgsvg8-flowchart-step4-3" data-look="classic" transform="translate(240.72265625, 340.8304672241211)"><rect class="basic label-container" style="fill:#00A972 !important;stroke:#1B3139 !important" x="-89.28125" y="-23.68359375" width="178.5625" height="47.3671875"></rect><g class="label" style="color:#FFFFFF !important" transform="translate(0, -8.68359375)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#FFFFFF !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Migration</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> Waves</tspan></tspan></text></g></g></g><g class="node default navy " id="dsgsvg8-flowchart-step5-4" data-look="classic" transform="translate(240.72265625, 438.1039047241211)"><rect class="basic label-container" style="fill:#0B2026 !important;stroke:#1B3139 !important" x="-124.5859375" y="-23.58984375" width="249.171875" height="47.1796875"></rect><g class="label" style="color:#FFFFFF !important" transform="translate(0, -8.58984375)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#FFFFFF !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Workload</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> &amp;</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> Code</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"> Updates</tspan></tspan></text></g></g></g><g class="node default gray " id="dsgsvg8-flowchart-step6-5" data-look="classic" transform="translate(240.72265625, 535.1937484741211)"><rect class="basic label-container" style="fill:#5a6f77 !important;stroke:#1B3139 !important" x="-58.12109375" y="-23.5" width="116.2421875" height="47"></rect><g class="label" style="color:#FFFFFF !important" transform="translate(0, -8.5)"><rect></rect><g><rect class="background" style="stroke: none"></rect><text y="-10.1" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;fill:#FFFFFF !important"><tspan class="text-outer-tspan row" x="0" y="-0.1em" dy="1.1em" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal" style="font-family:Arial, Helvetica, sans-serif !important;font-size:16px !important;">Cutover</tspan></tspan></text></g></g></g></g></g></g><defs><filter id="dsgsvg8-drop-shadow" height="130%" width="130%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-opacity="0.06" flood-color="#000000"></feDropShadow></filter></defs><defs><filter id="dsgsvg8-drop-shadow-small" height="150%" width="150%"><feDropShadow dx="2" dy="2" stdDeviation="0" flood-opacity="0.06" flood-color="#000000"></feDropShadow></filter></defs></svg>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### B1.1 Prepare and Assess
+-- MAGIC
+-- MAGIC 1. Enable a Unity Catalog metastore per region and attach target workspaces; ensure identity federation is on. This is a prerequisite for UCX and UC-enabled workspaces.
+-- MAGIC 1. Run the UCX Assessment to inventory groups, permissions, storage credentials/locations, and tables; review the assessment dashboard to scope effort and blockers.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### B1.2 Identity & Access Readiness
+-- MAGIC 1. Migrate workspace-local groups to account-level (SCIM/IdP to account, not individual workspaces). Use UCX “group migration” to replicate permissions to account groups.
+-- MAGIC 1. Define or validate storage credentials and external locations for each bucket/container that will back UC external tables.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### B1.3 Storage & Table Strategy
+-- MAGIC
+-- MAGIC 1. **External tables:** prefer SYNC (non-destructive) to register existing data into UC; schedule recurring syncs if operating HMS+UC in parallel during transition.
+-- MAGIC 1. **Managed tables:** use DEEP CLONE (or CTAS when needed) to move DBFS-root managed tables to UC-managed storage without mutating the source.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### B1.4 Migration Waves
+-- MAGIC
+-- MAGIC 1. Wave-plan by workspace/schema: prioritize external Delta/Parquet first (fastest path), then managed tables and views/UDFs; handle ACL conversion where required.
+-- MAGIC 1. Execute UCX “table migration” per wave; review UCX dashboards and Delta outputs for status and exceptions.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### B1.5 Workload & Code Updates
+-- MAGIC
+-- MAGIC Update notebooks/jobs/SQL to UC three-level namespaces and UC permissions; address DBFS mounts, legacy APIs, and cluster policy changes surfaced by UCX code findings.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### B1.6 Cutover
+-- MAGIC
+-- MAGIC Switch defaults (e.g., default catalog), deprecate HMS access paths, and monitor pipelines, queries, and dashboards; keep a short hypercare period and decide on decommissioning HMS-only objects.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### B2. Technical Requirements
+-- MAGIC
+-- MAGIC 1. Databricks account on Premium (or above) with a Unity Catalog metastore created per region; attach target workspaces to the metastore.
+-- MAGIC 1. Identity federation enabled at the account level; SCIM provisioning configured in the account (not workspace-level) for users, service principals, and groups.
+-- MAGIC 1. UCX prerequisites for the assessment and workflows: Databricks CLI, network egress to pypi.org/github.com, and a Pro or Serverless SQL Warehouse to render UCX assessment dashboards.
+-- MAGIC 1. Cloud IAM: roles/managed identities/service accounts with least-privilege access to storage (and KMS if applicable) to back UC storage credentials/external locations.
+-- MAGIC 1. Unity Catalog objects and privileges: catalogs/schemas/privileges ready for target namespaces; GRANTs defined for account-level principals/groups.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### B3. RACI Diagram
+-- MAGIC
+-- MAGIC <style>
+-- MAGIC   .raci-wrap{max-width:980px;margin:0 auto;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+-- MAGIC   .raci-title{font-weight:700;font-size:18px;margin:0 0 10px;color:#1B3139}
+-- MAGIC   table.raci{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;border:2px solid #303F47;border-radius:8px;overflow:hidden}
+-- MAGIC   .raci th,.raci td{padding:10px 12px;border-bottom:1px solid #DCE0E2;border-right:1px solid #DCE0E2}
+-- MAGIC   .raci tr:last-child td{border-bottom:none}
+-- MAGIC   .raci th:last-child,.raci td:last-child{border-right:none}
+-- MAGIC   .raci thead th{background:#EEEDE9;color:#0B2026;font-weight:700;text-align:center}
+-- MAGIC   .raci thead th:first-child{text-align:center}
+-- MAGIC   .raci tbody th{background:#F9F7F4;color:#1B3139;font-weight:600;text-align:left}
+-- MAGIC   .cell{font-weight:800;text-align:center !important;vertical-align: middle !important;}
+-- MAGIC   .R{background:#E8F1F6;color:#1B3139}
+-- MAGIC   .A{background:#FFEDEA;color:#FF3621}
+-- MAGIC   .C{background:#FFF3D6;color:#1B3139}
+-- MAGIC   .I{background:#F3F5F6;color:#5A6F77}
+-- MAGIC   .blank{background:transparent;color:#5A6F77;font-weight:600}
+-- MAGIC   /* Legend */
+-- MAGIC   .legend{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+-- MAGIC   .pill{display:inline-flex;align-items:center;gap:8px;border:1px solid #DCE0E2;border-radius:999px;padding:6px 10px;background:#fff}
+-- MAGIC   .sw{width:14px;height:14px;border-radius:4px;border:1px solid #DCE0E2}
+-- MAGIC   .sw.R{background:#E8F1F6}.sw.A{background:#FFEDEA}.sw.C{background:#FFF3D6}.sw.I{background:#F3F5F6}
+-- MAGIC   .note{margin-top:10px;color:#5A6F77;font-size:12px}
+-- MAGIC </style>
+-- MAGIC
+-- MAGIC   <table class="raci">
+-- MAGIC     <thead>
+-- MAGIC       <tr>
+-- MAGIC         <th style="width:38%">Task</th>
+-- MAGIC         <th>Account Admin</th>
+-- MAGIC         <th>Metastore Admin</th>
+-- MAGIC         <th>Workspace Admin</th>
+-- MAGIC         <th>Identity Admin</th>
+-- MAGIC         <th>Cloud Admin</th>
+-- MAGIC         <th>Data Owners</th>
+-- MAGIC         <th>App Owners</th>
+-- MAGIC         <th>Implementor</th>
+-- MAGIC       </tr>
+-- MAGIC     </thead>
+-- MAGIC     <tbody>
+-- MAGIC       <tr>
+-- MAGIC         <th>Run UCX assessment, share dashboard</th>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell A">A</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Enable identity federation; SCIM to account</th>
+-- MAGIC         <td class="cell A">A</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Migrate workspace groups to account groups</th>
+-- MAGIC         <td class="cell A">A</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Define storage credentials & external locations</th>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell A">A+R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Execute SYNC/CLONE/CTAS per plan</th>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td/>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell A">A+R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Map and apply UC privileges</th>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td/>
+-- MAGIC         <td/>
+-- MAGIC         <td class="cell A">A+R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Update code/jobs/warehouses to UC namespaces</th>
+-- MAGIC         <td/>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td/>
+-- MAGIC         <td/>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell A">A+R</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Default catalog switch, comms</th>
+-- MAGIC         <td class="cell A">A</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td/>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC       <tr>
+-- MAGIC         <th>Enact rollback if needed</th>
+-- MAGIC         <td class="cell A">A</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td class="cell R">R</td>
+-- MAGIC         <td/>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC         <td class="cell C">C</td>
+-- MAGIC       </tr>
+-- MAGIC     </tbody>
+-- MAGIC   </table>
+-- MAGIC
+-- MAGIC   <div class="legend">
+-- MAGIC     <span class="pill"><span class="sw A"></span><b>A</b> Accountable</span>
+-- MAGIC     <span class="pill"><span class="sw R"></span><b>R</b> Responsible</span>
+-- MAGIC     <span class="pill"><span class="sw C"></span><b>C</b> Consulted</span>
+-- MAGIC     <span class="pill"><span class="sw I"></span><b>I</b> Informed</span>
+-- MAGIC   </div>
+-- MAGIC
+-- MAGIC   <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       Align exact titles to customer org; above roles map to common responsibilities seen in successful programs.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### B4. Project Timeline
+-- MAGIC
+-- MAGIC This section exemplifies a typical timeline:
+-- MAGIC
+-- MAGIC - **Week 1: Prepare and Assess**
+-- MAGIC    - Confirm UC metastore attachments
+-- MAGIC    - Run UCX Assessment
+-- MAGIC    - Review dashboard and inventory
+-- MAGIC    - Identify quick wins and blockers
+-- MAGIC - **Week 2: Identity and Access**
+-- MAGIC    - Enable identity federation
+-- MAGIC    - Plan group migration
+-- MAGIC    - Design UC catalogs/schemas and storage credential/external location mappings
+-- MAGIC - **Weeks 3–4: Wave 1**
+-- MAGIC    - Create storage credentials/external locations
+-- MAGIC    - Run `SYNC` for external Delta/Parquet in target catalogs
+-- MAGIC    - Schedule periodic sync if operating hybrid
+-- MAGIC - **Weeks 5–6: Wave 2**
+-- MAGIC   - Use `DEEP CLONE`/CTAS for DBFS-root managed tables
+-- MAGIC   - Migrate views/UDFs
+-- MAGIC   - Apply UC privileges
+-- MAGIC   - Update workloads for UC namespaces
+-- MAGIC - **Weeks 7–8: Cutover**
+-- MAGIC    - Switch defaults
+-- MAGIC    - Disable HMS writes
+-- MAGIC    - Monitor
+-- MAGIC    - Remediate issues
+-- MAGIC    - Decide on decommissioning strategy
+-- MAGIC - **Weeks 9–10: Subsequent Waves**
+-- MAGIC    - Repeat per workspace/schema with refined playbook
+-- MAGIC    - Close-out with acceptance and handover
+-- MAGIC
+-- MAGIC <div style="display:flex; justify-content:center;">
+-- MAGIC <svg id="dsgsvg9" width="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 784 244" style="display:block;margin-left:auto;margin-right:auto;font-family:Arial, Helvetica, sans-serif !important;max-width: 784px;" role="graphics-document document" aria-roledescription="gantt"><style>#dsgsvg9{font-family:Arial,Helvetica,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#dsgsvg9 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#dsgsvg9 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#dsgsvg9 .error-icon{fill:#552222;}#dsgsvg9 .error-text{fill:#552222;stroke:#552222;}#dsgsvg9 .edge-thickness-normal{stroke-width:1px;}#dsgsvg9 .edge-thickness-thick{stroke-width:3.5px;}#dsgsvg9 .edge-pattern-solid{stroke-dasharray:0;}#dsgsvg9 .edge-thickness-invisible{stroke-width:0;fill:none;}#dsgsvg9 .edge-pattern-dashed{stroke-dasharray:3;}#dsgsvg9 .edge-pattern-dotted{stroke-dasharray:2;}#dsgsvg9 .marker{fill:#333333;stroke:#333333;}#dsgsvg9 .marker.cross{stroke:#333333;}#dsgsvg9 svg{font-family:Arial,Helvetica,sans-serif;font-size:16px;}#dsgsvg9 p{margin:0;}#dsgsvg9 .mermaid-main-font{font-family:Arial,Helvetica,sans-serif;}#dsgsvg9 .exclude-range{fill:#eeeeee;}#dsgsvg9 .section{stroke:none;opacity:0.2;}#dsgsvg9 .section0{fill:rgba(102, 102, 255, 0.49);}#dsgsvg9 .section2{fill:#fff400;}#dsgsvg9 .section1,#dsgsvg9 .section3{fill:white;opacity:0.2;}#dsgsvg9 .sectionTitle0{fill:#333;}#dsgsvg9 .sectionTitle1{fill:#333;}#dsgsvg9 .sectionTitle2{fill:#333;}#dsgsvg9 .sectionTitle3{fill:#333;}#dsgsvg9 .sectionTitle{text-anchor:start;font-family:Arial,Helvetica,sans-serif;}#dsgsvg9 .grid .tick{stroke:lightgrey;opacity:0.8;shape-rendering:crispEdges;}#dsgsvg9 .grid .tick text{font-family:Arial,Helvetica,sans-serif;fill:#333;}#dsgsvg9 .grid path{stroke-width:0;}#dsgsvg9 .today{fill:none;stroke:red;stroke-width:2px;}#dsgsvg9 .task{stroke-width:2;}#dsgsvg9 .taskText{text-anchor:middle;font-family:Arial,Helvetica,sans-serif;}#dsgsvg9 .taskTextOutsideRight{fill:black;text-anchor:start;font-family:Arial,Helvetica,sans-serif;}#dsgsvg9 .taskTextOutsideLeft{fill:black;text-anchor:end;}#dsgsvg9 .task.clickable{cursor:pointer;}#dsgsvg9 .taskText.clickable{cursor:pointer;fill:#003163!important;font-weight:bold;}#dsgsvg9 .taskTextOutsideLeft.clickable{cursor:pointer;fill:#003163!important;font-weight:bold;}#dsgsvg9 .taskTextOutsideRight.clickable{cursor:pointer;fill:#003163!important;font-weight:bold;}#dsgsvg9 .taskText0,#dsgsvg9 .taskText1,#dsgsvg9 .taskText2,#dsgsvg9 .taskText3{fill:white;}#dsgsvg9 .task0,#dsgsvg9 .task1,#dsgsvg9 .task2,#dsgsvg9 .task3{fill:#8a90dd;stroke:#534fbc;}#dsgsvg9 .taskTextOutside0,#dsgsvg9 .taskTextOutside2{fill:black;}#dsgsvg9 .taskTextOutside1,#dsgsvg9 .taskTextOutside3{fill:black;}#dsgsvg9 .active0,#dsgsvg9 .active1,#dsgsvg9 .active2,#dsgsvg9 .active3{fill:#bfc7ff;stroke:#534fbc;}#dsgsvg9 .activeText0,#dsgsvg9 .activeText1,#dsgsvg9 .activeText2,#dsgsvg9 .activeText3{fill:black!important;}#dsgsvg9 .done0,#dsgsvg9 .done1,#dsgsvg9 .done2,#dsgsvg9 .done3{stroke:grey;fill:lightgrey;stroke-width:2;}#dsgsvg9 .doneText0,#dsgsvg9 .doneText1,#dsgsvg9 .doneText2,#dsgsvg9 .doneText3{fill:black!important;}#dsgsvg9 .doneText0.taskTextOutsideLeft,#dsgsvg9 .doneText0.taskTextOutsideRight,#dsgsvg9 .doneText1.taskTextOutsideLeft,#dsgsvg9 .doneText1.taskTextOutsideRight,#dsgsvg9 .doneText2.taskTextOutsideLeft,#dsgsvg9 .doneText2.taskTextOutsideRight,#dsgsvg9 .doneText3.taskTextOutsideLeft,#dsgsvg9 .doneText3.taskTextOutsideRight{fill:black!important;}#dsgsvg9 .crit0,#dsgsvg9 .crit1,#dsgsvg9 .crit2,#dsgsvg9 .crit3{stroke:#ff8888;fill:red;stroke-width:2;}#dsgsvg9 .activeCrit0,#dsgsvg9 .activeCrit1,#dsgsvg9 .activeCrit2,#dsgsvg9 .activeCrit3{stroke:#ff8888;fill:#bfc7ff;stroke-width:2;}#dsgsvg9 .doneCrit0,#dsgsvg9 .doneCrit1,#dsgsvg9 .doneCrit2,#dsgsvg9 .doneCrit3{stroke:#ff8888;fill:lightgrey;stroke-width:2;cursor:pointer;shape-rendering:crispEdges;}#dsgsvg9 .milestone{transform:rotate(45deg) scale(0.8,0.8);}#dsgsvg9 .milestoneText{font-style:italic;}#dsgsvg9 .doneCritText0,#dsgsvg9 .doneCritText1,#dsgsvg9 .doneCritText2,#dsgsvg9 .doneCritText3{fill:black!important;}#dsgsvg9 .doneCritText0.taskTextOutsideLeft,#dsgsvg9 .doneCritText0.taskTextOutsideRight,#dsgsvg9 .doneCritText1.taskTextOutsideLeft,#dsgsvg9 .doneCritText1.taskTextOutsideRight,#dsgsvg9 .doneCritText2.taskTextOutsideLeft,#dsgsvg9 .doneCritText2.taskTextOutsideRight,#dsgsvg9 .doneCritText3.taskTextOutsideLeft,#dsgsvg9 .doneCritText3.taskTextOutsideRight{fill:black!important;}#dsgsvg9 .vert{stroke:navy;}#dsgsvg9 .vertText{font-size:15px;text-anchor:middle;fill:navy!important;}#dsgsvg9 .activeCritText0,#dsgsvg9 .activeCritText1,#dsgsvg9 .activeCritText2,#dsgsvg9 .activeCritText3{fill:black!important;}#dsgsvg9 .titleText{text-anchor:middle;font-size:18px;fill:#333;font-family:Arial,Helvetica,sans-serif;}#dsgsvg9 .node .neo-node{stroke:#9370DB;}#dsgsvg9 [data-look="neo"].node rect,#dsgsvg9 [data-look="neo"].cluster rect,#dsgsvg9 [data-look="neo"].node polygon{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg9 [data-look="neo"].swimlane.cluster rect{filter:none;}#dsgsvg9 [data-look="neo"].node path{stroke:#9370DB;stroke-width:1px;}#dsgsvg9 [data-look="neo"].node .outer-path{filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg9 [data-look="neo"].node .neo-line path{stroke:#9370DB;filter:none;}#dsgsvg9 [data-look="neo"].node circle{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg9 [data-look="neo"].node circle .state-start{fill:#000000;}#dsgsvg9 [data-look="neo"].icon-shape .icon{fill:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg9 [data-look="neo"].icon-shape .icon-neo path{stroke:#9370DB;filter:drop-shadow(1px 2px 2px rgba(185, 185, 185, 1));}#dsgsvg9 :root{--mermaid-font-family:Arial,Helvetica,sans-serif;}</style><g></g><g class="grid" transform="translate(75, 194)" fill="none" font-size="10" font-family="sans-serif" text-anchor="middle"><path class="domain" stroke="currentColor" d="M0.5,-159V0.5H634.5V-159"></path><g class="tick" opacity="1" transform="translate(0.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">00</text></g><g class="tick" opacity="1" transform="translate(63.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">01</text></g><g class="tick" opacity="1" transform="translate(127.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">02</text></g><g class="tick" opacity="1" transform="translate(190.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">03</text></g><g class="tick" opacity="1" transform="translate(254.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">04</text></g><g class="tick" opacity="1" transform="translate(317.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">05</text></g><g class="tick" opacity="1" transform="translate(380.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">06</text></g><g class="tick" opacity="1" transform="translate(444.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">07</text></g><g class="tick" opacity="1" transform="translate(507.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">08</text></g><g class="tick" opacity="1" transform="translate(571.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">09</text></g><g class="tick" opacity="1" transform="translate(634.5,0)"><line stroke="currentColor" y2="-159"></line><text fill="#000" y="3" dy="1em" stroke="none" font-size="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:10px !important;text-anchor: middle;">10</text></g></g><g><rect x="0" y="48" width="746.5" height="24" class="section section0"></rect><rect x="0" y="72" width="746.5" height="24" class="section section0"></rect><rect x="0" y="96" width="746.5" height="24" class="section section0"></rect><rect x="0" y="120" width="746.5" height="24" class="section section0"></rect><rect x="0" y="144" width="746.5" height="24" class="section section0"></rect><rect x="0" y="168" width="746.5" height="24" class="section section0"></rect></g><g><rect id="dsgsvg9-step1" rx="3" ry="3" x="75" y="50" width="63" height="20" transform-origin="106.5px 60px" class="task task0 "></rect><rect id="dsgsvg9-step2" rx="3" ry="3" x="138" y="74" width="64" height="20" transform-origin="170px 84px" class="task task0 "></rect><rect id="dsgsvg9-step3" rx="3" ry="3" x="202" y="98" width="127" height="20" transform-origin="265.5px 108px" class="task task0 "></rect><rect id="dsgsvg9-step4" rx="3" ry="3" x="329" y="122" width="126" height="20" transform-origin="392px 132px" class="task task0 "></rect><rect id="dsgsvg9-step5" rx="3" ry="3" x="455" y="146" width="127" height="20" transform-origin="518.5px 156px" class="task task0 "></rect><rect id="dsgsvg9-step6" rx="3" ry="3" x="582" y="170" width="127" height="20" transform-origin="645.5px 180px" class="task task0 "></rect><text id="dsgsvg9-step1-text" font-size="11" x="150" y="63.5" text-height="20" class=" taskTextOutsideRight taskTextOutside0  width-98.453125" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;">Prepare and Assess           </text><text id="dsgsvg9-step2-text" font-size="11" x="207" y="87.5" text-height="20" class=" taskTextOutsideRight taskTextOutside0  width-94.78125" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;">Identity and Access                </text><text id="dsgsvg9-step3-text" font-size="11" x="265.5" y="111.5" text-height="20" class=" taskText taskText0  width-36.890625" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;">Wave 1                 </text><text id="dsgsvg9-step4-text" font-size="11" x="392" y="135.5" text-height="20" class=" taskText taskText0  width-36.890625" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;">Wave 2          </text><text id="dsgsvg9-step5-text" font-size="11" x="518.5" y="159.5" text-height="20" class=" taskText taskText0  width-38.66650390625" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;">Cutover         </text><text id="dsgsvg9-step6-text" font-size="11" x="645.5" y="183.5" text-height="20" class=" taskText taskText0  width-94.984375" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;">Subsequent Waves         </text></g><g><text dy="0em" x="10" y="122" font-size="11" class="sectionTitle sectionTitle0" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;"><tspan alignment-baseline="central" x="10" style="font-family:Arial, Helvetica, sans-serif !important;font-size:11px !important;"></tspan></text></g><g class="today"><line x1="5867" x2="5867" y1="25" y2="219" class="today"></line></g><text x="392" y="25" class="titleText" style="font-family:Arial, Helvetica, sans-serif !important;font-size:18px !important;">UC Migration Timeline</text></svg>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### B5. Risks and Mitigations
+-- MAGIC
+-- MAGIC - **Identity/Group Misalignment**
+-- MAGIC    - **Risk:** Workspace-local groups cannot be granted UC access; permission drift between workspace and account.
+-- MAGIC    - **Mitigation:** Migrate groups to account-level via UCX group migration; freeze workspace SCIM once account SCIM is in place.
+-- MAGIC - **Storage Credential Gaps**
+-- MAGIC    - **Risk:** Missing IAM roles/managed identities/KMS permissions block external location creation and SYNC.
+-- MAGIC    - **Mitigation:** Pre-validate IAM and KMS grants for each bucket/container; create UC storage credentials and external locations first.
+-- MAGIC - **Managed Tables in DBFS Root**
+-- MAGIC    - **Risk:** Large data copy or long `DEEP CLONE` times delay cutover.
+-- MAGIC    - **Mitigation:** Stage cloning in advance; use `CLONE` vs CTAS when possible to reduce risk; partition waves to balance runtime.
+-- MAGIC - **Code and Namespace Changes**
+-- MAGIC    - **Risk:** Jobs/notebooks rely on hive_metastore names, DBFS mounts, or unsupported APIs.
+-- MAGIC    - **Mitigation:** Use UCX code findings to target fixes; refactor to UC three-level namespaces; replace legacy mounts with external locations.
+-- MAGIC - **Parallel HMS+UC Operations**
+-- MAGIC    - **Risk:** Divergent schemas/permissions if both catalogs are active for long.
+-- MAGIC    - **Mitigation:** Schedule `SYNC` for external tables; time-box hybrid period; communicate authoritative paths and default catalog switch date.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### B6. Rollback Plan
+-- MAGIC
+-- MAGIC #### Principles
+-- MAGIC - Prefer non-destructive migrations first (`SYNC` for external tables) so HMS paths remain intact for fallback.
+-- MAGIC - For managed tables, keep the source untouched by using `DEEP CLONE` when possible; validate UC targets before deprecating HMS references.
+-- MAGIC
+-- MAGIC #### Triggers
+-- MAGIC
+-- MAGIC - Critical workload failures post-cutover
+-- MAGIC - Pervasive permission errors
+-- MAGIC - Unacceptable performance regressions
+-- MAGIC
+-- MAGIC #### Pre-Cutover Safeguards
+-- MAGIC - Change freeze during final sync/clone window
+-- MAGIC - Snapshot UC privileges and object lists
+-- MAGIC - Export job/config baselines
+-- MAGIC - Document “default catalog” settings and planned toggles.
+-- MAGIC
+-- MAGIC #### Actions
+-- MAGIC
+-- MAGIC 1. **Revert Application Namespaces**
+-- MAGIC    - Point jobs/notebooks/dashboards back to hive_metastore paths
+-- MAGIC    - Restore earlier cluster policies and connection configs
+-- MAGIC 1. **Disable UC Default and Hybrid Reversion**
+-- MAGIC    - Switch default catalog to `hive_metastore`
+-- MAGIC    - Stop `SYNC` schedules
+-- MAGIC    - Re-enable HMS write path if previously set to read-only
+-- MAGIC 1. **Managed Tables**
+-- MAGIC    - If `CLONE`/CTAS was used, continue using original HMS tables while investigating
+-- MAGIC    - UC copies can be retained or dropped after root cause analysis complete
+-- MAGIC 1. **Identity**
+-- MAGIC    - Keep account-level groups intact even on rollback
+-- MAGIC    - Revert only workload paths/privileges
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       Avoid re-introducing workspace-local groups.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC #### Post-Rollback
+-- MAGIC
+-- MAGIC - Root-cause issues
+-- MAGIC - Update playbook
+-- MAGIC - Re-attempt with a smaller wave or additional pre-checks
+-- MAGIC - Reference field materials that include backout guidance and phased planning patterns
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC &copy; <span id="dbx-year"></span> Databricks, Inc. All rights reserved. Apache, Apache Spark, Spark, the Spark Logo, Apache Iceberg, Iceberg, and the Apache Iceberg logo are trademarks of the <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a>.<br/><br/><a href="https://databricks.com/privacy-policy" target="_blank">Privacy Policy</a> | <a href="https://databricks.com/terms-of-use" target="_blank">Terms of Use</a> | <a href="https://help.databricks.com/" target="_blank">Support</a>
+-- MAGIC <script>
+-- MAGIC   document.getElementById("dbx-year").textContent = new Date().getFullYear();
+-- MAGIC </script>

@@ -1,0 +1,671 @@
+-- Databricks notebook source
+-- MAGIC %md-sandbox
+-- MAGIC <div style="display:flex; align-items:center; padding:10px 18px; background:#F8F9FA; border-bottom:1px solid #E0E0E0; gap:10px;">
+-- MAGIC   <img src="https://cdn.simpleicons.org/databricks/FF3621" width="22" height="22"/>
+-- MAGIC   <div style="font-size:14px; color:#666; white-space:nowrap;">
+-- MAGIC     <span style="font-weight:600; color:#333;">Academy</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Data Security & Governance Delivery Expert</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Discover</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span style="font-weight:600; color:#eb1900;">Preparing for the Migration Lab</span>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC
+-- MAGIC <div style="text-align: center; line-height: 0; padding-top: 9px;">
+-- MAGIC   <img
+-- MAGIC     src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png"
+-- MAGIC     alt="Databricks Learning"
+-- MAGIC   >
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC # Lab: Preparing for the Migration
+-- MAGIC
+-- MAGIC In this module, we covered many different aspects of the discovery phase of a Hive to Unity Catalog migration.
+-- MAGIC
+-- MAGIC In this hands-on lab, you'll put your knowledge to the test with some interactive exercises.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       This notebook is designed to run in a Databricks Academy provided workspace, but it will not work inside an embedded frame. To complete these activities:
+-- MAGIC       <ol>
+-- MAGIC         <li>Select the <strong>Databricks</strong> tile.</li>
+-- MAGIC         <li>Choose <strong>Workspace URL - Databricks Workspace</strong>.</li>
+-- MAGIC         <li>Navigate to this notebook in the new tab and proceed with the exercise.</li>
+-- MAGIC       </ol>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## Aligning the Roles
+-- MAGIC
+-- MAGIC In planning a migration, it's important to identify the key stakeholders, and who will be doing what. These tasks can be crystallized into a few specific roles, which we covered in this module.
+-- MAGIC
+-- MAGIC In this interactive exercise, you'll sort tasks based on which type of admin is responsible for them. Drag each tag into the appropriate box. When everything is placed, click **Validate**.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       You can adjust your answers as many times as you like — this is about building intuition, not memorization.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC <div id="ddx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   title: "Drag & Drop",              // optional; used only in aria labels
+-- MAGIC   minZones: 2,
+-- MAGIC   maxZones: 6,
+-- MAGIC
+-- MAGIC   zones: [
+-- MAGIC     { id: "workspace",label: "Workspace Admin" },
+-- MAGIC     { id: "metastore",      label: "Metastore Admin" },
+-- MAGIC     { id: "account",      label: "Account Admin" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   tags: [
+-- MAGIC     { id:"t01", label:"Connect to IdP", kind:"persona", dest:"account" },
+-- MAGIC     { id:"t02", label:"Create metastore", kind:"data", dest:"account" },
+-- MAGIC     { id:"t03", label:"Create groups", kind:"governance",dest:"account" },
+-- MAGIC     { id:"t04", label:"Catalog owerships", kind:"governance", dest:"metastore" },
+-- MAGIC     { id:"t05", label:"Assign workspace admins", kind:"persona",dest:"account" },
+-- MAGIC     { id:"t06", label:"Assign users to workspace", kind:"persona",dest:"workspace" },
+-- MAGIC     { id:"t07", label:"Connect external storage", kind:"data",dest:"account" },
+-- MAGIC     { id:"t08", label:"Create catalogs", kind:"data", dest:"metastore" },
+-- MAGIC     { id:"t09", label:"Cluster policies", kind:"compute", dest:"workspace" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Corp palette (zone accents are auto-assigned in order below)
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     blue600:  "#2272B4",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Order used to auto-color zones by index (0..N-1)
+-- MAGIC   zoneAccentOrder: ["blue600","green600","lava600","navy800","maroon600","yellow600"]
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initDDX(){
+-- MAGIC   // Basic validation
+-- MAGIC   const n = CONFIG.zones.length;
+-- MAGIC   if (n < CONFIG.minZones || n > CONFIG.maxZones){
+-- MAGIC     throw new Error(`zones must be between ${CONFIG.minZones} and ${CONFIG.maxZones}`);
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   const root = document.getElementById("ddx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   // Build styles (scoped to #ddx)
+-- MAGIC   const css = `
+-- MAGIC #ddx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #ddx, #ddx *{box-sizing:border-box;}
+-- MAGIC .ddx-wrap{background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);padding:12px;overflow:hidden;}
+-- MAGIC .ddx-bank{background:${CONFIG.palette.oatLight};border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;padding:10px;min-height:100px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start;overflow:hidden;}
+-- MAGIC .ddx-grid{margin-top:12px;display:grid;grid-template-columns:repeat(${n},minmax(0,1fr));gap:12px;width:100%;}
+-- MAGIC .ddx-zone{background:color-mix(in srgb, var(--zone-color) 8%, white);border: 2px solid var(--zone-color);border-radius:8px;padding:10px;min-width:0;overflow:hidden;}
+-- MAGIC .ddx-label{font-weight:800;font-size:13px;letter-spacing:.2px;margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+-- MAGIC .ddx-drop{background:#fff;border:2px dashed rgba(48,63,71,.40);border-radius:8px;padding:10px;min-height:160px;display:flex;flex-wrap:wrap;gap:8px;align-content:flex-start;overflow:hidden;min-width:0;max-width:100%;}
+-- MAGIC .ddx-drop.over{outline:3px solid rgba(0,169,114,.25);border-color:rgba(0,169,114,.55);background:rgba(0,169,114,.06);}
+-- MAGIC .ddx-tag{user-select:none;cursor:grab;padding:6px 10px;border-radius:999px;border:2px solid ${CONFIG.palette.grayLines};background:#fff;font-size:13px;display:inline-flex;align-items:center;gap:8px;max-width:100%;}
+-- MAGIC .ddx-tag:active{cursor:grabbing;}
+-- MAGIC
+-- MAGIC .ddx-tag[data-kind="governance"]{--tag-color: ${CONFIG.palette.blue600};}
+-- MAGIC .ddx-tag[data-kind="compute"]{--tag-color: ${CONFIG.palette.grayNav};}
+-- MAGIC .ddx-tag[data-kind="data"]{--tag-color: ${CONFIG.palette.green600};}
+-- MAGIC .ddx-tag[data-kind="tool"]{--tag-color: ${CONFIG.palette.yellow600};}
+-- MAGIC .ddx-tag[data-kind="persona"]{--tag-color: ${CONFIG.palette.navy800};}
+-- MAGIC
+-- MAGIC .ddx-tag{border-color:var(--tag-color);}
+-- MAGIC .ddx-tag .ddx-dot{background: var(--tag-color);}
+-- MAGIC .ddx-dot{width:9px;height:9px;border-radius:999px;opacity:.95;flex:0 0 auto;}
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .ddx-tag.correct{border-color:rgba(0,169,114,.9);background:rgba(0,169,114,.10);}
+-- MAGIC .ddx-tag.wrong{border-color:rgba(255,54,33,.9);background:rgba(255,54,33,.10);animation:ddx-shake .25s linear 1;}
+-- MAGIC @keyframes ddx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .ddx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .ddx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .ddx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .ddx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .ddx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .ddx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .ddx-msg.bad{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:rgba(152,16,42,.05);}
+-- MAGIC
+-- MAGIC @media (max-width:980px){.ddx-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+-- MAGIC @media (max-width:620px){.ddx-grid{grid-template-columns:1fr;}}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // Build DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "ddx-wrap";
+-- MAGIC
+-- MAGIC   const bank = document.createElement("div");
+-- MAGIC   bank.className = "ddx-bank ddx-drop";
+-- MAGIC   bank.setAttribute("data-dropzone","bank");
+-- MAGIC   bank.setAttribute("aria-label","Tag bank");
+-- MAGIC
+-- MAGIC   const grid = document.createElement("div");
+-- MAGIC   grid.className = "ddx-grid";
+-- MAGIC
+-- MAGIC   // Create zones dynamically with auto accents
+-- MAGIC   CONFIG.zones.forEach((z, i) => {
+-- MAGIC     const zone = document.createElement("div");
+-- MAGIC     zone.className = "ddx-zone";
+-- MAGIC     zone.setAttribute("data-zone", z.id);
+-- MAGIC
+-- MAGIC     const accentKey = CONFIG.zoneAccentOrder[i % CONFIG.zoneAccentOrder.length];
+-- MAGIC     const accent = CONFIG.palette[accentKey] || CONFIG.palette.blue600;
+-- MAGIC     zone.style.setProperty("--zone-color", accent);
+-- MAGIC
+-- MAGIC     const label = document.createElement("div");
+-- MAGIC     label.className = "ddx-label";
+-- MAGIC     label.textContent = z.label;
+-- MAGIC
+-- MAGIC     const drop = document.createElement("div");
+-- MAGIC     drop.className = "ddx-drop";
+-- MAGIC     drop.setAttribute("data-dropzone", z.id);
+-- MAGIC     drop.setAttribute("aria-label", z.label);
+-- MAGIC
+-- MAGIC     zone.appendChild(label);
+-- MAGIC     zone.appendChild(drop);
+-- MAGIC     grid.appendChild(zone);
+-- MAGIC   });
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "ddx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "ddx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "ddx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "ddx-msg";
+-- MAGIC   msg.textContent = "Drag tags into zones. Validate when done.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   wrap.appendChild(bank);
+-- MAGIC   wrap.appendChild(grid);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   // Helpers
+-- MAGIC   const zoneIds = new Set(CONFIG.zones.map(z => z.id));
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".ddx-tag").forEach(t => t.classList.remove("correct","wrong"));
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function makeTag(t){
+-- MAGIC     const el = document.createElement("div");
+-- MAGIC     el.className = "ddx-tag";
+-- MAGIC     el.draggable = true;
+-- MAGIC     el.dataset.id = t.id;
+-- MAGIC     if (t.kind) el.dataset.kind = t.kind;
+-- MAGIC
+-- MAGIC     const dot = document.createElement("span");
+-- MAGIC     dot.className = "ddx-dot";
+-- MAGIC     const label = document.createElement("span");
+-- MAGIC     label.textContent = t.label;
+-- MAGIC
+-- MAGIC     el.appendChild(dot);
+-- MAGIC     el.appendChild(label);
+-- MAGIC
+-- MAGIC     el.addEventListener("dragstart", (e) => {
+-- MAGIC       el.classList.remove("correct","wrong"); // user is fixing it
+-- MAGIC
+-- MAGIC       // Custom drag ghost (keep pill shape)
+-- MAGIC       const ghost = el.cloneNode(true);
+-- MAGIC       ghost.style.position = "absolute";
+-- MAGIC       ghost.style.top = "-1000px";
+-- MAGIC       ghost.style.left = "-1000px";
+-- MAGIC       ghost.style.pointerEvents = "none";
+-- MAGIC       ghost.style.opacity = "0.95";
+-- MAGIC       document.body.appendChild(ghost);
+-- MAGIC
+-- MAGIC       const rect = el.getBoundingClientRect();
+-- MAGIC       e.dataTransfer.setDragImage(ghost, rect.width / 2, rect.height / 2);
+-- MAGIC       setTimeout(() => ghost.remove(), 0);
+-- MAGIC
+-- MAGIC       e.dataTransfer.setData("text/plain", t.id);
+-- MAGIC       e.dataTransfer.effectAllowed = "move";
+-- MAGIC     });
+-- MAGIC
+-- MAGIC     return el;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function attachDropzone(zone){
+-- MAGIC     zone.addEventListener("dragover", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zone.classList.add("over");
+-- MAGIC       e.dataTransfer.dropEffect = "move";
+-- MAGIC     });
+-- MAGIC     zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+-- MAGIC     zone.addEventListener("drop", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zone.classList.remove("over");
+-- MAGIC       const id = e.dataTransfer.getData("text/plain");
+-- MAGIC       const tag = root.querySelector(`.ddx-tag[data-id="${id}"]`);
+-- MAGIC       if (tag){
+-- MAGIC         tag.classList.remove("correct","wrong");
+-- MAGIC         zone.appendChild(tag);
+-- MAGIC       }
+-- MAGIC     });
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     // (Optional rule) Require all tags moved out of bank
+-- MAGIC     if (bank.querySelectorAll(".ddx-tag").length > 0){
+-- MAGIC       setMsg("Move everything out of the bank, then validate.", "bad");
+-- MAGIC       // still highlight those as wrong to make the point
+-- MAGIC       bank.querySelectorAll(".ddx-tag").forEach(t => t.classList.add("wrong"));
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     for (const t of CONFIG.tags){
+-- MAGIC       const node = root.querySelector(`.ddx-tag[data-id="${t.id}"]`);
+-- MAGIC       const actual = node?.parentElement?.getAttribute("data-dropzone");
+-- MAGIC       const expected = t.dest;
+-- MAGIC
+-- MAGIC       // guard: bad config
+-- MAGIC       if (!zoneIds.has(expected)){
+-- MAGIC         allCorrect = false;
+-- MAGIC         if (node) node.classList.add("wrong");
+-- MAGIC         continue;
+-- MAGIC       }
+-- MAGIC
+-- MAGIC       if (actual === expected) node.classList.add("correct");
+-- MAGIC       else { node.classList.add("wrong"); allCorrect = false; }
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ All correct." : "Fix the red ones and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     CONFIG.tags.forEach(t => {
+-- MAGIC       const node = root.querySelector(`.ddx-tag[data-id="${t.id}"]`);
+-- MAGIC       if (node) bank.appendChild(node);
+-- MAGIC     });
+-- MAGIC     clearStates();
+-- MAGIC     setMsg("Reset. Drag again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   // Init tags + handlers
+-- MAGIC   bank.innerHTML = "";
+-- MAGIC   CONFIG.tags.forEach(t => bank.appendChild(makeTag(t)));
+-- MAGIC   root.querySelectorAll(".ddx-drop").forEach(attachDropzone);
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## UCX Concepts
+-- MAGIC
+-- MAGIC As you approach a migration from Hive to Unity Catalog, it's important to understand that:
+-- MAGIC
+-- MAGIC - UCX will be your best friend the journey
+-- MAGIC - Like Databricks, UCX has layers which are important to understand
+-- MAGIC
+-- MAGIC In this interactive exercise, you'll sort concepts based on where they live in the platform architecture, prior to any migration activities. Drag each tag into the appropriate box. When everything is placed, click **Validate**.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       You can adjust your answers as many times as you like — this is about building intuition, not memorization.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC <div id="ddx"></div>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC /* =========================
+-- MAGIC    CONFIG — edit only this
+-- MAGIC    ========================= */
+-- MAGIC const CONFIG = {
+-- MAGIC   title: "Drag & Drop",              // optional; used only in aria labels
+-- MAGIC   minZones: 2,
+-- MAGIC   maxZones: 6,
+-- MAGIC
+-- MAGIC   zones: [
+-- MAGIC     { id: "local",    label: "Local Compute Environment" },
+-- MAGIC     { id: "workspace",label: "Workspace" },
+-- MAGIC     { id: "dbfs",      label: "DBFS" },
+-- MAGIC     { id: "hms",      label: "Hive metastore" },
+-- MAGIC     { id: "account",  label: "Account" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   tags: [
+-- MAGIC     { id:"t01", label:"Databricks CLI", kind:"tool", dest:"local" },
+-- MAGIC     { id:"t02", label:"UCX Install", kind:"tool", dest:"local" },
+-- MAGIC     { id:"t03", label:"Groups", kind:"governance",dest:"workspace" },
+-- MAGIC     { id:"t04", label:"UCX Dashboards", kind:"tool", dest:"workspace" },
+-- MAGIC     { id:"t05", label:"UCX Tables", kind:"data",dest:"hms" },
+-- MAGIC     { id:"t06", label:"UCX Workflows", kind:"compute",dest:"workspace" },
+-- MAGIC     { id:"t07", label:"UCX Config YAML", kind:"data",dest:"workspace" },
+-- MAGIC     { id:"t08", label:"Token", kind:"data", dest:"local" },
+-- MAGIC     { id:"t09", label:"Mounts", kind:"data", dest:"dbfs" },
+-- MAGIC   ],
+-- MAGIC
+-- MAGIC   // Corp palette (zone accents are auto-assigned in order below)
+-- MAGIC   palette: {
+-- MAGIC     lava600:  "#FF3621",
+-- MAGIC     maroon600:"#98102A",
+-- MAGIC     blue600:  "#2272B4",
+-- MAGIC     green600: "#00A972",
+-- MAGIC     yellow600:"#FFAB00",
+-- MAGIC     navy800:  "#1B3139",
+-- MAGIC     grayNav:  "#303F47",
+-- MAGIC     grayText: "#5A6F77",
+-- MAGIC     grayLines:"#DCE0E2",
+-- MAGIC     oatMed:   "#EEEDE9",
+-- MAGIC     oatLight: "#F9F7F4"
+-- MAGIC   },
+-- MAGIC
+-- MAGIC   // Order used to auto-color zones by index (0..N-1)
+-- MAGIC   zoneAccentOrder: ["blue600","green600","lava600","navy800","maroon600","yellow600"]
+-- MAGIC };
+-- MAGIC /* ========================= */
+-- MAGIC
+-- MAGIC (function initDDX(){
+-- MAGIC   // Basic validation
+-- MAGIC   const n = CONFIG.zones.length;
+-- MAGIC   if (n < CONFIG.minZones || n > CONFIG.maxZones){
+-- MAGIC     throw new Error(`zones must be between ${CONFIG.minZones} and ${CONFIG.maxZones}`);
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   const root = document.getElementById("ddx");
+-- MAGIC   root.innerHTML = "";
+-- MAGIC
+-- MAGIC   // Build styles (scoped to #ddx)
+-- MAGIC   const css = `
+-- MAGIC #ddx{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:${CONFIG.palette.grayNav};max-width:100%;}
+-- MAGIC #ddx, #ddx *{box-sizing:border-box;}
+-- MAGIC .ddx-wrap{background:#fff;border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;box-shadow:0 1px 0 rgba(0,0,0,.04),0 8px 22px rgba(0,0,0,.06);padding:12px;overflow:hidden;}
+-- MAGIC .ddx-bank{background:${CONFIG.palette.oatLight};border:1px solid ${CONFIG.palette.grayLines};border-radius:8px;padding:10px;min-height:100px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start;overflow:hidden;}
+-- MAGIC .ddx-grid{margin-top:12px;display:grid;grid-template-columns:repeat(${n},minmax(0,1fr));gap:12px;width:100%;}
+-- MAGIC .ddx-zone{background:color-mix(in srgb, var(--zone-color) 8%, white);border: 2px solid var(--zone-color);border-radius:8px;padding:10px;min-width:0;overflow:hidden;}
+-- MAGIC .ddx-label{font-weight:800;font-size:13px;letter-spacing:.2px;margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+-- MAGIC .ddx-drop{background:#fff;border:2px dashed rgba(48,63,71,.40);border-radius:8px;padding:10px;min-height:160px;display:flex;flex-wrap:wrap;gap:8px;align-content:flex-start;overflow:hidden;min-width:0;max-width:100%;}
+-- MAGIC .ddx-drop.over{outline:3px solid rgba(0,169,114,.25);border-color:rgba(0,169,114,.55);background:rgba(0,169,114,.06);}
+-- MAGIC .ddx-tag{user-select:none;cursor:grab;padding:6px 10px;border-radius:999px;border:2px solid ${CONFIG.palette.grayLines};background:#fff;font-size:13px;display:inline-flex;align-items:center;gap:8px;max-width:100%;}
+-- MAGIC .ddx-tag:active{cursor:grabbing;}
+-- MAGIC
+-- MAGIC .ddx-tag[data-kind="governance"]{--tag-color: ${CONFIG.palette.blue600};}
+-- MAGIC .ddx-tag[data-kind="compute"]{--tag-color: ${CONFIG.palette.grayNav};}
+-- MAGIC .ddx-tag[data-kind="data"]{--tag-color: ${CONFIG.palette.green600};}
+-- MAGIC .ddx-tag[data-kind="tool"]{--tag-color: ${CONFIG.palette.yellow600};}
+-- MAGIC .ddx-tag[data-kind="persona"]{--tag-color: ${CONFIG.palette.navy800};}
+-- MAGIC
+-- MAGIC .ddx-tag{border-color:var(--tag-color);}
+-- MAGIC .ddx-tag .ddx-dot{background: var(--tag-color);}
+-- MAGIC .ddx-dot{width:9px;height:9px;border-radius:999px;opacity:.95;flex:0 0 auto;}
+-- MAGIC
+-- MAGIC /* Validation states */
+-- MAGIC .ddx-tag.correct{border-color:rgba(0,169,114,.9);background:rgba(0,169,114,.10);}
+-- MAGIC .ddx-tag.wrong{border-color:rgba(255,54,33,.9);background:rgba(255,54,33,.10);animation:ddx-shake .25s linear 1;}
+-- MAGIC @keyframes ddx-shake{0%{transform:translateX(0);}25%{transform:translateX(-2px);}50%{transform:translateX(2px);}75%{transform:translateX(-2px);}100%{transform:translateX(0);}}
+-- MAGIC
+-- MAGIC /* Controls */
+-- MAGIC .ddx-controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+-- MAGIC .ddx-btn{border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 12px;font-weight:800;color:${CONFIG.palette.grayNav};}
+-- MAGIC .ddx-btn.primary{background:${CONFIG.palette.blue600};border-color:${CONFIG.palette.blue600};color:#fff;}
+-- MAGIC .ddx-btn.danger{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:#fff;}
+-- MAGIC .ddx-msg{flex:1;min-width:260px;border-radius:8px;border:1px solid ${CONFIG.palette.grayLines};background:#fff;padding:8px 10px;font-size:13px;color:${CONFIG.palette.grayText};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+-- MAGIC .ddx-msg.good{border-color:rgba(0,169,114,.35);color:${CONFIG.palette.green600};background:rgba(0,169,114,.05);}
+-- MAGIC .ddx-msg.bad{border-color:rgba(152,16,42,.35);color:${CONFIG.palette.maroon600};background:rgba(152,16,42,.05);}
+-- MAGIC
+-- MAGIC @media (max-width:980px){.ddx-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+-- MAGIC @media (max-width:620px){.ddx-grid{grid-template-columns:1fr;}}
+-- MAGIC   `.trim();
+-- MAGIC
+-- MAGIC   const style = document.createElement("style");
+-- MAGIC   style.textContent = css;
+-- MAGIC   document.head.appendChild(style);
+-- MAGIC
+-- MAGIC   // Build DOM
+-- MAGIC   const wrap = document.createElement("div");
+-- MAGIC   wrap.className = "ddx-wrap";
+-- MAGIC
+-- MAGIC   const bank = document.createElement("div");
+-- MAGIC   bank.className = "ddx-bank ddx-drop";
+-- MAGIC   bank.setAttribute("data-dropzone","bank");
+-- MAGIC   bank.setAttribute("aria-label","Tag bank");
+-- MAGIC
+-- MAGIC   const grid = document.createElement("div");
+-- MAGIC   grid.className = "ddx-grid";
+-- MAGIC
+-- MAGIC   // Create zones dynamically with auto accents
+-- MAGIC   CONFIG.zones.forEach((z, i) => {
+-- MAGIC     const zone = document.createElement("div");
+-- MAGIC     zone.className = "ddx-zone";
+-- MAGIC     zone.setAttribute("data-zone", z.id);
+-- MAGIC
+-- MAGIC     const accentKey = CONFIG.zoneAccentOrder[i % CONFIG.zoneAccentOrder.length];
+-- MAGIC     const accent = CONFIG.palette[accentKey] || CONFIG.palette.blue600;
+-- MAGIC     zone.style.setProperty("--zone-color", accent);
+-- MAGIC
+-- MAGIC     const label = document.createElement("div");
+-- MAGIC     label.className = "ddx-label";
+-- MAGIC     label.textContent = z.label;
+-- MAGIC
+-- MAGIC     const drop = document.createElement("div");
+-- MAGIC     drop.className = "ddx-drop";
+-- MAGIC     drop.setAttribute("data-dropzone", z.id);
+-- MAGIC     drop.setAttribute("aria-label", z.label);
+-- MAGIC
+-- MAGIC     zone.appendChild(label);
+-- MAGIC     zone.appendChild(drop);
+-- MAGIC     grid.appendChild(zone);
+-- MAGIC   });
+-- MAGIC
+-- MAGIC   const controls = document.createElement("div");
+-- MAGIC   controls.className = "ddx-controls";
+-- MAGIC
+-- MAGIC   const btnValidate = document.createElement("button");
+-- MAGIC   btnValidate.className = "ddx-btn primary";
+-- MAGIC   btnValidate.textContent = "Validate";
+-- MAGIC
+-- MAGIC   const btnReset = document.createElement("button");
+-- MAGIC   btnReset.className = "ddx-btn danger";
+-- MAGIC   btnReset.textContent = "Reset";
+-- MAGIC
+-- MAGIC   const msg = document.createElement("div");
+-- MAGIC   msg.className = "ddx-msg";
+-- MAGIC   msg.textContent = "Drag tags into zones. Validate when done.";
+-- MAGIC
+-- MAGIC   controls.appendChild(btnValidate);
+-- MAGIC   controls.appendChild(btnReset);
+-- MAGIC   controls.appendChild(msg);
+-- MAGIC
+-- MAGIC   wrap.appendChild(bank);
+-- MAGIC   wrap.appendChild(grid);
+-- MAGIC   wrap.appendChild(controls);
+-- MAGIC   root.appendChild(wrap);
+-- MAGIC
+-- MAGIC   // Helpers
+-- MAGIC   const zoneIds = new Set(CONFIG.zones.map(z => z.id));
+-- MAGIC
+-- MAGIC   function setMsg(text, state){
+-- MAGIC     msg.classList.remove("good","bad");
+-- MAGIC     msg.textContent = text;
+-- MAGIC     if (state === "good") msg.classList.add("good");
+-- MAGIC     if (state === "bad") msg.classList.add("bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function clearStates(){
+-- MAGIC     root.querySelectorAll(".ddx-tag").forEach(t => t.classList.remove("correct","wrong"));
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function makeTag(t){
+-- MAGIC     const el = document.createElement("div");
+-- MAGIC     el.className = "ddx-tag";
+-- MAGIC     el.draggable = true;
+-- MAGIC     el.dataset.id = t.id;
+-- MAGIC     if (t.kind) el.dataset.kind = t.kind;
+-- MAGIC
+-- MAGIC     const dot = document.createElement("span");
+-- MAGIC     dot.className = "ddx-dot";
+-- MAGIC     const label = document.createElement("span");
+-- MAGIC     label.textContent = t.label;
+-- MAGIC
+-- MAGIC     el.appendChild(dot);
+-- MAGIC     el.appendChild(label);
+-- MAGIC
+-- MAGIC     el.addEventListener("dragstart", (e) => {
+-- MAGIC       el.classList.remove("correct","wrong"); // user is fixing it
+-- MAGIC
+-- MAGIC       // Custom drag ghost (keep pill shape)
+-- MAGIC       const ghost = el.cloneNode(true);
+-- MAGIC       ghost.style.position = "absolute";
+-- MAGIC       ghost.style.top = "-1000px";
+-- MAGIC       ghost.style.left = "-1000px";
+-- MAGIC       ghost.style.pointerEvents = "none";
+-- MAGIC       ghost.style.opacity = "0.95";
+-- MAGIC       document.body.appendChild(ghost);
+-- MAGIC
+-- MAGIC       const rect = el.getBoundingClientRect();
+-- MAGIC       e.dataTransfer.setDragImage(ghost, rect.width / 2, rect.height / 2);
+-- MAGIC       setTimeout(() => ghost.remove(), 0);
+-- MAGIC
+-- MAGIC       e.dataTransfer.setData("text/plain", t.id);
+-- MAGIC       e.dataTransfer.effectAllowed = "move";
+-- MAGIC     });
+-- MAGIC
+-- MAGIC     return el;
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function attachDropzone(zone){
+-- MAGIC     zone.addEventListener("dragover", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zone.classList.add("over");
+-- MAGIC       e.dataTransfer.dropEffect = "move";
+-- MAGIC     });
+-- MAGIC     zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+-- MAGIC     zone.addEventListener("drop", (e) => {
+-- MAGIC       e.preventDefault();
+-- MAGIC       zone.classList.remove("over");
+-- MAGIC       const id = e.dataTransfer.getData("text/plain");
+-- MAGIC       const tag = root.querySelector(`.ddx-tag[data-id="${id}"]`);
+-- MAGIC       if (tag){
+-- MAGIC         tag.classList.remove("correct","wrong");
+-- MAGIC         zone.appendChild(tag);
+-- MAGIC       }
+-- MAGIC     });
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function validate(){
+-- MAGIC     clearStates();
+-- MAGIC
+-- MAGIC     // (Optional rule) Require all tags moved out of bank
+-- MAGIC     if (bank.querySelectorAll(".ddx-tag").length > 0){
+-- MAGIC       setMsg("Move everything out of the bank, then validate.", "bad");
+-- MAGIC       // still highlight those as wrong to make the point
+-- MAGIC       bank.querySelectorAll(".ddx-tag").forEach(t => t.classList.add("wrong"));
+-- MAGIC       return;
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     let allCorrect = true;
+-- MAGIC
+-- MAGIC     for (const t of CONFIG.tags){
+-- MAGIC       const node = root.querySelector(`.ddx-tag[data-id="${t.id}"]`);
+-- MAGIC       const actual = node?.parentElement?.getAttribute("data-dropzone");
+-- MAGIC       const expected = t.dest;
+-- MAGIC
+-- MAGIC       // guard: bad config
+-- MAGIC       if (!zoneIds.has(expected)){
+-- MAGIC         allCorrect = false;
+-- MAGIC         if (node) node.classList.add("wrong");
+-- MAGIC         continue;
+-- MAGIC       }
+-- MAGIC
+-- MAGIC       if (actual === expected) node.classList.add("correct");
+-- MAGIC       else { node.classList.add("wrong"); allCorrect = false; }
+-- MAGIC     }
+-- MAGIC
+-- MAGIC     setMsg(allCorrect ? "✅ All correct." : "Fix the red ones and validate again.", allCorrect ? "good" : "bad");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   function reset(){
+-- MAGIC     CONFIG.tags.forEach(t => {
+-- MAGIC       const node = root.querySelector(`.ddx-tag[data-id="${t.id}"]`);
+-- MAGIC       if (node) bank.appendChild(node);
+-- MAGIC     });
+-- MAGIC     clearStates();
+-- MAGIC     setMsg("Reset. Drag again.", "");
+-- MAGIC   }
+-- MAGIC
+-- MAGIC   // Init tags + handlers
+-- MAGIC   bank.innerHTML = "";
+-- MAGIC   CONFIG.tags.forEach(t => bank.appendChild(makeTag(t)));
+-- MAGIC   root.querySelectorAll(".ddx-drop").forEach(attachDropzone);
+-- MAGIC
+-- MAGIC   btnValidate.addEventListener("click", validate);
+-- MAGIC   btnReset.addEventListener("click", reset);
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC &copy; <span id="dbx-year"></span> Databricks, Inc. All rights reserved. Apache, Apache Spark, Spark, the Spark Logo, Apache Iceberg, Iceberg, and the Apache Iceberg logo are trademarks of the <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a>.<br/><br/><a href="https://databricks.com/privacy-policy" target="_blank">Privacy Policy</a> | <a href="https://databricks.com/terms-of-use" target="_blank">Terms of Use</a> | <a href="https://help.databricks.com/" target="_blank">Support</a>
+-- MAGIC <script>
+-- MAGIC   document.getElementById("dbx-year").textContent = new Date().getFullYear();
+-- MAGIC </script>

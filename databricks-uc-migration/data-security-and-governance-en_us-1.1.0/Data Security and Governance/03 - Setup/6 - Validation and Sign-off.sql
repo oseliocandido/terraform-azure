@@ -1,0 +1,509 @@
+-- Databricks notebook source
+-- MAGIC %md-sandbox
+-- MAGIC <div style="display:flex; align-items:center; padding:10px 18px; background:#F8F9FA; border-bottom:1px solid #E0E0E0; gap:10px;">
+-- MAGIC   <img src="https://cdn.simpleicons.org/databricks/FF3621" width="22" height="22"/>
+-- MAGIC   <div style="font-size:14px; color:#666; white-space:nowrap;">
+-- MAGIC     <span style="font-weight:600; color:#333;">Academy</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Data Security & Governance Delivery Expert</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span>Setup</span>
+-- MAGIC     <span style="margin:0 10px; color:#bbb;">|</span>
+-- MAGIC     <span style="font-weight:600; color:#eb1900;">Validation and Sign-off</span>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC
+-- MAGIC <div style="text-align: center; line-height: 0; padding-top: 9px;">
+-- MAGIC   <img
+-- MAGIC     src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png"
+-- MAGIC     alt="Databricks Learning"
+-- MAGIC   >
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC # Validation and Sign-off
+-- MAGIC
+-- MAGIC This lesson composes a checklist to confirm foundation readiness before migration cutover.
+-- MAGIC
+-- MAGIC Pre‑validation inputs:
+-- MAGIC - UC metastore is created and attached to the target workspace
+-- MAGIC - Baseline catalogs/schemas exist; ownership assigned to groups; default privileges planned by persona
+-- MAGIC - External locations and storage credentials are registered for each domain needing access.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #ff9800; background: #fff3e0; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">⚠️</span>
+-- MAGIC     <div>
+-- MAGIC       This notebook is not supported for execution on Databricks Academy provided workspaces. The material is intended to be a study guide, to be run in your own sandbox environments if you would like. Databricks Academy does not provide an account with a live HMS, administrator level access, or an AWS account, all of which would be required to perform all the activities in these notebooks.<p>
+-- MAGIC       <strong>The notebooks flagged as labs in the agenda can be run in a Databricks Academy provided Vocareum workspace and allow you to put the concepts into practice.</strong>
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## Learning Objectives
+-- MAGIC
+-- MAGIC By the end of this lesson, you will be able to:
+-- MAGIC - Confirm foundation readiness
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## A. Compute Readiness
+-- MAGIC
+-- MAGIC In this section, we validate that compute resources can access the Unity Catalog three-level namespace. We'll formulate two simple tests that can validate this.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### A1. Tests
+-- MAGIC
+-- MAGIC In the [accompanying notebook]($./Includes/Validate UC Connectivity), we formulate two simple tests that can validate Unity Catalog connectivity:
+-- MAGIC - **Enumerate catalogs:** in an HMS system (or compute resource with HMS-only visibility) only one catalog exists: `spark_catalog`, whereas with Unity Catalog, any number of entries can exist at the catalog level. 
+-- MAGIC - **Access three-level namespace:** attempting to access a table/view in the three-level namespace would immediately fail on a compute resource without UC visibility.
+-- MAGIC
+-- MAGIC These tests are implemented in SQL as a notebook and can be executed interactively on classic compute, or as a task in a job.
+-- MAGIC
+-- MAGIC
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### Testing Interactive Clusters
+-- MAGIC
+-- MAGIC When running mixed (non-SQL) workloads interactively in a notebook, you must use either serverless or classic compute. While Databricks recommends using serverless where possible (which is automatically UC aware), not all functionality is supported on serverless as documented [here](https://docs.databricks.com/aws/en/compute/serverless/limitations). Therefore you will typically need access to classic clusters with Unity Catalog connectivity.
+-- MAGIC
+-- MAGIC If the workspace has been configured with clusters pre-provisioned for users, then all configurations should be tested. If user cluster creation is permitted through a policy, then all configurations allowed through the policy (specifically focusing on **Access mode**) should be tested.
+-- MAGIC
+-- MAGIC To conduct the tests, follow the link to [this notebook]($./Includes/Validate UC Connectivity) and **Run all** against each configuration under test.
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC #### Testing Job Clusters
+-- MAGIC
+-- MAGIC When running mixed (non-SQL) workloads as part of a job, you must use either serverless or classic compute. While Databricks recommends using serverless where possible (which is automatically UC aware), not all functionality is supported on serverless as documented [here](https://docs.databricks.com/aws/en/compute/serverless/limitations). Therefore you will typically need access to classic clusters with Unity Catalog connectivity.
+-- MAGIC
+-- MAGIC If the workspace has been configured with clusters pre-provisioned for jobs, then all configurations should be tested. If job cluster creation is permitted through a policy, then all configurations allowed through the policy (specifically focusing on **Access mode**) should be tested.
+-- MAGIC
+-- MAGIC To conduct the tests, create a job with a notebook task that runs [this notebook]($./Includes/Validate UC Connectivity). Run the job against each compute configuration under test.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC #### Testing SQL Warehouses
+-- MAGIC
+-- MAGIC SQL warehouse are straightforward with respect to Unity Catalog configuration, with a single binary option enabling UC.
+-- MAGIC
+-- MAGIC If the workspace has been configured with SQL warehouse pre-provisioned for users, then a representative instance should be used to run the following queries in a SQL editor (or a notebook connected with the warehouse). Otherwise, if users are permitted to create their own, they should be instructed to ensure the UC option is enabled on the warehouses they create.
+-- MAGIC
+-- MAGIC ##### Catalog test
+-- MAGIC
+-- MAGIC The following SQL command enumerates available catalogs:
+-- MAGIC <div class="code-block" data-language="sql">
+-- MAGIC SHOW CATALOGS
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC **Success criteria**
+-- MAGIC
+-- MAGIC On a UC-aware SQL warehouse, this command returns a list of catalogs, including `hive_metastore`, `main`, `system`, and any other permitted catalogs. On a SQL warehouse with no UC visibility, only `spark_catalog` is returned.
+-- MAGIC
+-- MAGIC ##### Three-level namespace test
+-- MAGIC
+-- MAGIC The following SQL command attempts a three-level namespace reference as part of a `SELECT` statement:
+-- MAGIC <div class="code-block" data-language="sql">
+-- MAGIC SELECT * FROM main.information_schema.tables
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC **Success criteria**
+-- MAGIC
+-- MAGIC On a UC-aware SQL warehouse, this command displays a list of table metadata records. On a SQL warehouse with no UC visibility, an error is triggered.
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## B. Storage Access
+-- MAGIC
+-- MAGIC In cases where external storage has been registered in the UC metastore, each external location should be tested for read-only or read-write operation (depending on configuration).
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### B1. Catalog/Schema Isolation
+-- MAGIC
+-- MAGIC For external locations that have been used to override the managed storage location of a catalog:
+-- MAGIC - test read operations by performing a `SELECT` on any contained table (as a suitably permitted principal)
+-- MAGIC - test write operations 
+-- MAGIC    - `CREATE` a test table in a suitably permitted schema
+-- MAGIC    - Perform `INSERT INTO` to trigger data creation
+-- MAGIC    - Use `SELECT` to validate the update
+-- MAGIC    - `DROP` test table when done
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### B2. External Tables
+-- MAGIC
+-- MAGIC For external locations that have been used in an external table:
+-- MAGIC - test read operations by performing a `SELECT` on the table
+-- MAGIC - test write operations 
+-- MAGIC    - Perform `INSERT INTO` to trigger addition of test record data
+-- MAGIC    - If desired, use `DELETE FROM` to delete the test record
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### B3. External Volumes
+-- MAGIC
+-- MAGIC Volumes are accessible through a file system namespace using the following pattern as a prefix:
+-- MAGIC ```
+-- MAGIC /Volumes/&lt;catalog_name&gt;/&lt;schema_name&gt;/&lt;volume_name&gt;
+-- MAGIC ```
+-- MAGIC
+-- MAGIC #### Read test
+-- MAGIC
+-- MAGIC To test read access on external volumes (for example, DBFS mount replacements), begin by identifying a test file known to exist.
+-- MAGIC
+-- MAGIC As an example, suppose we:
+-- MAGIC - identify a file `/1999/12/31/02.json` known to exist in the storage container
+-- MAGIC - the catalog containing the volume is `fin_dev`
+-- MAGIC - the schema within `fin_dev` containing the volume is `bronze`
+-- MAGIC - the volume within the `bronze` schema is named `landing`
+-- MAGIC
+-- MAGIC Validate read access by running a command like the following in a notebook attached to a cluster known to work with UC (serverless is a great option here):
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC %sh head /Volumes/fin_dev/bronze/landing/1999/12/31/02.json
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC **Success criteria**
+-- MAGIC
+-- MAGIC This command displays the first few lines of the referenced file. If the storage location is not reachable, an error will be triggered.
+-- MAGIC
+-- MAGIC #### Write test
+-- MAGIC
+-- MAGIC Validate write access by running a command like the following in a notebook attached to a cluster known to work with UC (serverless is a great option here):
+-- MAGIC <div class="code-block" data-language="bash">
+-- MAGIC %sh echo "test" >> /Volumes/fin_dev/bronze/landing/test.txt
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+-- MAGIC
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## C. Identity and Access Management
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ### C1. IdP Federation
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       This validation can only be performed by an account admin.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC Account admins and IdP admins should jointly validate that users/groups are being provisioned in the Databricks accounts in response to IdP events and configured policies (new users added, old users removed). Specifically, account admins can verify the following in the Account Console:
+-- MAGIC - SCIM settings can be verified in the **User provisioning** tab of the **Security** page
+-- MAGIC - test users added by the IdP should be populated automatically in the account; this can be verified in the **Users** and **Groups** tabs of the **User management** page
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ### C2. Migration of Workspace Groups
+-- MAGIC
+-- MAGIC Workspace groups (that matter for data governance purposes) must be migrated to the account level to participate in data governance.
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC #### C2.1 Validate from the Workspace
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       This validation can only be performed by a workspace admin.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC In the workspace originally containing the groups, a workspace admin can verify group migration in the workspace admin console.
+-- MAGIC - In the **Identity and access** page, click **Manage** in the **Groups** section
+-- MAGIC - Identify groups relevant to data governance policies; all groups should have *Account* shown in the **Source** column
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC #### C2.1 Validate from Unity Catalog
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       This validation can only be performed by a metastore admin.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC Workspace groups cannot have privileges or ownerships. This can be validated from any UC-enabled workspace as a metastore admin by attempting to assign a privilege to the group in question.
+-- MAGIC
+-- MAGIC In a notebook or query editor, execute the following SQL statement on any UC-enabled compute resource.
+-- MAGIC
+-- MAGIC <div class="code-block" data-language="sql">
+-- MAGIC CREATE CATALOG test_catalog
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC Then, execute the following SQL statement to issues a simple grant (substituting the group in question):
+-- MAGIC
+-- MAGIC <div class="code-block" data-language="sql">
+-- MAGIC GRANT BROWSE ON CATALOG test_catalog TO {group}
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC ##### Success criteria
+-- MAGIC
+-- MAGIC This command succeeds if the group exists at the account level. If a `PRINCIPAL_DOES_NOT_EXIST` error is triggered, this indicates that the group has not yet been promoted to the account level.
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       When done with validating all groups, you can delete the catalog using <code>DROP CATALOG test_catalog CASCADE</code>.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC ## D. Ownership and Base Grants
+-- MAGIC
+-- MAGIC <div style="border-left: 4px solid #1976d2; background: #e3f2fd; padding: 16px 20px; border-radius: 8px; margin: 16px 0;">
+-- MAGIC   <div style="display: flex; align-items: center; gap: 12px;">
+-- MAGIC     <span style="font-size: 24px;">ℹ️</span>
+-- MAGIC     <div>
+-- MAGIC       This validation can only be performed by a metastore admin.
+-- MAGIC     </div>
+-- MAGIC   </div>
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC All created catalogs must be audited to ensure that ownerships and grants match requirements. Grants can be audited from any UC-enabled workspace, using one of:
+-- MAGIC - Catalog Explorer user interface
+-- MAGIC - SQL statements
+-- MAGIC
+-- MAGIC To capture grants on a catalog from SQL:
+-- MAGIC <div class="code-block" data-language="sql">
+-- MAGIC SHOW GRANTS ON CATALOG test_catalog2
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC To capture ownership of a catalog from SQL:
+-- MAGIC <div class="code-block" data-language="sql">
+-- MAGIC DESCRIBE CATALOG test_catalog
+-- MAGIC </div>
+-- MAGIC
+-- MAGIC <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+-- MAGIC <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+-- MAGIC
+-- MAGIC <script>
+-- MAGIC (function() {
+-- MAGIC     document.querySelectorAll('.code-block').forEach(function(block) {
+-- MAGIC         if (block.getAttribute('data-processed')) return;
+-- MAGIC         block.setAttribute('data-processed', 'true');
+-- MAGIC         var lang = block.getAttribute('data-language') || 'sql';
+-- MAGIC         var code = block.textContent.trim();
+-- MAGIC         var id = 'code-' + Math.random().toString(36).substr(2, 9);
+-- MAGIC         block.innerHTML = 
+-- MAGIC             '<div style="position:relative;margin:16px 0;">' +
+-- MAGIC                 '<button class="copy-btn" style="position:absolute;top:8px;right:8px;padding:4px 12px;font-size:12px;background:#ddd;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;z-index:10;">Copy</button>' +
+-- MAGIC                 '<pre style="background:#f8f8f8;border-radius:8px;padding:16px;padding-top:40px;overflow-x:auto;margin:0;border:1px solid #e0e0e0;"><code id="' + id + '" class="language-' + lang + '" style="font-family:Consolas,Monaco,monospace;font-size:14px;"></code></pre>' +
+-- MAGIC             '</div>';
+-- MAGIC         var codeEl = document.getElementById(id);
+-- MAGIC         codeEl.textContent = code;
+-- MAGIC         Prism.highlightElement(codeEl);
+-- MAGIC         block.querySelector('.copy-btn').onclick = function() {
+-- MAGIC             var t = document.createElement('textarea');
+-- MAGIC             t.value = code;
+-- MAGIC             document.body.appendChild(t);
+-- MAGIC             t.select();
+-- MAGIC             document.execCommand('copy');
+-- MAGIC             document.body.removeChild(t);
+-- MAGIC             this.textContent = '✓ Copied!';
+-- MAGIC             setTimeout(() => this.textContent = 'Copy', 2000);
+-- MAGIC         };
+-- MAGIC     });
+-- MAGIC })();
+-- MAGIC </script>
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC ## E. Record Acceptance 
+-- MAGIC
+-- MAGIC Criteria and acceptance should be formally recorded using assets from the **UC Migration Service Delivery Kit**, or pursuant to a template as follows:
+-- MAGIC
+-- MAGIC [ ] Stakeholder acceptance is captured (platform, security, business owners) and archived in your migration tracker.<br>
+-- MAGIC [ ] Validation artifacts (logs, screenshots, scripts, UCX outputs) are linked in the tracker for transparency and future audits.<br>
+-- MAGIC
+-- MAGIC ### Acceptance record (copy/paste into tracker):
+-- MAGIC
+-- MAGIC #### Project/workspace: ____________________
+-- MAGIC
+-- MAGIC #### Environment(s):
+-- MAGIC [ ] dev<br>
+-- MAGIC [ ] test<br>
+-- MAGIC [ ] prod<br>
+-- MAGIC [ ] other ____________________
+-- MAGIC
+-- MAGIC #### Validation scope (check all that apply):
+-- MAGIC [ ] UC‑enabled clusters/warehouses<br>
+-- MAGIC [ ] Storage access<br>
+-- MAGIC [ ] Group federation<br>
+-- MAGIC [ ] Base grants
+-- MAGIC
+-- MAGIC #### Evidence links:
+-- MAGIC - Migration tracker URL: ____________________
+-- MAGIC - Validation artifacts folder: ____________________
+-- MAGIC
+-- MAGIC #### Risks/exceptions and mitigations:
+-- MAGIC - Item: ____________________
+-- MAGIC - Owner: ____________________
+-- MAGIC - Due date: ____________________
+-- MAGIC
+-- MAGIC #### Go/No‑Go decision:
+-- MAGIC [ ] Go<br>
+-- MAGIC [ ] No‑Go
+-- MAGIC - Preconditions/waivers: ____________________
+-- MAGIC - Rollback plan link: ____________________
+-- MAGIC
+-- MAGIC #### Stakeholder approvals:
+-- MAGIC - Platform owner — Name, Title, Org, Date: ____________________
+-- MAGIC - Security/CISO — Name, Title, Org, Date: ____________________
+-- MAGIC - Data/BI owner — Name, Title, Org, Date: ____________________
+-- MAGIC
+-- MAGIC #### Communications:
+-- MAGIC - Audience: ____________________
+-- MAGIC - Channels (email, Slack, change ticket): ____________________
+-- MAGIC - Sent date: ____________________
+
+-- COMMAND ----------
+
+-- MAGIC %md-sandbox
+-- MAGIC &copy; <span id="dbx-year"></span> Databricks, Inc. All rights reserved. Apache, Apache Spark, Spark, the Spark Logo, Apache Iceberg, Iceberg, and the Apache Iceberg logo are trademarks of the <a href="https://www.apache.org/" target="_blank">Apache Software Foundation</a>.<br/><br/><a href="https://databricks.com/privacy-policy" target="_blank">Privacy Policy</a> | <a href="https://databricks.com/terms-of-use" target="_blank">Terms of Use</a> | <a href="https://help.databricks.com/" target="_blank">Support</a>
+-- MAGIC <script>
+-- MAGIC   document.getElementById("dbx-year").textContent = new Date().getFullYear();
+-- MAGIC </script>
