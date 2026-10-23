@@ -115,3 +115,33 @@ variable "access_request_email" {
   default     = null
   description = "Email for Unity Catalog access-request notifications on the domain catalogs; null disables the destination."
 }
+
+variable "enable_predictive_optimization" {
+  type        = string
+  default     = "INHERIT"
+  description = "Predictive optimization for the domain catalogs: ENABLE, DISABLE or INHERIT (follow the account setting)."
+}
+
+variable "enable_tags" {
+  type        = bool
+  default     = false
+  description = "Tag the domain catalogs and schemas (domain, layer). Needs APPLY TAG for the CI identity."
+}
+
+variable "manage_account_tag_policies" {
+  type        = bool
+  default     = false
+  description = "Create the governed tag policies (sensitivity, layer). They are account-wide, so exactly one environment (dev) sets this; a second would fail with 'already exists'."
+}
+
+variable "enable_audit_access" {
+  type        = bool
+  default     = false
+  description = "Enable the system.access schema and let each domain's governance group read system.access.audit. Needs an account or metastore admin to apply."
+}
+
+variable "enable_security_schema" {
+  type        = bool
+  default     = false
+  description = "Create a security schema in each domain catalog for the mask and row-filter functions, and give CI the privileges to create them and manage ABAC policies."
+}

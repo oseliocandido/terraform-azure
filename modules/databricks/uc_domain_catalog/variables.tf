@@ -60,3 +60,26 @@ variable "access_request_email" {
   default     = null
   description = "Email that receives access requests for this catalog; null leaves the destination unset. Use a shared mailbox."
 }
+
+variable "enable_predictive_optimization" {
+  type        = string
+  default     = "INHERIT"
+  description = "Predictive optimization for this catalog: ENABLE, DISABLE or INHERIT (follow the metastore/account setting)."
+
+  validation {
+    condition     = contains(["ENABLE", "DISABLE", "INHERIT"], var.enable_predictive_optimization)
+    error_message = "enable_predictive_optimization must be one of: ENABLE, DISABLE, INHERIT."
+  }
+}
+
+variable "enable_tags" {
+  type        = bool
+  default     = false
+  description = "Tag the catalog (domain) and its schemas (layer). Off by default: assigning tags needs APPLY TAG, which the CI identity may not have yet."
+}
+
+variable "enable_security_schema" {
+  type        = bool
+  default     = false
+  description = "Create the security schema that holds the mask and row-filter functions, and let CI create functions in it and manage ABAC policies on the catalog."
+}

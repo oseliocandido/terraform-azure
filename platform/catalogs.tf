@@ -63,7 +63,11 @@ module "unity_catalog_sales" {
   engineers_can_modify = var.engineers_can_modify
   access_request_email = var.access_request_email
 
-  depends_on = [databricks_grants.metastore_admins, module.uc_storage]
+  enable_predictive_optimization = var.enable_predictive_optimization
+  enable_tags                    = var.enable_tags
+  enable_security_schema         = var.enable_security_schema
+
+  depends_on = [databricks_grants.metastore_admins, module.uc_storage, databricks_tag_policy.layer]
 }
 
 # Its own storage container: Unity Catalog locations may not overlap, so it
@@ -84,5 +88,9 @@ module "unity_catalog_marketing" {
   engineers_can_modify = var.engineers_can_modify
   access_request_email = var.access_request_email
 
-  depends_on = [databricks_grants.metastore_admins, module.uc_storage]
+  enable_predictive_optimization = var.enable_predictive_optimization
+  enable_tags                    = var.enable_tags
+  enable_security_schema         = var.enable_security_schema
+
+  depends_on = [databricks_grants.metastore_admins, module.uc_storage, databricks_tag_policy.layer]
 }
