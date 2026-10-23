@@ -29,7 +29,9 @@ flowchart LR
 ```
 
 - **Landing:** raw files from each source system, kept for five years, then
-  tiered to cheaper storage and deleted.
+  tiered to cheaper storage and deleted. Source systems write under a `landing/`
+  folder in their container; the Unity Catalog volume points there, not at the
+  container root.
 - **Bronze:** the single raw copy of the data, shared by every domain.
 - **Silver and gold:** each business domain (`sales`, `marketing`) has its own
   catalog with refined and business-ready schemas.
@@ -66,7 +68,14 @@ flowchart TB
 
 Dev and prod share one metastore but are isolated by Azure RBAC on each resource
 group and by Unity Catalog workspace binding, which hides each environment's
-catalogs from the other workspace even for users with grants.
+catalogs from the other workspace even for users with grants. The storage
+credential and external locations are isolated the same way
+(`ISOLATION_MODE_ISOLATED`), so each environment can only use its own.
+
+Everyone in the account can `BROWSE` the domain catalogs to find tables, and an
+access-request destination (`access_request_email`) receives requests for data
+they cannot yet read. In dev, engineers hold `MODIFY` on domain tables
+(`engineers_can_modify`); prod leaves it off until a pipeline principal exists.
 
 ## Terraform structure
 

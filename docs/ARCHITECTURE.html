@@ -435,7 +435,7 @@ flowchart TB
           <li><b>Catalogs.</b> One per domain per environment (<code>sales_dev</code>, <code>marketing_dev</code>) plus a non-domain <code>ingestion_&lt;env&gt;</code>. Each has its own storage root registered as an external location.</li>
           <li><b>Schemas.</b> Domain catalogs have <span class="pill silver">silver</span> and <span class="pill gold">gold</span>. <span class="pill bronze">bronze</span> exists once, in <code>ingestion_&lt;env&gt;</code>: it is source-system-oriented raw data, so a per-domain bronze would duplicate it. A domain reads raw data through an explicit grant and builds silver from it.</li>
           <li><b>External locations.</b> Bronze (file events off), one per landing container (read-only, file events on), and one per catalog root. All use the shared credential.</li>
-          <li><b>Volumes</b> in <code>ingestion_&lt;env&gt;.bronze</code>: an <code>EXTERNAL</code> <code>&lt;system&gt;_landing</code> volume per source system over its landing location, and one shared <code>MANAGED</code> <code>checkpoints</code> volume (a folder per source system) reserved for Auto Loader state. It is stored in the <code>bronze</code> container, because a schema's storage root overrides its catalog's.</li>
+          <li><b>Volumes</b> in <code>ingestion_&lt;env&gt;.bronze</code>: an <code>EXTERNAL</code> <code>&lt;system&gt;_landing</code> volume per source system over the <code>landing/</code> folder of its landing container (never the container root, which is also the location root), and one shared <code>MANAGED</code> <code>checkpoints</code> volume (a folder per source system) reserved for Auto Loader state. It is stored in the <code>bronze</code> container, because a schema's storage root overrides its catalog's.</li>
         </ul>
       </div>
     </section>
@@ -443,7 +443,7 @@ flowchart TB
     <section id="ingest">
       <div class="decision-block">
         <h2><span class="num">2.6</span>Ingestion flow</h2>
-        <pre class="code">source system --(Azure RBAC write)--&gt; landing-&lt;system&gt;
+        <pre class="code">source system --(Azure RBAC write)--&gt; landing-&lt;system&gt;/landing/
   --&gt; read-only external location (file events on)
   --&gt; EXTERNAL volume  ingestion_&lt;env&gt;.bronze.&lt;system&gt;_landing
   --&gt; [future] Auto Loader, checkpoint in checkpoints/&lt;system&gt;
@@ -459,7 +459,7 @@ flowchart TB
         <p>Three independent layers are checked on every request:</p>
         <table>
           <tr><th>#</th><th>Layer</th><th>What it decides</th></tr>
-          <tr><td>1</td><td><b>Workspace binding</b> (Unity Catalog)</td><td>Catalogs are <code>ISOLATED</code> and bound to one workspace, so a catalog is hidden and unusable from any other workspace, even with grants. Schemas and volumes inherit the binding. The credential and external locations stay <code>OPEN</code> (optional hardening).</td></tr>
+          <tr><td>1</td><td><b>Workspace binding</b> (Unity Catalog)</td><td>Catalogs are <code>ISOLATED</code> and bound to one workspace, so a catalog is hidden and unusable from any other workspace, even with grants. Schemas and volumes inherit the binding. The storage credential and the bronze, landing and managed external locations are <code>ISOLATION_MODE_ISOLATED</code> too, bound to the workspace that created them, so each environment can only use its own.</td></tr>
           <tr><td>2</td><td><b>Grants</b> (<code>databricks_grants</code>)</td><td>Authoritative, one resource per securable.</td></tr>
           <tr><td>3</td><td><b>Azure RBAC</b></td><td>Whether the access connector's identity can reach the bytes.</td></tr>
         </table>
@@ -475,14 +475,14 @@ flowchart TB
           <tr><th>Group</th><th>Role</th><th>Access</th></tr>
           <tr><td><code>grp-&lt;domain&gt;-stakeholders-&lt;env&gt;</code></td><td>Report consumers</td><td><span class="pill gold">gold</span> read</td></tr>
           <tr><td><code>grp-&lt;domain&gt;-analysts-&lt;env&gt;</code></td><td>Ad hoc analysis</td><td><span class="pill silver">silver</span> <span class="pill gold">gold</span> read</td></tr>
-          <tr><td><code>grp-&lt;domain&gt;-data-engineers-&lt;env&gt;</code></td><td>Build and operate the domain's pipelines</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code>, <code>MODIFY</code> on the catalog; read on raw <code>ingestion_&lt;env&gt;</code> (sales only today); in dev also write on the <code>checkpoints</code> volume and <code>CREATE_TABLE</code> on bronze</td></tr>
+          <tr><td><code>grp-&lt;domain&gt;-data-engineers-&lt;env&gt;</code></td><td>Build and operate the domain's pipelines</td><td><code>USE_CATALOG</code>, <code>USE_SCHEMA</code>, <code>SELECT</code> on the catalog, plus <code>MODIFY</code> in dev only (<code>engineers_can_modify</code>); read on raw <code>ingestion_&lt;env&gt;</code> (sales only today); in dev also write on the <code>checkpoints</code> volume and <code>CREATE_TABLE</code> on bronze</td></tr>
           <tr><td><code>grp-&lt;domain&gt;-data-governance-&lt;env&gt;</code></td><td>Owns the domain catalog and schemas</td><td>Ownership only, kept separate from operators</td></tr>
           <tr><td><code>grp-databricks-platform-&lt;env&gt;</code></td><td>Owns environment-wide infrastructure</td><td>Owner of the credential, bronze/landing/ingestion locations, <code>ingestion_&lt;env&gt;</code> and its volumes</td></tr>
           <tr><td><code>grp-databricks-ci-&lt;env&gt;</code></td><td>CI identity plumbing</td><td>Workspace membership and metastore <code>CREATE_*</code>; contains <code>sp-terraform-&lt;env&gt;</code>; nested in <code>grp-databricks-platform-&lt;env&gt;</code> and every <code>grp-&lt;domain&gt;-data-governance-&lt;env&gt;</code></td></tr>
           <tr><td><code>grp-databricks-account-admins</code></td><td>Account / metastore administration</td><td>Owner of the metastore</td></tr>
         </table>
         <p>Every Unity Catalog object is group-owned. Owners and operators are separate groups (separation of duties). The CI group is nested in each owner group so <code>sp-terraform-&lt;env&gt;</code> can keep managing what it creates; without it the first apply of a new catalog fails with <code>User does not have MANAGE</code>.</p>
-        <p><b>Grant scoping.</b> Privileges inherit downward, so engineers and CI get catalog-level grants, while stakeholders and analysts get <code>USE_CATALOG</code> plus schema-level grants on the layers they may see. Engineers use blanket <code>MODIFY</code> because metastore privilege version 1.0 lacks fine-grained DML at catalog level.</p>
+        <p><b>Grant scoping.</b> Privileges inherit downward, so engineers and CI get catalog-level grants, while stakeholders and analysts get <code>USE_CATALOG</code> plus schema-level grants on the layers they may see. Engineers use blanket <code>MODIFY</code> because metastore privilege version 1.0 lacks fine-grained DML at catalog level; it is on in dev and off in prod. <code>account users</code> hold <code>BROWSE</code> on the domain catalogs, so anyone can find a table and request access; requests go to <code>access_request_email</code>.</p>
         <p><b>Gating.</b> Grants to the business groups of every domain and of the ingestion catalog follow one switch, <code>enable_grants</code>: on in dev, off in prod until its first apply. CI's own grants are never gated.</p>
       </div>
     </section>
