@@ -21,3 +21,7 @@ managed_by  = "terraform"
 repository  = "https://github.com/oseliocandido/terraform-azure"
 cost_center = "analytics-platform"
 data_owner  = "data-platform-team"
+
+# Receives Unity Catalog access requests for the domain catalogs. Replace with a
+# shared mailbox so requests are not tied to one person.
+access_request_email = "oseliocandido@outlook.com"

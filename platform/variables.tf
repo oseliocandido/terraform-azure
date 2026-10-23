@@ -103,3 +103,15 @@ variable "bronze_consumer_can_write" {
   default     = false
   description = "Give the bronze consumer group CREATE_TABLE on bronze and READ/WRITE VOLUME on checkpoints. On in dev; prod waits for a pipeline principal."
 }
+
+variable "engineers_can_modify" {
+  type        = bool
+  default     = false
+  description = "Give each domain's data-engineers group MODIFY on all tables. On in dev; prod waits for a pipeline principal."
+}
+
+variable "access_request_email" {
+  type        = string
+  default     = null
+  description = "Email for Unity Catalog access-request notifications on the domain catalogs; null disables the destination."
+}

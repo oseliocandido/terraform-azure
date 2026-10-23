@@ -21,6 +21,11 @@ resource "databricks_storage_credential" "analytics" {
   # credential, so no single domain may control it. See docs/ARCHITECTURE.html's
   # Groups section.
   owner = local.platform_group_name
+
+  # Visible and usable only from the workspace that created it. Dev and prod share
+  # one metastore, so without this each workspace could see the other's credential
+  # and locations. Terraform binds it to the creating workspace automatically.
+  isolation_mode = "ISOLATION_MODE_ISOLATED"
 }
 
 # CI does not own the credential, and the metastore-level
@@ -49,6 +54,8 @@ resource "databricks_external_location" "bronze" {
   enable_file_events = false
 
   owner = local.platform_group_name
+
+  isolation_mode = "ISOLATION_MODE_ISOLATED"
 }
 
 # CI must read every external location it does not own on each plan.
@@ -91,6 +98,8 @@ resource "databricks_external_location" "landing" {
   }
 
   owner = local.platform_group_name
+
+  isolation_mode = "ISOLATION_MODE_ISOLATED"
 }
 
 resource "databricks_grants" "landing_ci" {
@@ -111,6 +120,7 @@ resource "databricks_external_location" "ingestion_managed" {
   url             = var.ingestion_catalog_storage_root
   credential_name = databricks_storage_credential.analytics.id
   owner           = local.platform_group_name
+  isolation_mode  = "ISOLATION_MODE_ISOLATED"
 }
 
 resource "databricks_grants" "ingestion_managed_ci" {

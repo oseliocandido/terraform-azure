@@ -40,6 +40,9 @@ resource "databricks_external_location" "managed" {
 
   # Owned by this domain's governance group.
   owner = local.data_governance_group_name
+
+  # Bound to this environment's workspace only, like the catalog it backs.
+  isolation_mode = "ISOLATION_MODE_ISOLATED"
 }
 
 # Grants on an existing group-owned location do not cascade, so CI needs its own.
@@ -84,12 +87,15 @@ resource "databricks_grants" "catalog" {
   catalog = databricks_catalog.this.name
 
   # Business groups. Stakeholders and analysts get USE_CATALOG only (layer access
-  # is per schema below). Data engineers inherit access to every schema.
+  # is per schema below). Data engineers inherit access to every schema; MODIFY on
+  # all tables stays off where a pipeline principal should own writes (prod).
+  # "account users" gets BROWSE only: it can find the catalog and request access.
   dynamic "grant" {
     for_each = var.enable_grants ? {
       "grp-${var.domain}-stakeholders-${var.environment}"   = ["USE_CATALOG"]
       "grp-${var.domain}-analysts-${var.environment}"       = ["USE_CATALOG"]
-      "grp-${var.domain}-data-engineers-${var.environment}" = ["USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY"]
+      "grp-${var.domain}-data-engineers-${var.environment}" = concat(["USE_CATALOG", "USE_SCHEMA", "SELECT"], var.engineers_can_modify ? ["MODIFY"] : [])
+      "account users"                                       = ["BROWSE"]
     } : {}
     content {
       principal  = grant.key
@@ -132,4 +138,22 @@ resource "databricks_grants" "silver_schema" {
     principal  = "grp-${var.domain}-analysts-${var.environment}" # stakeholders excluded -- gold only
     privileges = ["USE_SCHEMA", "SELECT"]
   }
+}
+
+# Where "request access" notifications go for this catalog. A shared mailbox, not
+# a person, so requests are not lost when someone leaves.
+resource "databricks_rfa_access_request_destinations" "catalog" {
+  count = var.access_request_email != null ? 1 : 0
+
+  securable = {
+    type      = "CATALOG"
+    full_name = databricks_catalog.this.name
+  }
+
+  destinations = [
+    {
+      destination_id   = var.access_request_email
+      destination_type = "EMAIL"
+    }
+  ]
 }

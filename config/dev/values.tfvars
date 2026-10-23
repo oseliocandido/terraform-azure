@@ -15,3 +15,7 @@ ci_service_principal_name = "5e93b219-9bc5-4a7b-8956-40d6c3648c1d"
 
 # Grants to the domain groups, which exist in the account (docs/BACKLOG.md).
 enable_grants = true
+
+# Engineers keep MODIFY on all domain tables in dev. Prod leaves it off until a
+# pipeline service principal owns production writes.
+engineers_can_modify = true
